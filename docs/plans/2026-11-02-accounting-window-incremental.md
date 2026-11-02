@@ -295,26 +295,28 @@ These do not need owner input unless the audit changes the conclusion:
 # Proposed copy
 
 The settings control belongs under **Settings → Data & diagnostics**, near the
-existing refresh interval. The wording must make clear that it affects only the
-allowance calibration and that saving does not refresh immediately.
+existing refresh interval. Keep the card to one-line description and one-line
+hint; detailed failure reasons belong in diagnostics, not the settings card. The
+wording must make clear that it affects only the allowance calibration and that
+saving does not refresh immediately.
 
 | Purpose | 简体中文 | English |
 |---|---|---|
-| Card title | 额度校准刷新 | Allowance calibration refresh |
-| Description | 只影响套餐额度折算 API 金额的校准模型。逐笔金额仍会即时更新。 | Affects only the allowance-to-API-equivalent calibration model. Per-event amounts still update immediately. |
+| Card title | 额度校准 | Allowance calibration |
+| Description | 仅影响额度折算；逐笔金额仍即时更新。 | Affects allowance estimates only; per-event amounts stay current. |
 | Field label | 校准间隔 | Calibration interval |
 | Options | 每 6 小时 / 每 12 小时 / 每 24 小时（默认） / 每 3 天 / 每 7 天 | Every 6 hours / Every 12 hours / Every 24 hours (default) / Every 3 days / Every 7 days |
-| Hint | 修改后从当前时间重新计时，不会立即刷新。价格表或套餐变化时仍会立即校准。 | Changes take effect from now and do not trigger an immediate refresh. Price or plan changes still calibrate immediately. |
-| Status | 上次校准：{time} · 下次校准：{time} | Last calibrated: {time} · Next calibration: {time} |
-| Stale label | 部分数据 · 截至 {time} | Partial data · as of {time} |
-| Stale explanation | 这段时间暂时无法验证，显示的是上次正确结果。 | This period can't be verified right now. Showing the last correct result. |
+| Hint | 保存后重新计时，不立即刷新；价格或套餐变化仍立即校准。 | Resets the timer on save; no immediate refresh. Price or plan changes still calibrate immediately. |
+| Status | 上次校准 {time} · 下次 {time} | Last calibrated {time} · Next {time} |
+| Stale label | 部分数据 · 截至 {time} | Partial · as of {time} |
+| Stale explanation | 暂无法验证，显示上次正确结果。 | Can't verify this period; showing the last correct result. |
 | Repair button | 重新计算 | Recalculate |
-| Repair progress | 正在重算 {date}… / 正在重算相关范围… | Recalculating {date}… / Recalculating the related range… |
-| Full-rebuild confirmation | 需要完整重建。这会重新计算全部会计数据，可能需要几分钟。 | A full rebuild is required. This recalculates all accounting data and may take several minutes. |
-| Confirm / cancel | 开始完整重建 / 取消 | Start full rebuild / Cancel |
-| Success | 已更新到 {time} | Updated to {time} |
-| Failure | 这次没有修好。可以稍后重试，或查看诊断。 | This repair did not succeed. Try again later or view diagnostics. |
-| Already running | 已有更新正在进行，完成后可重新计算。 | An update is already running. You can recalculate when it finishes. |
+| Repair progress | 正在重算 {date}… / 正在重算相关范围… | Recalculating {date}… / Recalculating related range… |
+| Full-rebuild confirmation | 需完整重建全部会计数据，可能需几分钟。 | Full rebuild of all accounting data may take several minutes. |
+| Confirm / cancel | 开始重建 / 取消 | Start rebuild / Cancel |
+| Success | 已更新至 {time} | Updated {time} |
+| Failure | 未修好，可重试或查看诊断。 | Repair failed. Retry or view diagnostics. |
+| Already running | 更新进行中，完成后再试。 | Update in progress; try again when it finishes. |
 
 Spanish entries follow the existing i18n catalog and must preserve the same
 meaning; do not ship a locale with a missing or English-only string.
