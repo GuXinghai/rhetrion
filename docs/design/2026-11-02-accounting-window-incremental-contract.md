@@ -8,10 +8,14 @@ status: proposed
 # Status and claim boundary
 
 This is a proposed design contract for the accounting derived cache. The
-input-receipt slice is implemented in source and shadow-tested; it is not
-persisted, wired to readers, or used for incremental recomputation. The
-derived-row output digest and the windowed cache are not implemented. No reader,
-schema, migration, performance, installed-app, or release claim is made. It follows the
+input-receipt, derived-row, exact accumulator-merge, rolling-fold, and
+owner-only window-cache storage slices are implemented in source and
+shadow-tested. A protected-copy rehearsal matched the shipping periods and
+history exactly for one 251-day generation. The window cache is not wired to
+readers and does not replace or accelerate the shipping accounting rebuild; the
+refresh runner maintains an existing shadow cache but does not create the first
+one inline. No reader, schema, migration, performance, installed-app, or release
+claim is made. It follows the
 [v11 impact-manifest plan](../plans/2026-11-01-local-index-impact-and-work-projections.md)
 and the [local index schema](../reference/local-index-schema.md); the
 [implementation plan](../plans/2026-11-02-accounting-window-incremental.md)
@@ -104,12 +108,16 @@ status              ready | unavailable
 ```
 
 The current implementation produces input receipts for every covered window,
-builds keyed derived-row digests for named UTC days, serializes the exact
-pre-finalize accumulator, and folds interior day rows plus at most two
-recomputed edge fragments into 24h/7d/30d/all and history. It is not wired to
-the shipping refresh or readers. The derived-row `row_digest` is required before
-a reader consumes a window or an incremental merge trusts it; it is not inferred
-from `fact_digest`.
+updates them from the durable impact manifest when every change is an ordinary
+append with a bounded time range, builds keyed derived-row digests for named UTC
+days, serializes the exact pre-finalize accumulator, and folds interior day rows
+plus at most two recomputed edge fragments into 24h/7d/30d/all and history.
+Unsafe change modes, session/lineage/coverage partitions, pruned manifests, or
+missing ranges fall back to a full receipt scan. The cache is persisted in
+owner-only collector state, but it is not wired to readers and does not replace
+the shipping rebuild. The derived-row `row_digest` is required before a reader
+consumes a window or an incremental merge trusts it; it is not inferred from
+`fact_digest`.
 
 The receipt never contains raw facts. The input digest includes the stable
 occurrence key and only the fields that participate in accounting derivation.

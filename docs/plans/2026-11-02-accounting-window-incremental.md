@@ -49,17 +49,29 @@ These source facts decide the plan:
   both refreshes, so those projections are already incremental and are not the
   subject of this plan.
 
-Implementation status (2026-11-02): the input-receipt primitive, exact named-day
-derived rows, pre-finalize accumulator merge, non-aligned rolling-period fold,
-and owner-only window-cache storage are implemented in shadow. Receipts use the
-committed accounting predicates, joined dimension values, a keyed digest, a
-global basis fingerprint, `commit_seq` plus `calculation_revision`,
-provisional-row exclusion, and cooperative abort. A real 251-day shadow cache
-took about 47 seconds initially, a no-change update took about 0.6 seconds, and
-the stored snapshot was about 8.6 MiB at 160 MiB RSS; the earlier full receipt
-pass over 1.04M facts took about 8.8 seconds. Refresh integration, incremental
-receipt updates, reader overlay, weekly/transition/calibration splitting,
-settings UI, and the closed full-rebuild enum are not implemented.
+Implementation status (2026-11-02): the input-receipt primitive, incremental
+receipt update from `impact_partition`, exact named-day derived rows,
+pre-finalize accumulator merge, non-aligned rolling-period fold, owner-only
+window-cache storage, and shadow refresh maintenance are implemented. Receipts
+use the committed accounting predicates, joined dimension values, a keyed
+digest, a global basis fingerprint, `commit_seq` plus `calculation_revision`,
+provisional-row exclusion, and cooperative abort. Ordinary appends update only
+bounded dirty days; unsafe modes, session/lineage/coverage partitions, pruned
+manifests, or missing ranges fall back to a full receipt scan.
+
+A protected-copy rehearsal on a 251-day, 1.04M-fact index matched the shipping
+24h/7d/30d/all periods and history exactly: the full build took about 421
+seconds and the shadow build about 263 seconds at 273 MiB RSS; the stored
+snapshot was 8.57 MB. The exact path currently prices individual events; a
+faster rollup-bucket path moved a few hundred declared-speed provenance events
+across a baseline edge, so it is implemented but not used for the equality
+proof. The refresh runner maintains an existing shadow cache, but the first
+251-day build is deliberately not inline: it needs a background or explicit
+maintenance trigger. The shipping refresh still runs the full accounting
+rebuild, readers do not consume the window cache, and weekly/transition/
+calibration splitting, reader overlay, settings UI, and the closed
+full-rebuild enum are not implemented. No page-speed improvement is claimed
+yet.
 
 # Decisions
 
