@@ -678,6 +678,32 @@ export function serializeLocalCollectorAccountingCache(cache) {
 }
 
 const ACCOUNTING_REUSE_META_KEY = "accounting_reuse_proof";
+const ACCOUNTING_WINDOW_CACHE_META_KEY = "accounting_window_cache";
+const ACCOUNTING_WINDOW_CACHE_ENVELOPE_SCHEMA = "local-accounting-window-cache-v1";
+const MAX_ACCOUNTING_WINDOW_CACHE_BYTES = 64 * 1024 * 1024;
+
+function validAccountingWindowCache(cache) {
+  return cache !== null && typeof cache === "object" && !Array.isArray(cache)
+    && cache.schemaVersion === 1
+    && typeof cache.basisFingerprint === "string"
+    && /^[a-f0-9]{64}$/u.test(cache.basisFingerprint)
+    && typeof cache.generation === "string" && cache.generation.length > 0
+    && typeof cache.generationFingerprint === "string" && cache.generationFingerprint.length > 0
+    && Number.isSafeInteger(cache.calculationRevision) && cache.calculationRevision >= 0
+    && Number.isSafeInteger(cache.computedAtMs) && cache.computedAtMs >= 0
+    && cache.receipts !== null && typeof cache.receipts === "object" && !Array.isArray(cache.receipts)
+    && Array.isArray(cache.days)
+    && Array.isArray(cache.periods) && cache.periods.length === 4
+    && (cache.history === null || typeof cache.history === "object");
+}
+
+function validAccountingWindowCacheEnvelope(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).sort().join() === "cache,schemaVersion"
+    && value.schemaVersion === ACCOUNTING_WINDOW_CACHE_ENVELOPE_SCHEMA
+    && validAccountingWindowCache(value.cache);
+}
+
 function validAccountingReuseProof(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     && Object.keys(value).sort().join() === "evaluatedAt,fingerprint,generation,key,schemaVersion"
@@ -1678,6 +1704,68 @@ export async function readLocalCollectorAccountingReuse({
       ? envelope.proof : null;
     return { status: "available", cache, proof };
   } });
+}
+
+// The window cache is a derived artifact. Publication is a single-row
+// transactional replace; readers never see a half-written cache, and a failed
+// or cancelled write leaves the previous cache intact.
+export async function writeLocalCollectorAccountingWindowCache({
+  stateFile = defaultLocalCollectorStatePath(),
+  cache,
+  signal = null,
+} = {}) {
+  if (!validAccountingWindowCache(cache) || !validAbortSignal(signal)) {
+    throw new TypeError("Local collector accounting window cache is invalid");
+  }
+  const envelope = { schemaVersion: ACCOUNTING_WINDOW_CACHE_ENVELOPE_SCHEMA, cache };
+  if (Buffer.byteLength(stableJson(envelope)) > MAX_ACCOUNTING_WINDOW_CACHE_BYTES) {
+    throw fixedError("local_collector_accounting_window_cache_oversize");
+  }
+  signal?.throwIfAborted();
+  await ensureDatabase(stateFile);
+  signal?.throwIfAborted();
+  let database;
+  try {
+    database = openDatabase(stateFile, { readOnly: false });
+    signal?.throwIfAborted();
+    transaction(database, () => {
+      writeMeta(database, ACCOUNTING_WINDOW_CACHE_META_KEY, envelope);
+    });
+    database.exec("PRAGMA optimize");
+  } finally {
+    database?.close();
+  }
+  await setLocalCollectorStateOwnerOnlyMode(stateFile);
+  await syncStateFile(stateFile);
+}
+
+export async function readLocalCollectorAccountingWindowCache({
+  stateFile = defaultLocalCollectorStatePath(),
+} = {}) {
+  if (typeof stateFile !== "string" || stateFile.length < 1) {
+    throw new TypeError("Local collector accounting window cache request is invalid");
+  }
+  if (await assertSafeStateFile(stateFile, { allowMissing: true }) === null) {
+    return { status: "missing", cache: null };
+  }
+  try {
+    return await withProtectedSqliteReadSnapshot({ path: stateFile, read(database) {
+      validateDatabase(database);
+      const envelope = readMeta(database, ACCOUNTING_WINDOW_CACHE_META_KEY);
+      if (envelope === null) return { status: "missing", cache: null };
+      if (!validAccountingWindowCacheEnvelope(envelope)
+          || Buffer.byteLength(stableJson(envelope)) > MAX_ACCOUNTING_WINDOW_CACHE_BYTES) {
+        return { status: "invalid", cache: null };
+      }
+      return { status: "available", cache: envelope.cache };
+    } });
+  } catch (error) {
+    if (error?.code === "local_collector_state_corrupt"
+        || error?.code === "local_collector_state_unavailable") {
+      return { status: "invalid", cache: null };
+    }
+    throw error;
+  }
 }
 
 // A one-time converter may retain the only surviving historical figures here.
