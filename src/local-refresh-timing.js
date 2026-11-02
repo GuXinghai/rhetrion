@@ -11,6 +11,7 @@ export const LOCAL_REFRESH_TIMING_STAGES = Object.freeze([
   "accounting_fit", "accounting_weekly_origins", "accounting_weekly_intervals",
   "accounting_transitions", "accounting_corpus_finish", "accounting_finalize",
   "accounting_prepare_state", "accounting_validate", "accounting_publish",
+  "accounting_window_shadow",
   "index_prepare", "index_discovery", "index_file_ids", "index_classify", "index_plan",
   "index_execute", "index_extract", "index_delete", "index_candidate_compare", "index_cursor", "index_commit",
   "index_post", "index_maintenance", "index_descriptor", "index_runtime_evidence", "index_runtime_capture",

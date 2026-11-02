@@ -13,6 +13,7 @@ import { selectProductionAccountObservationSecret } from "./account-observation-
 import { runCollectorOnce } from "./passive-collector.js";
 import { createLocalIndexAccountingReuse } from "./local-index-accounting-reuse.js";
 import { projectLocalIndexAccountingTime } from "./local-index-accounting-cache.js";
+import { refreshAccountingWindowShadow } from "./local-accounting-window-refresh.js";
 import {
   REPLAY_SAFE_ACCOUNTING_SCHEMA_VERSION,
   readReplaySafeAccountingCache,
@@ -756,6 +757,10 @@ export function createLocalCollectorRefreshRunner({
   readAccountingCache = readReplaySafeAccountingCache,
   projectAccountingTime = projectLocalIndexAccountingTime,
   refreshAccounting = null,
+  // Shadow maintenance of the incremental window cache. It never changes the
+  // shipping accounting result; a failure is bounded to this stage.
+  runAccountingWindowShadow = refreshAccountingWindowShadow,
+  onAccountingWindowShadow = null,
   getUnknownSpeedPolicy = () => DEFAULT_UNKNOWN_SPEED_POLICY,
   // Cursor-based incremental advance of the local index. An ordinary
   // pass reads only the bytes the rollout corpus grew since the last one, so
@@ -788,6 +793,13 @@ export function createLocalCollectorRefreshRunner({
   }
   if (refreshAccounting !== null && typeof refreshAccounting !== "function") {
     throw new TypeError("refreshAccounting must be a function or null");
+  }
+  if (typeof runAccountingWindowShadow !== "function") {
+    throw new TypeError("runAccountingWindowShadow must be a function");
+  }
+  if (onAccountingWindowShadow !== null
+      && typeof onAccountingWindowShadow !== "function") {
+    throw new TypeError("onAccountingWindowShadow must be a function or null");
   }
   if (refreshUnifiedIndex !== null && typeof refreshUnifiedIndex !== "function") {
     throw new TypeError("refreshUnifiedIndex must be a function or null");
@@ -1268,6 +1280,49 @@ export function createLocalCollectorRefreshRunner({
             accountingRebuildDeferredStreak = 0;
           }
         }
+      }
+    }
+    // Maintain the shadow window cache beside the shipping artifact. It is
+    // created during a full rebuild (one-time measured cost) and updated
+    // incrementally afterwards. A failure here never changes the shipping
+    // result or the last-good accounting cache.
+    if (accounting !== null
+        && unifiedIndexFile !== null
+        && stateFile !== null
+        && unifiedIndexSecretFile !== null
+        && accountingRefreshStatus !== "deferred"
+        && !accountingRetainedGeneration
+        && signal?.aborted !== true) {
+      try {
+        const shadow = await timing.measure("accounting_window_shadow",
+          () => runAccountingWindowShadow({
+            indexFile: unifiedIndexFile,
+            stateFile,
+            secretFile: unifiedIndexSecretFile,
+            unknownSpeedPolicy,
+            declaredSpeedBaselines,
+            endMs: Date.parse(accounting.coveredAt.endAt),
+            expectedPeriods: Array.isArray(accounting.periods)
+              ? accounting.periods
+              : null,
+            expectedHistory: accounting.history?.period ?? null,
+            // The first 251-day build is a one-time maintenance pass. Doing it
+            // inline here would add several minutes to an already long cold
+            // refresh; the refresh maintains an existing shadow cache only.
+            allowCreate: false,
+            signal,
+            now: clock,
+          }));
+        if (onAccountingWindowShadow !== null) {
+          try {
+            await onAccountingWindowShadow(shadow);
+          } catch {
+            // An observer never affects the refresh.
+          }
+        }
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        // Shadow maintenance is bounded to this stage.
       }
     }
     const notificationEvidence = publicNotificationEvidence(

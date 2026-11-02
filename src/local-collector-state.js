@@ -684,17 +684,23 @@ const MAX_ACCOUNTING_WINDOW_CACHE_BYTES = 64 * 1024 * 1024;
 
 function validAccountingWindowCache(cache) {
   return cache !== null && typeof cache === "object" && !Array.isArray(cache)
-    && cache.schemaVersion === 1
+    && cache.schemaVersion === 2
     && typeof cache.basisFingerprint === "string"
     && /^[a-f0-9]{64}$/u.test(cache.basisFingerprint)
     && typeof cache.generation === "string" && cache.generation.length > 0
     && typeof cache.generationFingerprint === "string" && cache.generationFingerprint.length > 0
     && Number.isSafeInteger(cache.calculationRevision) && cache.calculationRevision >= 0
     && Number.isSafeInteger(cache.computedAtMs) && cache.computedAtMs >= 0
+    && Number.isSafeInteger(cache.periodEndMs) && cache.periodEndMs >= 0
+    && Number.isSafeInteger(cache.historyEndMs) && cache.historyEndMs >= cache.periodEndMs
     && cache.receipts !== null && typeof cache.receipts === "object" && !Array.isArray(cache.receipts)
     && Array.isArray(cache.days)
     && Array.isArray(cache.periods) && cache.periods.length === 4
-    && (cache.history === null || typeof cache.history === "object");
+    && (cache.history === null || typeof cache.history === "object")
+    && (cache.audit === null || (typeof cache.audit === "object"
+      && !Array.isArray(cache.audit) && cache.audit.status === "matched"
+      && Number.isSafeInteger(cache.audit.comparedAtMs)
+      && cache.audit.periods === 4 && typeof cache.audit.history === "boolean"));
 }
 
 function validAccountingWindowCacheEnvelope(value) {

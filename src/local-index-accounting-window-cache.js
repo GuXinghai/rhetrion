@@ -10,8 +10,9 @@ import {
   importAccountingPeriodAccumulator,
 } from "./replay-safe-accounting-cache.js";
 
-export const ACCOUNTING_WINDOW_CACHE_VERSION = 1;
+export const ACCOUNTING_WINDOW_CACHE_VERSION = 2;
 const MAX_DAYS = 4_096;
+const AUDIT_STATUSES = new Set(["matched"]);
 
 function fixedError(code) {
   return Object.assign(new Error(code), { code });
@@ -28,9 +29,19 @@ function validateCache(cache) {
       || typeof cache.generation !== "string"
       || typeof cache.generationFingerprint !== "string"
       || !Number.isSafeInteger(cache.calculationRevision)
+      || !Number.isSafeInteger(cache.periodEndMs) || cache.periodEndMs < 0
+      || !Number.isSafeInteger(cache.historyEndMs)
+      || cache.historyEndMs < cache.periodEndMs
       || !Array.isArray(cache.days) || cache.days.length > MAX_DAYS
       || !Array.isArray(cache.periods) || cache.periods.length !== 4
-      || !cache.receipts || typeof cache.receipts !== "object") {
+      || !cache.receipts || typeof cache.receipts !== "object"
+      || (cache.audit !== null && (
+        typeof cache.audit !== "object" || Array.isArray(cache.audit)
+        || !AUDIT_STATUSES.has(cache.audit.status)
+        || !Number.isSafeInteger(cache.audit.comparedAtMs)
+        || cache.audit.periods !== 4
+        || typeof cache.audit.history !== "boolean"
+      ))) {
     throw fixedError("accounting_window_cache_invalid");
   }
   const seen = new Set();
@@ -62,14 +73,20 @@ function endOfReceipts(receipts) {
 }
 
 async function fold(cache, { indexFile, endMs, declaredSpeedBaselines, signal }) {
+  const lastFactMs = endOfReceipts(cache.receipts);
+  const anchorMs = endMs ?? lastFactMs;
+  const historyEndMs = Math.max(anchorMs, lastFactMs);
   const folded = await buildAccountingRollingPeriods({
     indexFile,
-    endMs: endMs ?? endOfReceipts(cache.receipts),
+    endMs: anchorMs,
+    historyEndMs,
     dayAccumulators: dayMap(cache),
     declaredSpeedBaselines,
     includeHistory: true,
     signal,
   });
+  cache.periodEndMs = anchorMs;
+  cache.historyEndMs = historyEndMs;
   cache.periods = folded.periods;
   cache.history = folded.history;
   return cache;
@@ -126,8 +143,11 @@ export async function createAccountingWindowCache({
     computedAtMs: Number(now()),
     receipts,
     days,
+    periodEndMs: 0,
+    historyEndMs: 0,
     periods: [],
     history: null,
+    audit: null,
   };
   await fold(cache, { indexFile, endMs, declaredSpeedBaselines, signal });
   return validateCache(cache);
@@ -167,6 +187,26 @@ export async function updateAccountingWindowCache({
   if (identity === null || identity.calculationRevision !== receipts.calculationRevision) {
     throw fixedError("accounting_window_cache_generation_changed");
   }
+  const lastFactMs = endOfReceipts(receipts);
+  const anchorMs = endMs ?? lastFactMs;
+  const historyEndMs = Math.max(anchorMs, lastFactMs);
+  if (rebuiltKeys.length === 0
+      && previous.periodEndMs === anchorMs
+      && previous.historyEndMs === historyEndMs
+      && previous.receipts.commitSeq === receipts.commitSeq
+      && previous.receipts.calculationRevision === receipts.calculationRevision
+      && previous.generation === String(identity.id)
+      && previous.generationFingerprint === identity.fingerprint) {
+    return {
+      cache: previous,
+      basisChanged: false,
+      rebuiltKeys: [],
+      added: [],
+      removed: [],
+      changed: [],
+      unchanged: true,
+    };
+  }
   const previousDays = new Map(previous.days.map(day => [day.key, day]));
   const newDays = await buildDays({
     indexFile, keys: rebuiltKeys, hmacKey, declaredSpeedBaselines, signal,
@@ -188,8 +228,11 @@ export async function updateAccountingWindowCache({
     computedAtMs: Number(now()),
     receipts,
     days,
+    periodEndMs: 0,
+    historyEndMs: 0,
     periods: [],
     history: null,
+    audit: null,
   };
   await fold(cache, { indexFile, endMs, declaredSpeedBaselines, signal });
   return {
@@ -199,5 +242,6 @@ export async function updateAccountingWindowCache({
     added: comparison.added,
     removed: comparison.removed,
     changed: comparison.changed,
+    unchanged: false,
   };
 }

@@ -11,16 +11,19 @@ import {
 } from "../src/local-collector-state.js";
 
 const cache = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   basisFingerprint: "a".repeat(64),
   generation: "3",
   generationFingerprint: "generation-v2-synthetic",
   calculationRevision: 7,
   computedAtMs: 1_790_000_000_000,
-  receipts: { schemaVersion: 1, windows: [] },
+  periodEndMs: 1_790_000_000_000,
+  historyEndMs: 1_790_000_000_000,
+  receipts: { schemaVersion: 2, windows: [] },
   days: [],
   periods: [{ id: "24h" }, { id: "7d" }, { id: "30d" }, { id: "all" }],
   history: null,
+  audit: null,
 };
 
 async function fixture(t) {

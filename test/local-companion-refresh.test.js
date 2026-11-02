@@ -4657,3 +4657,58 @@ test("progress subscribers observe queued refresh and real publication without p
   assert.equal(seen.at(-1).publication, null);
   unsubscribe();
 });
+
+test("a rebuilt accounting result maintains the shadow window cache once", async () => {
+  let shadowArgs = null;
+  let observed = null;
+  const generation = {
+    id: 12,
+    fingerprint: "s".repeat(64),
+    status: "complete",
+    discoveryComplete: true,
+    diagnosticsComplete: true,
+    usageProvenanceComplete: true,
+    sourceOrderComplete: true,
+    quotaProvenanceComplete: true,
+    toolProvenanceComplete: true,
+  };
+  const runner = createLocalCollectorRefreshRunner({
+    stateFile: "/private/collector.sqlite",
+    unifiedIndexFile: "/private/local-unified-index-v1.sqlite",
+    unifiedIndexSecretFile: "/private/device-salt",
+    selectAccountObservationSecret: () => ({ loadAccountObservationSecret: null }),
+    runCollector: async () => ({
+      rolloutRecordsWritten: 1,
+      filesDiscovered: 1,
+      refresh: { attempted: true, recordWritten: true, errorCode: null },
+      indexing: COMPLETE_INDEX,
+    }),
+    refreshUnifiedIndex: async () => ({ status: "ingested", generation }),
+    refreshAccounting: async () => ({
+      generatedAt: "2026-07-23T12:00:00.000Z",
+      coveredAt: {
+        startAt: "2026-06-23T00:00:00.000Z",
+        endAt: "2026-07-23T12:00:00.000Z",
+      },
+      periods: [{ id: "7d", events: 1 }],
+      history: { period: { id: "history", events: 2 } },
+      diagnostics: {},
+      unknownSpeedPolicy: { mode: "standard", customFastRatioBps: null },
+      sourceDescriptor: { fallbackCount: 0 },
+    }),
+    runAccountingWindowShadow: async args => {
+      shadowArgs = args;
+      return { status: "created", rebuiltDays: 3 };
+    },
+    onAccountingWindowShadow: value => { observed = value; },
+  });
+  const result = await runner();
+  assert.equal(result.accounting.refreshStatus, "rebuilt");
+  assert.deepEqual(observed, { status: "created", rebuiltDays: 3 });
+  assert.equal(shadowArgs.indexFile, "/private/local-unified-index-v1.sqlite");
+  assert.equal(shadowArgs.stateFile, "/private/collector.sqlite");
+  assert.equal(shadowArgs.secretFile, "/private/device-salt");
+  assert.equal(shadowArgs.allowCreate, false);
+  assert.equal(shadowArgs.endMs, Date.parse("2026-07-23T12:00:00.000Z"));
+  assert.equal(shadowArgs.expectedHistory.events, 2);
+});
