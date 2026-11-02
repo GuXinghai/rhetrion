@@ -165,11 +165,22 @@ On any P1-P4:
 1. Mark the affected window or range `unavailable`.
 2. Keep all unaffected windows and the last-good manifest readable.
 3. Surface partial/unavailable state explicitly; never infer zero.
-4. Enqueue a bounded repair for the exact target.
+4. Enqueue an automatic bounded repair for the exact target, and expose a
+   manual **Recalculate** entry for the same window.
 5. Record a content-free diagnostic and increment a runtime counter.
 
 P1-P4 must not call the full rebuild function. A repeated repair failure is an
 alert and a release defect, not a reason to rebuild everything on every tick.
+
+A manual **Recalculate** entry repairs in this order:
+
+1. the affected window;
+2. the related range or session range;
+3. a full rebuild, only after an explicit confirmation that names the scope and
+   the expected wait.
+
+The automatic path never performs step 3. The manual path never hides which step
+is running or silently escalates past a confirmation.
 
 # Full-rebuild policy
 
@@ -179,7 +190,7 @@ Full rebuild is allowed only for:
 |---|---|
 | `basis_changed` | price registry, policy, or unknown-speed basis changed |
 | `algorithm_changed` | schema, parser, or cache algorithm version changed |
-| `explicit_repair` | owner or recovery command targets a proven corrupt state |
+| `explicit_repair` | owner or recovery command targets a proven corrupt state, or confirms a full rebuild after window and range repair fail |
 | `initial_build` | no prior valid artifact exists |
 
 The enum is closed. `inputs_revision_changed`, `inputs_baselines_changed`,
@@ -206,9 +217,12 @@ be separated from window freshness:
 - Readers label calibration age (`calibrationAsOf`). A stale model is explicit,
   not a reason to rebuild all windows.
 
-The refit cadence is a product decision. The default proposal is scheduled or
-on-demand refit, with an age threshold and an explicit label; normal refreshes
-must not block on it.
+The refit cadence is a user setting with fixed options. The first set
+is every 6 hours, every 12 hours, every 24 hours (default), every 3 days, and
+every 7 days. A changed setting starts its next interval from the moment of the
+change; it does not trigger an immediate refit. Price, policy, or plan changes
+still calibrate immediately regardless of the setting. Normal refreshes must not
+block on the calibration schedule.
 
 # Reader semantics
 
@@ -216,6 +230,9 @@ must not block on it.
   and algorithm.
 - If a required window is unavailable, the aggregate is `partial` or
   `unavailable`; it must not drop the window silently or substitute zero.
+- The reader shows the last-good value with an explicit age or partial label and
+  a **Recalculate** entry. The entry escalates window → related range → full
+  rebuild with confirmation; it never jumps straight to a full rebuild.
 - Rolling 24h/7d/30d/all totals fold window rows. They do not rescan all facts.
 - A stale calibration is shown with its timestamp; it is not presented as a
   current provider measurement.
@@ -238,13 +255,14 @@ The contract is enforced by all of the following, not by convention:
 6. **Closed schemas and fail-closed validation** for receipts and cache
    manifests.
 
-# Limits and open decisions
+# Limits and delegated decisions
 
 - This contract does not prove the accounting formulas; it proves cache
   completeness and locality. Formula correctness remains covered by the
   incremental-versus-full audit.
-- Window granularity, receipt storage location, calibration cadence, reader
-  stale policy, and repair UX remain open decisions.
+- Window granularity and receipt storage location remain engineering decisions.
+  Calibration cadence, reader stale policy, and repair UX are settled by the
+  owner decisions recorded in the implementation plan.
 - A global basis, parser, or schema change still requires a deliberate full
   rebuild. That is planned work, not a normal refresh fallback.
 - A historical rewrite spanning all sources is outside the normal path and must

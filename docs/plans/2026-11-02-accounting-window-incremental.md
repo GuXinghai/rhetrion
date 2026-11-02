@@ -59,10 +59,14 @@ These source facts decide the plan:
    event, source replacement, quota/origin update, and time advance are normal
    classes.
 4. **Proof failures are local.** Mark the affected window unavailable, retain
-   last-good state, enqueue a bounded repair, and surface partial state. Do not
-   rebuild everything automatically.
+   last-good state, run an automatic bounded repair, and surface partial state.
+   A manual **Recalculate** entry escalates window → related range → full
+   rebuild; only the last step needs explicit confirmation.
 5. **Calibration is a separate model.** Window freshness and calibration age
-   are independent; a new event does not refit the global model.
+   are independent; a new event does not refit the global model. The interval is
+   a fixed-option user setting: 6 hours, 12 hours, 24 hours (default), 3 days,
+   or 7 days. A change starts timing from the change and does not refresh
+   immediately; price or plan changes still calibrate immediately.
 6. **No reader switch before equality.** Incremental and full builds must match
    on synthetic sequences and a protected profile copy before readers consume
    the windowed manifest.
@@ -139,7 +143,10 @@ Rollback: disable shadow recompute; full cache remains authoritative.
 Deliverables:
 
 - readers consume the windowed manifest and fold periods from window rows;
-- `partial`/`unavailable` states for missing windows;
+- `partial`/`unavailable` states for missing windows, with a last-good value
+  carrying an explicit age or partial label;
+- a **Recalculate** entry that repairs window → related range → full rebuild,
+  with confirmation only for the full rebuild;
 - `calibrationAsOf` and `weeklyIntervalsAsOf` labels;
 - a feature gate that can return to the last full cache without data deletion.
 
@@ -147,7 +154,10 @@ Acceptance:
 
 - rendered work usage, accounting, and quota surfaces match the full-cache
   output on the protected copy;
-- missing-window tests show partial, not zero;
+- missing-window tests show the labelled last-good value or partial state, never
+  zero;
+- the Recalculate entry follows the ordered escalation and never jumps directly
+  to a full rebuild;
 - no full rebuild occurs for normal appends over repeated refreshes;
 - the last full cache remains readable throughout.
 
@@ -157,8 +167,13 @@ Rollback: disable the fast-path gate; readers use the retained full cache.
 
 Deliverables:
 
-- independent calibration refit schedule or explicit trigger;
-- repair operation for a named window or range, with receipt and audit;
+- a settings control with five fixed options: every 6 hours, every 12 hours,
+  every 24 hours (default), every 3 days, and every 7 days;
+- changing the option starts the next interval from the change time and does not
+  trigger an immediate refit;
+- price, policy, or plan changes still calibrate immediately;
+- a repair operation for a named window or range, with receipt and audit, plus
+  the ordered manual escalation;
 - runtime counters for dirty, recomputed, unavailable, mismatch, and full
   rebuild by reason;
 - removal of the automatic full-rebuild path from normal refresh errors.
@@ -167,6 +182,7 @@ Acceptance:
 
 - a normal-change sequence records zero full rebuilds;
 - a non-whitelisted full-rebuild reason fails the test gate;
+- changing the interval does not enqueue an immediate refit;
 - repeated repair of the same window is an alert, not a rebuild loop;
 - basis/algorithm changes still rebuild and publish atomically.
 
@@ -228,36 +244,80 @@ The implementation is not accepted unless all of these hold:
 8. **Whole-refresh proof**: accounting improvement is measured together with
    discovery and snapshot stages; no claim is made from a stage in isolation.
 
-# Risks and open decisions
+# Risks
 
 - **Cross-window dependency**: a transition or reset checkpoint can make a
   correction affect a suffix. The plan bounds the suffix at the next reset
   boundary; if that is still too large, the window granularity or checkpoint
   design must change.
-- **Calibration semantics**: reusing a model while new events arrive is a
-  product decision. The default is an explicit age label and a separate refit
-  cadence.
+- **Calibration semantics**: the fixed options and age label are settled, but a
+  model can still be older than the selected interval while a refit is pending.
+  The UI must keep the age visible.
 - **Receipt storage**: the collector state is preferred for Phase 1. If the
   audit requires atomic coupling with index facts, a forward-only local-index
   schema decision is needed; no downgrade or dual writer is allowed.
-- **Partial reader behavior**: a missing window must surface as partial or
-  unavailable. The UI copy and aggregation rules need owner approval.
-- **Repair UX**: a repair command or route must be explicit, bounded, and
-  receipt-backed; it must not become a hidden scheduler retry.
+- **Partial reader behavior**: 1A is approved; implementation must keep the
+  `截至 X 时间` / `部分数据` label visible and must not drop the value silently.
+- **Repair UX**: automatic repair is local and bounded; the manual entry
+  escalates in order. It must not become a hidden scheduler retry or skip the
+  full-rebuild confirmation.
 - **Performance**: a fast path that still scans all facts or rebuilds the
   snapshot will not deliver the expected whole-refresh gain. Measure each stage.
 
-# Open owner decisions
+# Owner decisions (2026-11-02)
 
-Before implementation beyond shadow mode:
+1. **Unavailable window display: 1A.** Keep the last-good value with an explicit
+   `截至 X 时间` / `部分数据` label. Do not hide the value or the module.
+2. **Calibration interval: fixed options.** Use 6 hours, 12 hours, 24 hours
+   (default), 3 days, and 7 days. A change starts timing from the change and
+   does not trigger an immediate refit. Price/plan/policy changes still
+   calibrate immediately.
+3. **Repair: automatic local plus manual escalation.** Automatic repair is
+   limited to the affected window. A visible **Recalculate** entry escalates
+   window → related range → full rebuild; the full rebuild requires explicit
+   confirmation.
+4. **Speed target: A now, B later.** Keep the page usable while the background
+   refresh runs. Measure the accounting fast path first; if the remaining
+   discovery/snapshot cost is still too high, proceed to the 3-minute target as
+   a separate slice.
 
-1. Window granularity: UTC day, with boundary checkpoints, or a finer bucket.
-2. Calibration refit cadence and the exact `calibrationAsOf` presentation.
-3. Whether partial windows render as stale, unavailable, or a retained last-good
-   value with an age label.
-4. Whether receipts live in the collector state or require a local-index schema
-   version.
-5. The allowed repair entrypoint and its authorization boundary.
+# Delegated engineering decisions
+
+These do not need owner input unless the audit changes the conclusion:
+
+- window granularity: UTC day with boundary checkpoints; finer buckets need a
+  separate proof;
+- receipt storage: the existing collector cache store during the shadow phases;
+  a local-index schema change only if transactional coupling is proven necessary;
+- full-rebuild reason enum and receipt schema;
+- test layout, harness implementation, and runtime counter names.
+
+# Proposed copy
+
+The settings control belongs under **Settings → Data & diagnostics**, near the
+existing refresh interval. The wording must make clear that it affects only the
+allowance calibration and that saving does not refresh immediately.
+
+| Purpose | 简体中文 | English |
+|---|---|---|
+| Card title | 额度校准刷新 | Allowance calibration refresh |
+| Description | 只影响套餐额度折算 API 金额的校准模型。逐笔金额仍会即时更新。 | Affects only the allowance-to-API-equivalent calibration model. Per-event amounts still update immediately. |
+| Field label | 校准间隔 | Calibration interval |
+| Options | 每 6 小时 / 每 12 小时 / 每 24 小时（默认） / 每 3 天 / 每 7 天 | Every 6 hours / Every 12 hours / Every 24 hours (default) / Every 3 days / Every 7 days |
+| Hint | 修改后从当前时间重新计时，不会立即刷新。价格表或套餐变化时仍会立即校准。 | Changes take effect from now and do not trigger an immediate refresh. Price or plan changes still calibrate immediately. |
+| Status | 上次校准：{time} · 下次校准：{time} | Last calibrated: {time} · Next calibration: {time} |
+| Stale label | 部分数据 · 截至 {time} | Partial data · as of {time} |
+| Stale explanation | 这段时间暂时无法验证，显示的是上次正确结果。 | This period can't be verified right now. Showing the last correct result. |
+| Repair button | 重新计算 | Recalculate |
+| Repair progress | 正在重算 {date}… / 正在重算相关范围… | Recalculating {date}… / Recalculating the related range… |
+| Full-rebuild confirmation | 需要完整重建。这会重新计算全部会计数据，可能需要几分钟。 | A full rebuild is required. This recalculates all accounting data and may take several minutes. |
+| Confirm / cancel | 开始完整重建 / 取消 | Start full rebuild / Cancel |
+| Success | 已更新到 {time} | Updated to {time} |
+| Failure | 这次没有修好。可以稍后重试，或查看诊断。 | This repair did not succeed. Try again later or view diagnostics. |
+| Already running | 已有更新正在进行，完成后可重新计算。 | An update is already running. You can recalculate when it finishes. |
+
+Spanish entries follow the existing i18n catalog and must preserve the same
+meaning; do not ship a locale with a missing or English-only string.
 
 # Remaining gates
 
