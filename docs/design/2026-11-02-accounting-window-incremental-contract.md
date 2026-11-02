@@ -7,9 +7,11 @@ status: proposed
 
 # Status and claim boundary
 
-This is a proposed design contract for the accounting derived cache. It is not
-implemented and makes no reader, schema, migration, performance, installed-app,
-or release claim. It follows the
+This is a proposed design contract for the accounting derived cache. The
+input-receipt slice is implemented in source and shadow-tested; it is not
+persisted, wired to readers, or used for incremental recomputation. The
+derived-row output digest and the windowed cache are not implemented. No reader,
+schema, migration, performance, installed-app, or release claim is made. It follows the
 [v11 impact-manifest plan](../plans/2026-11-01-local-index-impact-and-work-projections.md)
 and the [local index schema](../reference/local-index-schema.md); the
 [implementation plan](../plans/2026-11-02-accounting-window-incremental.md)
@@ -65,7 +67,7 @@ The incremental path is valid only while all of these hold.
 | I1 | Every fact has a stable occurrence key and belongs to exactly one window. |
 | I2 | Window derivation is deterministic: the same window facts, basis, and algorithm version produce the same canonical rows and digest. |
 | I3 | A window depends only on its own facts and the checkpoint at the preceding boundary. No window depends on a global revision, all-session origin set, or unbounded history. |
-| I4 | Every covered window has a valid receipt with input digest, output digest, basis, algorithm version, fact count, and bounds. |
+| I4 | Every covered window has a valid input receipt; before a reader consumes it, it also has a derived-row output digest. |
 | I5 | Digests are domain-separated, content-free, and computed with a local secret or equivalent non-reversible local key. No raw prompt, response, path, account identifier, or session content is stored. |
 | I6 | A cache manifest is published atomically: readers see the previous complete manifest or the next complete manifest, never a partial merge. |
 | I7 | Full rebuild has a closed reason enum; no `catch` block or missing receipt may invoke it implicitly. |
@@ -82,16 +84,28 @@ formula results are protected by the equality audit in the plan.
 A window receipt is conceptually:
 
 ```text
+Current input receipt
 window_key          fixed window identity, e.g. UTC day
 lower_ms/upper_ms   exact bounds
-fact_digest         digest of sorted stable fact keys and normalized fields
-row_digest          digest of canonical derived rows
-basis_fingerprint   price registry / policy / unknown-speed basis
-algorithm_version   cache derivation version
-fact_count          number of facts assigned to the window
+fact_digest         digest of sorted committed inputs and joined dimensions
+basis_fingerprint   price registry / policy / unknown-speed / parser basis
+algorithm_version   receipt derivation version
+commit_seq          publication fence
+calculation_revision fact/dimension revision (also advances on lane commits)
+fact_count          number of committed inputs assigned to the window
+status              input
+keyed               whether the digest used the local key
 computed_at_ms      local computation time
+receipt_digest      integrity digest over the receipt
+
+Future derived-row proof
+row_digest          digest of canonical derived rows
 status              ready | unavailable
 ```
+
+The current implementation produces input receipts only. The derived-row
+`row_digest` is required before a reader consumes a window or an incremental
+merge trusts it; it is not inferred from `fact_digest`.
 
 The receipt never contains raw facts. The input digest includes the stable
 occurrence key and only the fields that participate in accounting derivation.
@@ -260,6 +274,9 @@ The contract is enforced by all of the following, not by convention:
 - This contract does not prove the accounting formulas; it proves cache
   completeness and locality. Formula correctness remains covered by the
   incremental-versus-full audit.
+- Input receipts are not sufficient for incremental cache merge. Derived-row
+  output digests, windowed cache rows, persistence, and reader integration
+  remain required.
 - Window granularity and receipt storage location remain engineering decisions.
   Calibration cadence, reader stale policy, and repair UX are settled by the
   owner decisions recorded in the implementation plan.

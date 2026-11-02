@@ -10,6 +10,9 @@ import {
   createAccountingWindowReceipts,
 } from "../src/local-index-accounting-windows.js";
 
+const KEY = "synthetic-window-key";
+const NOW = Date.parse("2026-09-02T00:00:00.000Z");
+
 async function setup(t) {
   const workspace = createWorkspace({
     files: 1, events: 20, days: 5, fillerBytesPerEvent: 0,
@@ -24,6 +27,10 @@ async function setup(t) {
   });
   await refresh();
   return { workspace, indexFile, refresh };
+}
+
+function receipts(indexFile) {
+  return createAccountingWindowReceipts({ indexFile, hmacKey: KEY, now: () => NOW });
 }
 
 function latestAccountingWindow(indexFile) {
@@ -41,14 +48,14 @@ function latestAccountingWindow(indexFile) {
 
 test("an appended source event adds one accounting window and records its range", async t => {
   const { workspace, indexFile, refresh } = await setup(t);
-  const before = createAccountingWindowReceipts({ indexFile });
+  const before = await receipts(indexFile);
   const atMs = Date.parse("2026-09-02T12:00:00.000Z");
   appendSyntheticCodexEvents(workspace.receipt.sources.slice(0, 1), {
     seed: 11, events: 1, fillerBytesPerEvent: 0, atMs,
   });
   await refresh();
-  const after = createAccountingWindowReceipts({ indexFile });
-  const changed = compareAccountingWindowReceipts(before, after);
+  const after = await receipts(indexFile);
+  const changed = compareAccountingWindowReceipts(before, after, { hmacKey: KEY });
   const key = new Date(atMs).toISOString().slice(0, 10);
   assert.ok(changed.added.includes(key) || changed.changed.includes(key));
   const impact = latestAccountingWindow(indexFile);
@@ -65,13 +72,13 @@ test("a second append in the same day changes the same window, not a new one", a
     seed: 12, events: 1, fillerBytesPerEvent: 0, atMs,
   });
   await refresh();
-  const before = createAccountingWindowReceipts({ indexFile });
+  const before = await receipts(indexFile);
   appendSyntheticCodexEvents(workspace.receipt.sources.slice(0, 1), {
     seed: 13, events: 1, fillerBytesPerEvent: 0, atMs: atMs + 60_000,
   });
   await refresh();
-  const after = createAccountingWindowReceipts({ indexFile });
-  const changed = compareAccountingWindowReceipts(before, after);
+  const after = await receipts(indexFile);
+  const changed = compareAccountingWindowReceipts(before, after, { hmacKey: KEY });
   const key = new Date(atMs).toISOString().slice(0, 10);
   assert.deepEqual(changed.changed, [key]);
   assert.deepEqual(changed.added, []);
