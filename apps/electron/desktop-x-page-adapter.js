@@ -178,7 +178,7 @@ export function createDesktopXPageAdapter({ window: win, delay = ms => new Promi
       const { response, requestId } = params;
       if (!isXPageUrl(response?.url)) return;
       const path = new URL(response.url).pathname;
-      const operation = /^\/i\/api\/graphql\/[^/]+\/(UserTweets|UserOriginalsTimeline|UserTweetsAndReplies|UserMedia|TweetDetail)$/.exec(path)?.[1];
+      const operation = /^\/i\/api\/graphql\/[^/]+\/(UserTweets|UserOriginalsTimeline|UserTweetsAndReplies|UserMedia|UserRepostsTimeline|TweetDetail)$/.exec(path)?.[1];
       if (!operation || !expectedOperation?.includes(operation)) return;
       if (detailMode && operation === 'TweetDetail') {
         const variables = new URL(response.url).searchParams.get('variables');
@@ -219,8 +219,14 @@ export function createDesktopXPageAdapter({ window: win, delay = ms => new Promi
   }
   async function load({ tab = 'posts', id, signal, more = false, after, knownReplies = [] } = {}) {
     assertLive(signal); loadGeneration++; detailMode = Boolean(id); detailId = id; pending.clear(); projected = new Map(); networkIds.clear(); recognized = false; exhausted = false; networkError = undefined; retryAfter = undefined; revision = 0;
-    expectedOperation = id ? ['TweetDetail'] : tab === 'replies' ? ['UserTweetsAndReplies'] : tab === 'media' ? ['UserMedia'] : ['UserTweets', 'UserOriginalsTimeline'];
-    const suffix = tab === 'replies' ? '/with_replies' : tab === 'media' ? '/media' : '';
+    expectedOperation = id ? ['TweetDetail']
+      : tab === 'replies' ? ['UserTweetsAndReplies']
+      : tab === 'media' ? ['UserMedia']
+      : tab === 'reposts' ? ['UserRepostsTimeline']
+      : ['UserTweets', 'UserOriginalsTimeline'];
+    const suffix = tab === 'replies' ? '/with_replies'
+      : tab === 'media' ? '/media'
+      : tab === 'reposts' ? '/reposts' : '';
     const url = id ? `https://x.com/${target}/status/${id}` : `https://x.com/${target}${suffix}`;
     const abort = () => { if (!win.isDestroyed()) wc.stop(); };
     signal?.addEventListener('abort', abort, { once: true });

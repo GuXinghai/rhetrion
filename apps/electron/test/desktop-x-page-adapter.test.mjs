@@ -60,6 +60,27 @@ test('X projection recognizes repost ownership, keeps original detail ID, and om
   assert.equal(projectXPageData({ timeline: { instructions: [] } }).recognized, true);
 });
 
+test('reposts tab loads the dedicated Reposts timeline and accepts UserRepostsTimeline', async () => {
+  const wc = new EventEmitter(), debuggerApi = new EventEmitter(); let url = 'https://x.com/thsottiaux';
+  const original = tweet('456', 'another');
+  const wrapper = tweet('789'); wrapper.legacy.retweeted_status_result = { result: original };
+  debuggerApi.isAttached = () => false; debuggerApi.attach = () => {}; debuggerApi.detach = () => {};
+  debuggerApi.sendCommand = async method => method === 'Network.getResponseBody'
+    ? { body: JSON.stringify({ entries: [wrapper] }), base64Encoded: false } : undefined;
+  wc.debugger = debuggerApi; wc.getURL = () => url;
+  wc.executeJavaScript = async code => code.startsWith('window.scrollTo') ? undefined : ({ posts: [], accountMenu: true });
+  const adapter = createDesktopXPageAdapter({ window: { webContents: wc, isDestroyed: () => false, loadURL: async next => {
+    url = next;
+    debuggerApi.emit('message', {}, 'Network.responseReceived', { response: { url: 'https://x.com/i/api/graphql/synthetic/UserRepostsTimeline', status: 200, headers: {} }, requestId: 'reposts' });
+    debuggerApi.emit('message', {}, 'Network.loadingFinished', { requestId: 'reposts', encodedDataLength: 100 });
+  } }, delay: async () => { await Promise.resolve(); } });
+  const result = await adapter.load({ tab: 'reposts' });
+  assert.equal(url, 'https://x.com/thsottiaux/reposts');
+  assert.deepEqual(result.posts.map(post => post.id), ['456']);
+  assert.equal(result.posts[0].kind, 'repost');
+  adapter.dispose();
+});
+
 test('network media identity follows the upstream asset across reorder and URL renewal', () => {
   const first = { id_str: '801', type: 'video', video_info: { variants: [{ content_type: 'video/mp4', url: 'https://video.twimg.com/first.mp4?token=old' }] } };
   const second = { rest_id: '802', type: 'photo', media_url_https: 'https://pbs.twimg.com/media/second.jpg' };
