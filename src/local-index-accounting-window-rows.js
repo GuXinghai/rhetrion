@@ -1,8 +1,11 @@
 import { createHash, createHmac } from "node:crypto";
-import { setImmediate as yieldTurn } from "node:timers/promises";
 import { createLocalIndexAccountingScan } from "./local-index-accounting-cache.js";
 import { readLocalIndexGenerationIdentity } from "./local-index-companion-source.js";
-import { buildReplaySafeAccountingPeriod } from "./replay-safe-accounting-cache.js";
+import {
+  buildAccountingPeriodAccumulatorsByDay,
+  createAccountingPeriodAccumulator,
+  finalizeAccountingPeriodAccumulator,
+} from "./replay-safe-accounting-cache.js";
 import { ACCOUNTING_WINDOW_MS } from "./local-index-accounting-windows.js";
 
 const DOMAIN = "rhetrion-accounting-window-row-v1";
@@ -33,14 +36,28 @@ function validKey(value) {
   return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === value;
 }
 
+function contiguousRuns(windows) {
+  const runs = [];
+  for (const window of windows) {
+    const prior = runs.at(-1);
+    if (prior !== undefined
+        && window.lowerMs === prior.at(-1).lowerMs + ACCOUNTING_WINDOW_MS) {
+      prior.push(window);
+    } else {
+      runs.push([window]);
+    }
+  }
+  return runs;
+}
+
 /**
  * Build the derived accounting row for named UTC days and hash it. This is the
  * output-side proof for a future windowed cache; it does not merge into the
  * shipping cache or change any reader.
  *
- * Each day is scanned independently through the same accounting path used by
- * the full cache. The generation is checked before and after the pass, so a
- * concurrent commit fails closed instead of mixing generations.
+ * Contiguous requested days share one ordered scan. The generation is checked
+ * before and after each run, so a concurrent commit fails closed instead of
+ * mixing generations.
  */
 export async function buildAccountingWindowRows({
   indexFile,
@@ -73,39 +90,51 @@ export async function buildAccountingWindowRows({
   const key = normalizeKey(hmacKey);
   const generation = readLocalIndexGenerationIdentity({ indexFile });
   if (generation === null) throw fixedError("accounting_window_generation_unavailable");
+  const windows = [...windowKeys].sort().map(windowKey => ({
+    key: windowKey,
+    lowerMs: Date.parse(`${windowKey}T00:00:00.000Z`),
+    upperMs: Date.parse(`${windowKey}T00:00:00.000Z`) + ACCOUNTING_WINDOW_MS,
+  }));
   const scan = createLocalIndexAccountingScan({ indexFile });
-  const rows = [];
-  for (const windowKey of [...windowKeys].sort()) {
+  const accumulators = new Map();
+  for (const run of contiguousRuns(windows)) {
     if (signal?.aborted) throw new DOMException("aborted", "AbortError");
-    const lowerMs = Date.parse(`${windowKey}T00:00:00.000Z`);
-    const upperMs = lowerMs + ACCOUNTING_WINDOW_MS;
-    const built = await buildReplaySafeAccountingPeriod({
-      id: "window",
-      label: "UTC day",
-      startAt: new Date(lowerMs).toISOString(),
-      endAt: new Date(upperMs - 1).toISOString(),
+    const built = await buildAccountingPeriodAccumulatorsByDay({
+      startAt: new Date(run[0].lowerMs).toISOString(),
+      endAt: new Date(run.at(-1).upperMs - 1).toISOString(),
       scan,
       signal,
       declaredSpeedBaselines,
-      includeAccumulator,
+      // The grouped path is faster but resolves a whole rollup bucket's
+      // declared speed once at the bucket timestamp. On the owner corpus that
+      // moved a few hundred speed-provenance events across a baseline edge, so
+      // the shadow proof uses the exact per-event path until that is resolved.
+      grouped: false,
     });
+    for (const [dayStart, period] of built) accumulators.set(dayStart, period);
     const current = readLocalIndexGenerationIdentity({ indexFile });
     if (current === null || String(current.id) !== String(generation.id)
         || current.fingerprint !== generation.fingerprint
         || current.calculationRevision !== generation.calculationRevision) {
       throw fixedError("accounting_window_generation_changed");
     }
-    const row = {
-      key: windowKey,
-      lowerMs,
-      upperMs,
-      rowDigest: digest({ key: windowKey, lowerMs, upperMs, period: built.period }, key),
-    };
-    if (includePeriod) row.period = built.period;
-    if (includeAccumulator) row.accumulator = built.accumulator;
-    rows.push(row);
-    await yieldTurn();
   }
+  const rows = windows.map(window => {
+    const accumulator = accumulators.get(window.lowerMs)
+      ?? createAccountingPeriodAccumulator("window", "UTC day");
+    const period = finalizeAccountingPeriodAccumulator(accumulator);
+    const row = {
+      key: window.key,
+      lowerMs: window.lowerMs,
+      upperMs: window.upperMs,
+      rowDigest: digest({
+        key: window.key, lowerMs: window.lowerMs, upperMs: window.upperMs, period,
+      }, key),
+    };
+    if (includePeriod) row.period = period;
+    if (includeAccumulator) row.accumulator = accumulator;
+    return row;
+  });
   return {
     schemaVersion: 1,
     generation: String(generation.id),

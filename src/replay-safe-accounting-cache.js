@@ -2573,6 +2573,102 @@ export async function buildReplaySafeAccountingPeriod({
   };
 }
 
+/**
+ * Accumulate one ordered scan into per-UTC-day period accumulators.
+ *
+ * A caller that needs every day of a long range must not open one scan per
+ * day: on a cold Windows filesystem the open and snapshot cost dominates. The
+ * arithmetic is the same `eventProjection` + `addEvent` path as a single
+ * period build, and each day receives its events in the same order.
+ */
+export async function buildAccountingPeriodAccumulatorsByDay({
+  startAt,
+  endAt,
+  scan,
+  signal = null,
+  declaredSpeedBaselines = [],
+  grouped = true,
+  rss = () => process.memoryUsage().rss,
+  maximumRssBytes = null,
+} = {}) {
+  const canonicalStart = canonicalInstant(startAt);
+  const canonicalEnd = canonicalInstant(endAt);
+  if (canonicalStart === null
+      || canonicalEnd === null
+      || Date.parse(canonicalStart) > Date.parse(canonicalEnd)
+      || typeof scan !== "function"
+      || typeof grouped !== "boolean"
+      || !validAbortSignal(signal)
+      || typeof rss !== "function"
+      || (maximumRssBytes !== null
+        && (!Number.isSafeInteger(maximumRssBytes) || maximumRssBytes < 1))) {
+    throw new TypeError("Replay-safe accounting day options are invalid");
+  }
+  const baselines = Array.isArray(declaredSpeedBaselines)
+    ? declaredSpeedBaselines
+    : [];
+  const startMs = Date.parse(canonicalStart);
+  const endMs = Date.parse(canonicalEnd);
+  let effectiveMaximumRssBytes = maximumRssBytes;
+  if (effectiveMaximumRssBytes === null) {
+    const baselineRss = rss();
+    if (!Number.isSafeInteger(baselineRss) || baselineRss < 0) {
+      throw fixedError("accounting_archive_rss_measurement_invalid");
+    }
+    effectiveMaximumRssBytes = Math.min(
+      MAX_ARCHIVE_ACCOUNTING_RSS_BYTES,
+      baselineRss + ARCHIVE_ACCOUNTING_RSS_DELTA_BUDGET_BYTES,
+    );
+  }
+  const checkRuntimeMemory = () => {
+    const currentRss = rss();
+    if (!Number.isSafeInteger(currentRss) || currentRss < 0) {
+      throw fixedError("accounting_archive_rss_measurement_invalid");
+    }
+    if (currentRss > effectiveMaximumRssBytes) {
+      throw fixedError("accounting_archive_rss_limit_exceeded");
+    }
+  };
+  checkRuntimeMemory();
+  const periods = new Map();
+  const price = createAccountingPricer();
+  let acceptedEvents = 0;
+  const accept = (rawEvent) => {
+    throwIfAborted(signal);
+    const observedAt = canonicalInstant(rawEvent?.timestamp);
+    if (observedAt === null) return;
+    const observedMs = Date.parse(observedAt);
+    if (observedMs < startMs || observedMs > endMs) return;
+    const event = eventProjection(rawEvent, price);
+    if (event === null) return;
+    event.declaredSpeed = event.speed === "unknown"
+      ? declaredSpeedModeAt(baselines, observedMs) ?? "unknown"
+      : "unknown";
+    const dayStart = Math.floor(observedMs / 86_400_000) * 86_400_000;
+    let period = periods.get(dayStart);
+    if (period === undefined) {
+      period = newPeriod("window", "UTC day");
+      periods.set(dayStart, period);
+    }
+    addEvent(period, event);
+    acceptedEvents += 1;
+    if (acceptedEvents % ACCOUNTING_RSS_CHECK_INTERVAL === 0) {
+      checkRuntimeMemory();
+    }
+  };
+  await scan({
+    startAt: canonicalStart,
+    endAt: canonicalEnd,
+    signal,
+    usageAttribution: "none",
+    onUsage: accept,
+    ...(grouped ? { onUsageGroup: accept } : {}),
+  });
+  throwIfAborted(signal);
+  checkRuntimeMemory();
+  return periods;
+}
+
 function mergeProjectedUsd(target, source) {
   const incoming = PROJECTED_USD.get(source);
   if (incoming === undefined) return;

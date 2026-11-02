@@ -26,8 +26,8 @@ function fixedError(code) {
 /**
  * Fold pre-built UTC-day accumulators into the four cached periods. A range
  * that is not day-aligned recomputes at most its two edge days; interior days
- * are merged from the map. This is a shadow proof helper: it does not persist
- * or install the folded rows.
+ * are merged from the map. `edgeToleranceMs` reproduces the shipping period
+ * pass's five-minute late-event tail; history remains strict.
  */
 export async function buildAccountingRollingPeriods({
   indexFile,
@@ -36,6 +36,7 @@ export async function buildAccountingRollingPeriods({
   scan = null,
   declaredSpeedBaselines = [],
   includeHistory = false,
+  historyEndMs = endMs,
   signal = null,
 } = {}) {
   if (typeof indexFile !== "string" || indexFile.length === 0) {
@@ -53,9 +54,15 @@ export async function buildAccountingRollingPeriods({
   if (typeof includeHistory !== "boolean") {
     throw new TypeError("accounting rolling includeHistory must be boolean");
   }
+  if (!Number.isSafeInteger(historyEndMs) || historyEndMs < endMs) {
+    throw new TypeError("accounting rolling historyEndMs is invalid");
+  }
   const reader = scan ?? createLocalIndexAccountingScan({ indexFile });
   const days = new Map(dayAccumulators);
   const fragments = new Map();
+  // Capture the known history beginning before rolling-period edge builds add
+  // empty days to the working map.
+  const historyStartMs = [...days.keys()].sort((left, right) => left - right)[0] ?? null;
 
   const buildRange = async (startMs, finishMs) => {
     const built = await buildReplaySafeAccountingPeriod({
@@ -93,14 +100,22 @@ export async function buildAccountingRollingPeriods({
       mergeAccountingPeriodAccumulator(target, await getFragment(startMs, finishMs));
     } else {
       if (startMs === first) {
-        if (days.has(first)) mergeAccountingPeriodAccumulator(target, await getDay(first));
-      } else mergeAccountingPeriodAccumulator(target, await getFragment(startMs, first + DAY_MS - 1));
+        mergeAccountingPeriodAccumulator(target, await getDay(first));
+      } else {
+        mergeAccountingPeriodAccumulator(
+          target, await getFragment(startMs, first + DAY_MS - 1),
+        );
+      }
       for (let at = first + DAY_MS; at < last; at += DAY_MS) {
-        if (days.has(at)) mergeAccountingPeriodAccumulator(target, await getDay(at));
+        mergeAccountingPeriodAccumulator(target, await getDay(at));
       }
       if (finishMs === last + DAY_MS - 1) {
-        if (days.has(last)) mergeAccountingPeriodAccumulator(target, await getDay(last));
-      } else mergeAccountingPeriodAccumulator(target, await getFragment(last, finishMs));
+        mergeAccountingPeriodAccumulator(target, await getDay(last));
+      } else {
+        mergeAccountingPeriodAccumulator(
+          target, await getFragment(last, finishMs),
+        );
+      }
     }
     return finalizeAccountingPeriodAccumulator(target);
   };
@@ -115,12 +130,9 @@ export async function buildAccountingRollingPeriods({
   }
   let history = null;
   if (includeHistory) {
-    const starts = [...days.keys()].sort((left, right) => left - right);
-    if (starts.length === 0) {
-      history = await fold("history", "Indexed history", endMs, endMs);
-    } else {
-      history = await fold("history", "Indexed history", starts[0], endMs);
-    }
+    history = await fold(
+      "history", "Indexed history", historyStartMs ?? endMs, historyEndMs,
+    );
   }
   return { periods, history, dayAccumulators: days };
 }

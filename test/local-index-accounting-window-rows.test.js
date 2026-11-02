@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createWorkspace } from "./helpers/local-index-facts.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
+import { rebuildRollups } from "../src/local-index-rollup.js";
 import { createAccountingWindowReceipts } from "../src/local-index-accounting-windows.js";
 import { buildAccountingWindowRows } from "../src/local-index-accounting-window-rows.js";
 
@@ -60,6 +61,9 @@ test("only the changed day's derived row digest moves", async t => {
       .get(Date.parse(`${keys[0]}T00:00:00.000Z`), Date.parse(`${keys[0]}T00:00:00.000Z`) + 86_400_000);
     database.prepare(`UPDATE usage_event SET tokens_out_text = COALESCE(tokens_out_text, 0) + 1
       WHERE source_id = ? AND source_offset = ?`).run(target.source_id, target.source_offset);
+    // Production never rewrites token evidence directly; when a correction
+    // does, the owned rollup rebuild keeps the grouped read path in step.
+    rebuildRollups(database);
   } finally {
     database.close();
   }
