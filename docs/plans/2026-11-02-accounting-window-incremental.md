@@ -62,16 +62,19 @@ manifests, or missing ranges fall back to a full receipt scan.
 A protected-copy rehearsal on a 251-day, 1.04M-fact index matched the shipping
 24h/7d/30d/all periods and history exactly: the full build took about 421
 seconds and the shadow build about 263 seconds at 273 MiB RSS; the stored
-snapshot was 8.57 MB. The exact path currently prices individual events; a
+snapshot was 8.57 MB. A same-anchor no-change update took about 0.24 seconds,
+but folding the stored days at a new five-minute anchor took about 51 seconds
+because the rolling fold still scans up to five edge fragments. The refresh
+runner therefore maintains an existing shadow cache only on a rebuilt
+accounting result, never on reuse/time projection, and never creates the first
+251-day build inline. The exact path currently prices individual events; a
 faster rollup-bucket path moved a few hundred declared-speed provenance events
 across a baseline edge, so it is implemented but not used for the equality
-proof. The refresh runner maintains an existing shadow cache, but the first
-251-day build is deliberately not inline: it needs a background or explicit
-maintenance trigger. The shipping refresh still runs the full accounting
-rebuild, readers do not consume the window cache, and weekly/transition/
-calibration splitting, reader overlay, settings UI, and the closed
-full-rebuild enum are not implemented. No page-speed improvement is claimed
-yet.
+proof. The shipping refresh still runs the full accounting rebuild, readers do
+not consume the window cache, and weekly/transition/calibration splitting,
+reader overlay, settings UI, and the closed full-rebuild enum are not
+implemented. No page-speed improvement is claimed yet, and read-time folding is
+blocked on cheaper edge buckets.
 
 # Decisions
 

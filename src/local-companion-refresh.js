@@ -1290,7 +1290,7 @@ export function createLocalCollectorRefreshRunner({
         && unifiedIndexFile !== null
         && stateFile !== null
         && unifiedIndexSecretFile !== null
-        && accountingRefreshStatus !== "deferred"
+        && accountingRefreshStatus === "rebuilt"
         && !accountingRetainedGeneration
         && signal?.aborted !== true) {
       try {
@@ -1309,6 +1309,8 @@ export function createLocalCollectorRefreshRunner({
             // The first 251-day build is a one-time maintenance pass. Doing it
             // inline here would add several minutes to an already long cold
             // refresh; the refresh maintains an existing shadow cache only.
+            // Reuse/time-projection cycles skip the shadow because their fact
+            // set is unchanged and folding every five minutes is pure work.
             allowCreate: false,
             signal,
             now: clock,

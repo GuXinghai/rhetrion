@@ -62,7 +62,9 @@ function validateCache(cache) {
 function dayMap(cache) {
   const map = new Map();
   for (const day of cache.days) {
-    map.set(day.lowerMs, importAccountingPeriodAccumulator(day.snapshot));
+    map.set(day.lowerMs, importAccountingPeriodAccumulator(day.snapshot, {
+      trusted: true,
+    }));
   }
   return map;
 }
