@@ -11,6 +11,7 @@ import {
 import { buildAccountingRollingPeriods } from "./local-index-accounting-window-fold.js";
 import { readLocalIndexGenerationIdentity } from "./local-index-companion-source.js";
 import {
+  createAccountingPeriodAccumulator,
   exportAccountingPeriodAccumulator,
   finalizeAccountingPeriodAccumulator,
   importAccountingPeriodAccumulator,
@@ -139,6 +140,27 @@ async function fold(cache, {
   return cache;
 }
 
+function buildDaysFromAccumulators({ receipts, dayAccumulators, hmacKey }) {
+  return receipts.windows.map(window => {
+    const accumulator = dayAccumulators.get(window.lowerMs)
+      ?? createAccountingPeriodAccumulator("window", "UTC day");
+    const period = finalizeAccountingPeriodAccumulator(accumulator);
+    return {
+      key: window.key,
+      lowerMs: window.lowerMs,
+      upperMs: window.upperMs,
+      rowDigest: accountingWindowRowDigest({
+        key: window.key,
+        lowerMs: window.lowerMs,
+        upperMs: window.upperMs,
+        period,
+        hmacKey,
+      }),
+      snapshot: exportAccountingPeriodAccumulator(accumulator),
+    };
+  }).sort((left, right) => left.lowerMs - right.lowerMs);
+}
+
 async function buildDays({ indexFile, keys, hmacKey, declaredSpeedBaselines, signal }) {
   if (keys.length === 0) return [];
   const built = await buildAccountingWindowRows({
@@ -168,20 +190,26 @@ export async function createAccountingWindowCache({
   receipts,
   hmacKey,
   declaredSpeedBaselines = [],
+  dayAccumulators = null,
   endMs = null,
   signal = null,
   now = () => Date.now(),
 } = {}) {
+  if (dayAccumulators !== null && !(dayAccumulators instanceof Map)) {
+    throw new TypeError("accounting window cache dayAccumulators must be a Map or null");
+  }
   assertAccountingWindowReceipts(receipts, { hmacKey });
   assertReceiptBaselines(receipts, declaredSpeedBaselines);
   const identity = readLocalIndexGenerationIdentity({ indexFile });
   if (identity === null || identity.calculationRevision !== receipts.calculationRevision) {
     throw fixedError("accounting_window_cache_generation_changed");
   }
-  const days = await buildDays({
-    indexFile, keys: receipts.windows.map(window => window.key),
-    hmacKey, declaredSpeedBaselines, signal,
-  });
+  const days = dayAccumulators !== null && dayAccumulators.size > 0
+    ? buildDaysFromAccumulators({ receipts, dayAccumulators, hmacKey })
+    : await buildDays({
+      indexFile, keys: receipts.windows.map(window => window.key),
+      hmacKey, declaredSpeedBaselines, signal,
+    });
   const cache = {
     schemaVersion: ACCOUNTING_WINDOW_CACHE_VERSION,
     basisFingerprint: receipts.basisFingerprint,

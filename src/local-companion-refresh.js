@@ -1053,6 +1053,7 @@ export function createLocalCollectorRefreshRunner({
     let accountingRefreshStatus = null;
     let accountingRetainedGeneration = false;
     let accountingRebuildDeferred = null;
+    let capturedDayAccumulators = null;
     let accountingUnavailableCode = accountingMayRun
         && !unifiedAccountingReady
       ? unifiedIndex?.status === "failed"
@@ -1186,6 +1187,9 @@ export function createLocalCollectorRefreshRunner({
             contextBehavior: "source_native",
             declaredSpeedBaselines,
             unknownSpeedPolicy,
+            onDayAccumulators: (map) => {
+              if (map instanceof Map && map.size > 0) capturedDayAccumulators = map;
+            },
             signal,
             onTiming,
             monotonicClock,
@@ -1306,16 +1310,17 @@ export function createLocalCollectorRefreshRunner({
               ? accounting.periods
               : null,
             expectedHistory: accounting.history?.period ?? null,
-            // The first 251-day build is a one-time maintenance pass. Doing it
-            // inline here would add several minutes to an already long cold
-            // refresh; the refresh maintains an existing shadow cache only.
-            // A reuse/time-projection cycle now folds the persisted days in
-            // about a second, so it can keep the shadow anchored and audited.
-            allowCreate: false,
+            // A full rebuild can hand over its per-day accumulators from the
+            // same fused history read, so creating the first window cache no
+            // longer needs a second 251-day scan. Without that handoff only an
+            // existing cache is maintained.
+            dayAccumulators: capturedDayAccumulators,
+            allowCreate: capturedDayAccumulators !== null,
             allowFullRebuild: false,
             signal,
             now: clock,
           }));
+        capturedDayAccumulators = null;
         if (onAccountingWindowShadow !== null) {
           try {
             await onAccountingWindowShadow(shadow);

@@ -4714,6 +4714,58 @@ test("a rebuilt accounting result maintains the shadow window cache once", async
   assert.equal(shadowArgs.expectedHistory.events, 2);
 });
 
+test("a rebuilt accounting pass hands its day accumulators to the shadow cache", async () => {
+  let shadowArgs = null;
+  const generation = {
+    id: 14,
+    fingerprint: "u".repeat(64),
+    status: "complete",
+    discoveryComplete: true,
+    diagnosticsComplete: true,
+    usageProvenanceComplete: true,
+    sourceOrderComplete: true,
+    quotaProvenanceComplete: true,
+    toolProvenanceComplete: true,
+  };
+  const dayAccumulators = new Map([[0, { synthetic: true }]]);
+  const runner = createLocalCollectorRefreshRunner({
+    stateFile: "/private/collector.sqlite",
+    unifiedIndexFile: "/private/local-unified-index-v1.sqlite",
+    unifiedIndexSecretFile: "/private/device-salt",
+    selectAccountObservationSecret: () => ({ loadAccountObservationSecret: null }),
+    runCollector: async () => ({
+      rolloutRecordsWritten: 1,
+      filesDiscovered: 1,
+      refresh: { attempted: true, recordWritten: true, errorCode: null },
+      indexing: COMPLETE_INDEX,
+    }),
+    refreshUnifiedIndex: async () => ({ status: "ingested", generation }),
+    refreshAccounting: async options => {
+      options.onDayAccumulators(dayAccumulators);
+      return {
+        generatedAt: "2026-07-23T12:00:00.000Z",
+        coveredAt: {
+          startAt: "2026-06-23T00:00:00.000Z",
+          endAt: "2026-07-23T12:00:00.000Z",
+        },
+        periods: [{ id: "7d", events: 1 }],
+        history: { period: { id: "history", events: 2 } },
+        diagnostics: {},
+        unknownSpeedPolicy: { mode: "standard", customFastRatioBps: null },
+        sourceDescriptor: { fallbackCount: 0 },
+      };
+    },
+    runAccountingWindowShadow: async args => {
+      shadowArgs = args;
+      return { status: "created" };
+    },
+  });
+  const result = await runner();
+  assert.equal(result.accounting.refreshStatus, "rebuilt");
+  assert.equal(shadowArgs.allowCreate, true);
+  assert.equal(shadowArgs.dayAccumulators, dayAccumulators);
+});
+
 test("a cancelled shadow pass does not fail a published accounting rebuild", async () => {
   const generation = {
     id: 13,

@@ -82,6 +82,49 @@ test("shadow window periods equal the shipping full accounting periods", async t
   assert.deepEqual(windowCache.history, full.history.period);
 });
 
+test("full-rebuild day accumulators seed the window cache exactly", async t => {
+  const workspace = createWorkspace({
+    files: 2, events: 300, days: 35, fillerBytesPerEvent: 0,
+  });
+  t.after(() => workspace.cleanup());
+  const indexFile = join(workspace.state, "index.sqlite");
+  await refreshLocalIndex({
+    codexHome: workspace.codexHome, indexFile,
+    secretFile: workspace.secretFile, workerCount: 1,
+  });
+  const midMs = Date.parse("2026-09-01T12:06:14.356Z");
+  const declaredSpeedBaselines = [{
+    mode: "standard",
+    firstSeenAt: new Date(midMs - 20 * 86_400_000).toISOString(),
+    lastSeenAt: new Date(midMs - 86_400_000).toISOString(),
+  }];
+  const receipts = await createAccountingWindowReceipts({
+    indexFile, hmacKey: KEY, declaredSpeedBaselines, now: () => midMs,
+  });
+  const generation = (await readLocalIndexCompanionProjection({
+    indexFile, nowMs: midMs,
+  })).generation;
+  let dayAccumulators = null;
+  const full = await buildReplaySafeAccountingCache({
+    sourceMode: "unified",
+    expectedGeneration: generation,
+    now: () => midMs,
+    codexHome: workspace.codexHome,
+    scan: createLocalIndexAccountingScan({ indexFile }),
+    calibrationSource: localIndexCalibrationSource({ indexFile }),
+    windowDays: 365,
+    declaredSpeedBaselines,
+    onDayAccumulators: map => { dayAccumulators = map; },
+  });
+  assert.ok(dayAccumulators instanceof Map && dayAccumulators.size > 0);
+  const windowCache = await createAccountingWindowCache({
+    indexFile, receipts, hmacKey: KEY, endMs: midMs,
+    declaredSpeedBaselines, dayAccumulators, now: () => midMs,
+  });
+  assert.deepEqual(windowCache.periods, full.periods);
+  assert.deepEqual(windowCache.history, full.history.period);
+});
+
 test("a mid-day anchor folds exact edge fragments", async t => {
   const workspace = createWorkspace({
     files: 2, events: 300, days: 35, fillerBytesPerEvent: 0,

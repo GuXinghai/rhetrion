@@ -62,9 +62,13 @@ manifests, or missing ranges fall back to a full receipt scan.
 A protected-copy rehearsal on 2026-11-02 (Windows x64, Node.js 22.21.1,
 branch `refactor/local-index-v11-impact-projections`) on a 251-day, 1.04M-fact
 index matched the shipping 24h/7d/30d/all periods and history exactly: the full
-build took about 421 seconds; the shadow build took about 210 seconds on the
-first cold-cache pass and about 69 seconds on a warm-cache repeat, at 264-279
-MiB RSS. The stored snapshot was 8.59 MB. A same-anchor no-change update with
+build took about 421 seconds cold and about 76 seconds warm. The first shadow
+build took about 210 seconds cold and about 69 seconds warm before the seed
+handoff. After the full rebuild began handing over its per-day accumulators from
+the same fused history read, the first cache needed only about 9 seconds for
+receipts and 1.7 seconds for the day snapshots/fold, with periods and history
+still exact; no second 251-day scan is performed. The handoff keeps roughly 251
+day accumulators in memory during the rebuild. The stored snapshot was 8.59 MB. A same-anchor no-change update with
 all 251 day output digests verified took about 0.6 seconds. After treating absent
 days inside the receipt range as known empty, a new-anchor fold over the 251
 stored days took about 1.1 seconds and 4 scans instead of rebuilding every
@@ -72,18 +76,19 @@ missing interior day; the end-to-end five-minute advance was about 2.2 seconds
 including receipt verification and day-digest checks. A declared-baseline
 extension forced a full receipt scan but rebuilt only the one affected day and
 still matched the shipping periods. The refresh runner maintains an existing
-shadow cache on rebuilt and reuse/time-projection cycles, but never creates the
-first 251-day build inline; a global basis change is deferred (`allowFullRebuild:
-false`) to a maintenance pass rather than adding a full shadow rebuild to the
-foreground refresh. The exact path currently prices individual events;
-a faster rollup-bucket path moved a few hundred declared-speed provenance
-events across a baseline edge, so it is implemented but not used for the
-equality proof. The shipping refresh still runs the full accounting rebuild,
-readers do not consume the window cache, and weekly/transition/calibration
-splitting, reader overlay, settings UI, and the closed full-rebuild enum are not
-implemented. No page-speed improvement is claimed yet; the remaining costs are
-the initial 251-day day build, full receipt scans after unsafe changes, and the
-shipping rebuild itself.
+shadow cache on rebuilt and reuse/time-projection cycles, and creates the first
+cache only when the full rebuild hands over its day accumulators. A global
+basis change is deferred (`allowFullRebuild: false`) to a maintenance pass
+rather than adding a full shadow rebuild to the foreground refresh. The exact
+path currently prices individual events; a faster rollup-bucket path moved a
+few hundred declared-speed provenance events across a baseline edge, so it is
+implemented but not used for the equality proof. The shipping refresh still
+runs the full accounting rebuild, readers do not consume the window cache, and
+weekly/transition/calibration splitting, reader overlay, settings UI, and the
+closed full-rebuild enum are not implemented. No page-speed improvement is
+claimed yet; the remaining costs are receipt scans after unsafe changes, the
+full shipping rebuild, and the calibration/weekly/transition work that still
+runs inside it.
 
 # Decisions
 

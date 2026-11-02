@@ -81,6 +81,7 @@ export async function refreshAccountingWindowShadow({
   expectedHistory = null,
   allowCreate = true,
   allowFullRebuild = true,
+  dayAccumulators = null,
   signal = null,
   now = () => Date.now(),
   readCache = readLocalCollectorAccountingWindowCache,
@@ -100,6 +101,9 @@ export async function refreshAccountingWindowShadow({
   }
   if (typeof allowFullRebuild !== "boolean") {
     throw new TypeError("accounting window shadow allowFullRebuild must be boolean");
+  }
+  if (dayAccumulators !== null && !(dayAccumulators instanceof Map)) {
+    throw new TypeError("accounting window shadow dayAccumulators must be a Map or null");
   }
   if (!Array.isArray(declaredSpeedBaselines)) {
     throw new TypeError("accounting window shadow baselines are invalid");
@@ -222,6 +226,7 @@ export async function refreshAccountingWindowShadow({
       receipts,
       hmacKey: key,
       declaredSpeedBaselines,
+      dayAccumulators,
       endMs,
       signal,
       now,

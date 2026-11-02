@@ -4058,6 +4058,10 @@ export async function buildReplaySafeAccountingCache({
   // content-free work counters (row and attribution-read counts) once the
   // corpus has been fully consumed.
   onCalibrationCorpusMetrics = null,
+  // Optional shadow handoff: the same fused history read that fills the
+  // shipping history period can also hand over per-UTC-day accumulators. The
+  // callback sees a Map keyed by UTC day start. It never changes the cache.
+  onDayAccumulators = null,
   onTiming = null,
   monotonicClock = undefined,
 } = {}) {
@@ -4069,6 +4073,10 @@ export async function buildReplaySafeAccountingCache({
       || typeof calibrationSource !== "object"
       || typeof calibrationSource.open !== "function") {
     throw fixedError("accounting_calibration_source_required");
+  }
+  if (onDayAccumulators !== null
+      && typeof onDayAccumulators !== "function") {
+    throw new TypeError("onDayAccumulators must be a function or null");
   }
   if (onCalibrationCorpusMetrics !== null
       && typeof onCalibrationCorpusMetrics !== "function") {
@@ -4204,6 +4212,17 @@ export async function buildReplaySafeAccountingCache({
   // below. The accumulation mirrors buildReplaySafeAccountingPeriod exactly,
   // metered at the same ceiling with the archive's HARD failure policy.
   const historyPeriod = newPeriod("history", "Indexed history");
+  const dayAccumulators = onDayAccumulators === null ? null : new Map();
+  const addDayEvent = (event, observedMs) => {
+    if (dayAccumulators === null) return;
+    const dayStart = Math.floor(observedMs / 86_400_000) * 86_400_000;
+    let period = dayAccumulators.get(dayStart);
+    if (period === undefined) {
+      period = newPeriod("window", "UTC day");
+      dayAccumulators.set(dayStart, period);
+    }
+    addEvent(period, event);
+  };
   let historyAcceptedEvents = 0;
   let historyStarted = false;
   const checkHistoryRuntimeMemory = () => {
@@ -4223,16 +4242,22 @@ export async function buildReplaySafeAccountingCache({
     }
     const observedAt = canonicalInstant(rawEvent?.timestamp);
     if (observedAt === null) return;
+    const observedMs = Date.parse(observedAt);
     let event = rawEvent[PROJECTED_EVENT];
     if (event === undefined) {
       event = eventProjection(rawEvent, price);
       if (event === null) return;
-      const observedMs = Date.parse(observedAt);
       event.declaredSpeed = event.speed === "unknown"
         ? declaredSpeedModeAt(baselines, observedMs) ?? "unknown"
         : "unknown";
     }
     addEvent(historyPeriod, event);
+    // The windowed consumer already owns days inside [startMs, endMs]; the
+    // fused history read fills older days and the tail after endMs without
+    // counting the same event twice.
+    if (observedMs < startMs || observedMs > endMs) {
+      addDayEvent(event, observedMs);
+    }
     historyAcceptedEvents += 1;
     if (historyAcceptedEvents % ACCOUNTING_RSS_CHECK_INTERVAL === 0) {
       checkHistoryRuntimeMemory();
@@ -4272,6 +4297,7 @@ export async function buildReplaySafeAccountingCache({
           });
         }
         observeScannedRow();
+        addDayEvent(event, observedMs);
         if (event.isSpark) {
           for (const [id, period] of periods) {
             if (observedMs >= starts[id]) addEvent(period, event);
@@ -4656,6 +4682,14 @@ export async function buildReplaySafeAccountingCache({
   );
   const paceForecast = projectWeeklyPaceForecast(weeklyPaceSnapshots, endMs);
   throwIfAborted(signal);
+  if (onDayAccumulators !== null && dayAccumulators !== null) {
+    // This is shadow evidence. It must never change the shipping result.
+    try {
+      onDayAccumulators(dayAccumulators);
+    } catch {
+      /* the optional shadow consumer owns its own failure */
+    }
+  }
   const cache = {
     schemaVersion: REPLAY_SAFE_ACCOUNTING_SCHEMA_VERSION,
     unknownSpeedPolicy,
