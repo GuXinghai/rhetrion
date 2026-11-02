@@ -1082,12 +1082,18 @@ export function mountWorkUsageView(options = {}) {
       if (!detail) open.setAttribute("aria-haspopup", "dialog");
       open.disabled = retainedReport();
       const value = byCost ? (row.costUsdExact === null ? null : Number(row.costUsdExact)) : row.tokens;
-      const amount = el("span", "work-usage-rank-amount", byCost ? `${formatApiMoney(row.costUsdExact, { trailingSymbol: true })}${row.priceStatus === "partial" ? tr("amountPartial") : ""}` : quantity(row.tokens));
+      const amount = el("span", "work-usage-rank-amount", byCost
+        ? formatApiMoney(row.costUsdExact, { trailingSymbol: true })
+        : quantity(row.tokens));
       const share = formatSharePercent(value, total);
       const number = el("span", "work-usage-rank-number");
       number.append(amount);
-      if (byCost ? row.priceStatus === "unpriced" : row.incompleteEvents > 0)
-        number.append(el("small", "work-usage-muted", tr(row.priceStatus === "unpriced" && byCost ? "unpriced" : "partial")));
+      const amountNote = byCost
+        ? row.priceStatus === "unpriced" ? "unpriced"
+          : row.priceStatus === "partial" ? "partial" : null
+        : row.incompleteEvents > 0 ? "partial" : null;
+      if (amountNote)
+        number.append(el("small", "work-usage-muted", tr(amountNote)));
       const track = el("span", "work-usage-rank-track");
       track.setAttribute("aria-hidden", "true");
       if (value !== null && total > 0) {
@@ -2181,8 +2187,16 @@ export function mountWorkUsageView(options = {}) {
       );
       scope.control.value = result.scope;
       scope.wrapper.hidden = Boolean(result.retained) || result.scopes.length < 2;
-      for (const control of [views, sort.wrapper, model.wrapper, scope.wrapper, form])
-        control.inert = Boolean(result.retained);
+      // Saved rows stay read-only, but a named saved report with a pending
+      // replacement can still accept filters: each change starts a new query
+      // against the replacement snapshot. Anonymous saved reports keep search
+      // disabled because they have no names to search.
+      const retained = Boolean(result.retained);
+      const replacementPending = retained && result.refreshing === true;
+      for (const control of [views, sort.wrapper, model.wrapper])
+        control.inert = retained && !replacementPending;
+      scope.wrapper.inert = retained;
+      form.inert = retained && (!replacementPending || result.namesAvailable === false);
       body.hidden = false;
       const retainForInactive = !visible() && (background || needsLeaseValidation);
       if (retainForInactive) needsLeaseValidation = true;

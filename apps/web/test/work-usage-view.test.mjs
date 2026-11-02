@@ -1189,6 +1189,19 @@ test("coverage notices only show below 95 percent without repeated partial label
   }
 });
 
+test("partial API-equivalent rows use the localized partial label", async (t) => {
+  const response = structuredClone(PROJECT_ROWS_RESPONSE);
+  response.rows[0].priceStatus = "partial";
+  const mounted = mountedLeaseRoot();
+  const view = mountWorkUsageView({ ...mounted, compact: true, t: mountedTranslator,
+    fetchRef: async () => httpResponse(response) });
+  t.after(() => view.destroy());
+  await settleMountedView();
+  const numbers = [...mounted.root.querySelectorAll(".work-usage-rank-number")];
+  assert.ok(numbers.some(node => node.textContent.includes("Partial data")));
+  assert.doesNotMatch(mounted.root.textContent, /amountPartial/u);
+});
+
 test("name search keeps the report snapshot and nested filter, and clearing restores project view", async () => {
   const clock = mountedLeaseRoot();
   const { root, windowRef } = clock; const requests = [];
@@ -2256,6 +2269,34 @@ test("first load shows anonymous saved figures while polling the replacement sna
   assert.doesNotMatch(root.textContent, /Saved report|names will return/);
   assert.equal(findMounted(root, node => node.tagName === "FORM")[0].inert, false);
   assert.equal([...harness.timers.values()].some(timer => timer.delay === 750), false);
+});
+
+test("named saved reports keep search and model selection usable while the replacement is pending", async (t) => {
+  const harness = mountedLeaseRoot();
+  const { root, windowRef } = harness;
+  const calls = [];
+  const replacement = { ...PROJECT_ROWS_RESPONSE, snapshotId: "pending-report" };
+  const view = mountWorkUsageView({ ...harness, t: mountedTranslator,
+    fetchRef: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return httpResponse(calls.length === 1 ? retainedResponse({ namesAvailable: true }) : replacement);
+    },
+  });
+  t.after(() => view.destroy());
+  await settleMountedView();
+  const body = root.children.at(-1);
+  const form = findMounted(root, node => node.tagName === "FORM")[0];
+  const modelWrapper = findMounted(root, node => node.tagName === "LABEL"
+    && node.classList.contains("work-usage-select") && node.textContent.startsWith("Model"))[0];
+  assert.equal(body.inert, true, "saved rows remain read-only while the replacement is pending");
+  assert.equal(form.inert, false, "search remains available during the replacement");
+  assert.equal(modelWrapper.inert, false, "model selection remains available during the replacement");
+  const model = findMounted(modelWrapper, node => node.tagName === "SELECT")[0];
+  model.value = "model-mounted";
+  model.dispatchEvent({ type: "change" });
+  await settleMountedView();
+  assert.equal(calls.at(-1).snapshotId, "pending-report");
+  assert.equal(calls.at(-1).model, "model-mounted");
 });
 
 test("saved in-memory reports retain names and failures remain visible without polling", async (t) => {
