@@ -1,5 +1,5 @@
 import { DEFAULT_UNKNOWN_SPEED_POLICY, validateUnknownSpeedPolicy, unknownSpeedScenario, unknownSpeedCalculationIdentity, unknownSpeedCalibrationOptions, mixUnknownSpeedUsd } from "./unknown-speed-policy.js";
-import { speedApiPrice, addSpeedApiCost, speedApiCostSummary, mergeSpeedApiCost } from "./speed-api-cost.js";
+import { speedApiPrice, addSpeedApiCost, speedApiCostSummary, mergeSpeedApiCost, exportSpeedApiCost, importSpeedApiCost } from "./speed-api-cost.js";
 import { createLocalRefreshTimer } from "./local-refresh-timing.js";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -2720,6 +2720,140 @@ export function mergeAccountingPeriodAccumulator(target, source) {
 /** Finalize an internal accumulator exactly once. */
 export function finalizeAccountingPeriodAccumulator(period) {
   return finalizePeriod(period);
+}
+
+function collectProjected(target, path, projected) {
+  const fields = PROJECTED_USD.get(target);
+  if (fields === undefined) return;
+  for (const [key, sum] of fields) {
+    flushExactUsd(sum, "exact");
+    projected.push({ path: [...path], key, exact: sum.exact });
+  }
+}
+
+function collectSpeed(target, path, speed) {
+  const state = exportSpeedApiCost(target);
+  if (state !== null) speed.push({ path: [...path], state });
+}
+
+function collectAccumulator(period, path, projected, speed) {
+  collectProjected(period, path, projected);
+  collectSpeed(period, path, speed);
+  for (const [key, row] of Object.entries(period.componentCosts)) {
+    collectProjected(row, [...path, "componentCosts", key], projected);
+  }
+  for (const [model, row] of Object.entries(period.byModel)) {
+    const modelPath = [...path, "byModel", model];
+    collectProjected(row, modelPath, projected);
+    collectSpeed(row, modelPath, speed);
+    for (const [key, cost] of Object.entries(row.componentCosts)) {
+      collectProjected(cost, [...modelPath, "componentCosts", key], projected);
+    }
+  }
+  for (const dimension of ["bySpeed", "byApiServiceTier", "bySurface", "byAgentScope", "byLineage"]) {
+    for (const [key, row] of Object.entries(period[dimension])) {
+      collectProjected(row, [...path, dimension, key], projected);
+    }
+  }
+  for (const crossing of ["speedWeighting", "declaredSpeedWeighting"]) {
+    for (const [speedName, families] of Object.entries(period[crossing])) {
+      for (const [family, cell] of Object.entries(families)) {
+        collectProjected(cell, [...path, crossing, speedName, family], projected);
+      }
+    }
+  }
+  if (period.spark) collectAccumulator(period.spark, [...path, "spark"], projected, speed);
+}
+
+const UNSAFE_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
+
+function safePath(path) {
+  return Array.isArray(path) && path.length <= 12
+    && path.every(segment => typeof segment === "string" && segment.length > 0
+      && segment.length <= 256 && !UNSAFE_SEGMENTS.has(segment));
+}
+
+function resolveAccumulatorPath(period, path) {
+  let target = period;
+  for (const segment of path) {
+    if (!target || typeof target !== "object" || !Object.hasOwn(target, segment)) {
+      throw fixedError("accounting_period_snapshot_path_invalid");
+    }
+    target = target[segment];
+  }
+  return target;
+}
+
+function assertSafeSnapshot(value, depth = 0) {
+  if (depth > 16) throw fixedError("accounting_period_snapshot_invalid");
+  if (Array.isArray(value)) {
+    for (const item of value) assertSafeSnapshot(item, depth + 1);
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      if (UNSAFE_SEGMENTS.has(key)) throw fixedError("accounting_period_snapshot_invalid");
+      assertSafeSnapshot(item, depth + 1);
+    }
+  }
+}
+
+/**
+ * Serialize an internal period accumulator with every exact ledger that the
+ * normal finalized row only keeps in a WeakMap. This is the storage form a
+ * windowed cache needs; it is not part of the shipping cache schema yet.
+ */
+export function exportAccountingPeriodAccumulator(period) {
+  if (!period || typeof period !== "object" || Array.isArray(period)) {
+    throw new TypeError("accounting period accumulator is invalid");
+  }
+  const projected = [], speed = [];
+  collectAccumulator(period, [], projected, speed);
+  const snapshot = {
+    schemaVersion: 1,
+    period: JSON.parse(JSON.stringify(period)),
+    projected,
+    speed,
+  };
+  assertSafeSnapshot(snapshot);
+  return snapshot;
+}
+
+/** Rehydrate the exact ledgers produced by exportAccountingPeriodAccumulator. */
+export function importAccountingPeriodAccumulator(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
+      || snapshot.schemaVersion !== 1
+      || !snapshot.period || typeof snapshot.period !== "object" || Array.isArray(snapshot.period)
+      || !Array.isArray(snapshot.projected) || !Array.isArray(snapshot.speed)) {
+    throw fixedError("accounting_period_snapshot_invalid");
+  }
+  assertSafeSnapshot(snapshot);
+  const period = newPeriod("window", "UTC day");
+  Object.assign(period, structuredClone(snapshot.period));
+  for (const entry of snapshot.projected) {
+    if (!safePath(entry?.path)
+        || !["apiPriceEquivalentUsd", "costUsd"].includes(entry?.key)
+        || typeof entry.exact !== "string" || !/^\d+(?:\.\d+)?$/u.test(entry.exact)) {
+      throw fixedError("accounting_period_snapshot_invalid");
+    }
+    const target = resolveAccumulatorPath(period, entry.path);
+    let fields = PROJECTED_USD.get(target);
+    if (fields === undefined) {
+      fields = new Map();
+      PROJECTED_USD.set(target, fields);
+    }
+    let sum = fields.get(entry.key);
+    if (sum === undefined) {
+      sum = { exact: "0" };
+      fields.set(entry.key, sum);
+    }
+    sum.exact = addUsdStrings(sum.exact, entry.exact);
+  }
+  for (const entry of snapshot.speed) {
+    if (!safePath(entry?.path)) throw fixedError("accounting_period_snapshot_invalid");
+    importSpeedApiCost(resolveAccumulatorPath(period, entry.path), entry.state);
+  }
+  return period;
 }
 
 function newTimelineBucket(startMs) {

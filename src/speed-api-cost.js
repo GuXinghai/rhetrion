@@ -85,6 +85,62 @@ export function mergeSpeedApiCost(target, source) {
   }
 }
 
+export function exportSpeedApiCost(target) {
+  const state = sums.get(target);
+  if (!state) return null;
+  return {
+    sum: state.sum.toString(),
+    priced: state.priced,
+    incomplete: state.incomplete,
+    provenance: { ...state.provenance },
+    components: Object.fromEntries(Object.entries(state.components).map(([name, row]) => [name, {
+      sum: row.sum.toString(),
+      tokens: row.tokens,
+      pricedTokens: row.pricedTokens,
+      unpricedTokens: row.unpricedTokens,
+    }])),
+  };
+}
+
+export function importSpeedApiCost(target, snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
+      || typeof snapshot.sum !== "string" || !/^\d+(?:\.\d+)?$/u.test(snapshot.sum)
+      || !Number.isSafeInteger(snapshot.priced) || snapshot.priced < 0
+      || !Number.isSafeInteger(snapshot.incomplete) || snapshot.incomplete < 0
+      || !snapshot.provenance || typeof snapshot.provenance !== "object"
+      || !snapshot.components || typeof snapshot.components !== "object") {
+    throw new TypeError("speed accounting snapshot is invalid");
+  }
+  const state = {
+    sum: new ExactUsdSum(),
+    priced: snapshot.priced,
+    incomplete: snapshot.incomplete,
+    components: {},
+    provenance: {
+      observedEvents: Number(snapshot.provenance.observedEvents) || 0,
+      declaredEvents: Number(snapshot.provenance.declaredEvents) || 0,
+      unknownEvents: Number(snapshot.provenance.unknownEvents) || 0,
+    },
+  };
+  state.sum.add(snapshot.sum);
+  for (const [name, row] of Object.entries(snapshot.components)) {
+    if (!row || typeof row !== "object" || typeof row.sum !== "string"
+        || !/^\d+(?:\.\d+)?$/u.test(row.sum)
+        || !Number.isSafeInteger(row.tokens) || row.tokens < 0
+        || !Number.isSafeInteger(row.pricedTokens) || row.pricedTokens < 0
+        || !Number.isSafeInteger(row.unpricedTokens) || row.unpricedTokens < 0) {
+      throw new TypeError("speed accounting snapshot is invalid");
+    }
+    const cell = {
+      sum: new ExactUsdSum(), tokens: row.tokens,
+      pricedTokens: row.pricedTokens, unpricedTokens: row.unpricedTokens,
+    };
+    cell.sum.add(row.sum);
+    state.components[name] = cell;
+  }
+  sums.set(target, state);
+}
+
 export function speedApiCostSummary(target) {
   const state = sums.get(target);
   if (!state) return { speedApiPriceEquivalentUsd: null, speedApiPriceEquivalentUsdExact: null, speedComponentCosts: {}, speedPricingCoverageStatus: "unpriced" };

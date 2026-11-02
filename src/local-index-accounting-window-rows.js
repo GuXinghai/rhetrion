@@ -48,6 +48,7 @@ export async function buildAccountingWindowRows({
   hmacKey,
   declaredSpeedBaselines = [],
   includePeriod = false,
+  includeAccumulator = false,
   signal = null,
   now = () => Date.now(),
 } = {}) {
@@ -64,6 +65,9 @@ export async function buildAccountingWindowRows({
   }
   if (typeof includePeriod !== "boolean") {
     throw new TypeError("accounting window row includePeriod must be boolean");
+  }
+  if (typeof includeAccumulator !== "boolean") {
+    throw new TypeError("accounting window row includeAccumulator must be boolean");
   }
   if (signal?.aborted) throw new DOMException("aborted", "AbortError");
   const key = normalizeKey(hmacKey);
@@ -83,6 +87,7 @@ export async function buildAccountingWindowRows({
       scan,
       signal,
       declaredSpeedBaselines,
+      includeAccumulator,
     });
     const current = readLocalIndexGenerationIdentity({ indexFile });
     if (current === null || String(current.id) !== String(generation.id)
@@ -97,6 +102,7 @@ export async function buildAccountingWindowRows({
       rowDigest: digest({ key: windowKey, lowerMs, upperMs, period: built.period }, key),
     };
     if (includePeriod) row.period = built.period;
+    if (includeAccumulator) row.accumulator = built.accumulator;
     rows.push(row);
     await yieldTurn();
   }
