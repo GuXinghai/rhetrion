@@ -171,6 +171,8 @@ Deliverables:
   every 24 hours (default), every 3 days, and every 7 days;
 - changing the option starts the next interval from the change time and does not
   trigger an immediate refit;
+- the existing refresh action remains available and is not blocked by the
+  interval;
 - price, policy, or plan changes still calibrate immediately;
 - a repair operation for a named window or range, with receipt and audit, plus
   the ordered manual escalation;
@@ -295,10 +297,10 @@ These do not need owner input unless the audit changes the conclusion:
 # Proposed copy
 
 The settings control belongs under **Settings → Data & diagnostics**, near the
-existing refresh interval. Keep the card to one-line description and one-line
-hint; detailed failure reasons belong in diagnostics, not the settings card. The
-wording must make clear that it affects only the allowance calibration and that
-saving does not refresh immediately.
+existing refresh interval. Keep the card to one-line description and the field
+label; do not add a timing explanation. A changed interval starts the next cycle
+from the change, and the existing refresh action remains available when the user
+wants an immediate update.
 
 | Purpose | 简体中文 | English |
 |---|---|---|
@@ -306,7 +308,6 @@ saving does not refresh immediately.
 | Description | 仅影响额度折算；逐笔金额仍即时更新。 | Affects allowance estimates only; per-event amounts stay current. |
 | Field label | 校准间隔 | Calibration interval |
 | Options | 每 6 小时 / 每 12 小时 / 每 24 小时（默认） / 每 3 天 / 每 7 天 | Every 6 hours / Every 12 hours / Every 24 hours (default) / Every 3 days / Every 7 days |
-| Hint | 保存后重新计时，不立即刷新；价格或套餐变化仍立即校准。 | Resets the timer on save; no immediate refresh. Price or plan changes still calibrate immediately. |
 | Status | 上次校准 {time} · 下次 {time} | Last calibrated {time} · Next {time} |
 | Stale label | 部分数据 · 截至 {time} | Partial · as of {time} |
 | Stale explanation | 暂无法验证，显示上次正确结果。 | Can't verify this period; showing the last correct result. |
