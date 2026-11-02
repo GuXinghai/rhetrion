@@ -4709,6 +4709,52 @@ test("a rebuilt accounting result maintains the shadow window cache once", async
   assert.equal(shadowArgs.stateFile, "/private/collector.sqlite");
   assert.equal(shadowArgs.secretFile, "/private/device-salt");
   assert.equal(shadowArgs.allowCreate, false);
+  assert.equal(shadowArgs.allowFullRebuild, false);
   assert.equal(shadowArgs.endMs, Date.parse("2026-07-23T12:00:00.000Z"));
   assert.equal(shadowArgs.expectedHistory.events, 2);
+});
+
+test("a cancelled shadow pass does not fail a published accounting rebuild", async () => {
+  const generation = {
+    id: 13,
+    fingerprint: "t".repeat(64),
+    status: "complete",
+    discoveryComplete: true,
+    diagnosticsComplete: true,
+    usageProvenanceComplete: true,
+    sourceOrderComplete: true,
+    quotaProvenanceComplete: true,
+    toolProvenanceComplete: true,
+  };
+  const runner = createLocalCollectorRefreshRunner({
+    stateFile: "/private/collector.sqlite",
+    unifiedIndexFile: "/private/local-unified-index-v1.sqlite",
+    unifiedIndexSecretFile: "/private/device-salt",
+    selectAccountObservationSecret: () => ({ loadAccountObservationSecret: null }),
+    runCollector: async () => ({
+      rolloutRecordsWritten: 1,
+      filesDiscovered: 1,
+      refresh: { attempted: true, recordWritten: true, errorCode: null },
+      indexing: COMPLETE_INDEX,
+    }),
+    refreshUnifiedIndex: async () => ({ status: "ingested", generation }),
+    refreshAccounting: async () => ({
+      generatedAt: "2026-07-23T12:00:00.000Z",
+      coveredAt: {
+        startAt: "2026-06-23T00:00:00.000Z",
+        endAt: "2026-07-23T12:00:00.000Z",
+      },
+      periods: [{ id: "7d", events: 1 }],
+      history: { period: { id: "history", events: 2 } },
+      diagnostics: {},
+      unknownSpeedPolicy: { mode: "standard", customFastRatioBps: null },
+      sourceDescriptor: { fallbackCount: 0 },
+    }),
+    runAccountingWindowShadow: async () => {
+      throw new DOMException("aborted", "AbortError");
+    },
+  });
+  const result = await runner();
+  assert.equal(result.accounting.status, "replay_safe");
+  assert.equal(result.accounting.refreshStatus, "rebuilt");
 });

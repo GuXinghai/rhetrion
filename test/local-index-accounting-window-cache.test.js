@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { createWorkspace } from "./helpers/local-index-facts.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import { appendSyntheticCodexEvents } from "../src/synthetic-codex-rollout-corpus.js";
@@ -96,4 +97,27 @@ test("one appended day rebuilds only that day and still matches a full scan", as
   const expected = await fullPeriods(indexFile);
   assert.deepEqual(updated.cache.periods, expected.periods);
   assert.deepEqual(updated.cache.history, expected.history);
+});
+
+test("a generation change during the build fails closed", async t => {
+  const { indexFile, receipts } = await setup(t);
+  const input = await receipts();
+  const database = new DatabaseSync(indexFile);
+  let committed = false;
+  try {
+    await assert.rejects(createAccountingWindowCache({
+      indexFile, receipts: input, hmacKey: KEY, endMs: NOW,
+      now: () => {
+        if (!committed) {
+          database.prepare(
+            "UPDATE store_state SET calculation_revision = calculation_revision + 1 WHERE id = 1",
+          ).run();
+          committed = true;
+        }
+        return NOW;
+      },
+    }), { code: "accounting_window_cache_generation_changed" });
+  } finally {
+    database.close();
+  }
 });

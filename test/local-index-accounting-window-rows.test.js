@@ -5,7 +5,10 @@ import { DatabaseSync } from "node:sqlite";
 import { createWorkspace } from "./helpers/local-index-facts.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import { rebuildRollups } from "../src/local-index-rollup.js";
-import { createAccountingWindowReceipts } from "../src/local-index-accounting-windows.js";
+import {
+  compareAccountingWindowReceipts,
+  createAccountingWindowReceipts,
+} from "../src/local-index-accounting-windows.js";
 import { buildAccountingWindowRows } from "../src/local-index-accounting-window-rows.js";
 
 const KEY = "synthetic-window-key";
@@ -90,4 +93,48 @@ test("window rows require a key and a bounded unique key set", async t => {
   await assert.rejects(buildAccountingWindowRows({
     indexFile, windowKeys: ["2026-02-30"], hmacKey: KEY,
   }), { name: "TypeError" });
+});
+
+test("a zero-token committed row dirties the receipt but not the period", async t => {
+  const { indexFile, keys } = await fixture(t);
+  const beforeReceipts = await createAccountingWindowReceipts({
+    indexFile, hmacKey: KEY, now: () => NOW,
+  });
+  const before = await buildAccountingWindowRows({
+    indexFile, windowKeys: [keys[0]], hmacKey: KEY, now: () => NOW, includePeriod: true,
+  });
+  const database = new DatabaseSync(indexFile);
+  try {
+    const source = database.prepare(`SELECT s.id, s.scanned_bytes,
+      (SELECT MIN(u.source_offset) FROM usage_event u WHERE u.source_id = s.id) AS first_offset
+      FROM source s ORDER BY s.id LIMIT 1`).get();
+    database.prepare(`INSERT INTO usage_event(source_id, source_offset,
+      observed_at_ms, event_key, session_id, account_scope_id, model_id, tier_id,
+      surface_id, quota_observation_id, tier_observed_at_ms, reasoning_effort,
+      flags, work_directory_id, tokens_in_uncached, tokens_in_cache_read,
+      tokens_in_cache_write, tokens_out_text, tokens_out_reasoning,
+      tokens_out_combined, total_input_context)
+      SELECT source_id, ?, ?, randomblob(32), session_id, account_scope_id,
+        model_id, tier_id, surface_id, quota_observation_id, tier_observed_at_ms,
+        reasoning_effort, 0, work_directory_id, 0, 0, 0, 0, 0, 0, 0
+      FROM usage_event WHERE source_id = ?
+      ORDER BY source_offset DESC LIMIT 1`)
+      .run(Number(source.first_offset) - 1,
+        Date.parse(`${keys[0]}T12:00:00.000Z`), source.id);
+  } finally {
+    database.close();
+  }
+  const afterReceipts = await createAccountingWindowReceipts({
+    indexFile, hmacKey: KEY, now: () => NOW,
+  });
+  const comparison = compareAccountingWindowReceipts(
+    beforeReceipts, afterReceipts, { hmacKey: KEY },
+  );
+  assert.equal(comparison.basisChanged, false);
+  assert.deepEqual(comparison.changed, [keys[0]]);
+  const after = await buildAccountingWindowRows({
+    indexFile, windowKeys: [keys[0]], hmacKey: KEY, now: () => NOW, includePeriod: true,
+  });
+  assert.deepEqual(after.rows[0].period, before.rows[0].period);
+  assert.equal(after.rows[0].rowDigest, before.rows[0].rowDigest);
 });

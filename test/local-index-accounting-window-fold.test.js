@@ -35,9 +35,15 @@ test("day accumulators fold exactly into non-aligned rolling periods", async t =
     days.set(window.lowerMs, built.accumulator);
   }
   const endMs = receipts.windows.at(-1).lowerMs + 12 * 3_600_000;
+  let foldScans = 0;
+  const foldScan = options => {
+    foldScans += 1;
+    return scan(options);
+  };
   const folded = await buildAccountingRollingPeriods({
-    indexFile, endMs, dayAccumulators: days, scan, includeHistory: true,
+    indexFile, endMs, dayAccumulators: days, scan: foldScan, includeHistory: true,
   });
+  assert.ok(foldScans <= 8, `fold performed ${foldScans} scans`);
   for (const [index, period] of folded.periods.entries()) {
     const startMs = period.id === "all" ? endMs - 365 * DAY
       : endMs - (period.id === "24h" ? DAY : period.id === "7d" ? 7 * DAY : 30 * DAY);

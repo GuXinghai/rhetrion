@@ -6,6 +6,7 @@ import { createWorkspace } from "./helpers/local-index-facts.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import { appendSyntheticCodexEvents } from "../src/synthetic-codex-rollout-corpus.js";
 import {
+  compareAccountingWindowReceipts,
   createAccountingWindowReceipts,
   updateAccountingWindowReceipts,
 } from "../src/local-index-accounting-windows.js";
@@ -225,4 +226,32 @@ test("the incremental plan never exceeds its bounded window count", async t => {
   const updated = await update(before, indexFile);
   assert.equal(updated.mode, "full");
   assert.equal(updated.reason, "manifest_too_wide");
+});
+
+test("a declared speed baseline change dirties only the windows it covers", async t => {
+  const { indexFile } = await setup(t);
+  const before = await receipts(indexFile);
+  const last = before.windows.at(-1);
+  const baselines = [{
+    mode: "standard",
+    firstSeenAt: new Date(last.lowerMs).toISOString(),
+    lastSeenAt: new Date(last.upperMs - 1).toISOString(),
+  }];
+  const after = await createAccountingWindowReceipts({
+    indexFile, hmacKey: KEY, declaredSpeedBaselines: baselines, now: () => NOW,
+  });
+  const comparison = compareAccountingWindowReceipts(before, after, { hmacKey: KEY });
+  assert.equal(comparison.basisChanged, false);
+  assert.ok(comparison.changed.includes(last.key));
+  for (const key of comparison.changed) assert.equal(key, last.key);
+  const updated = await updateAccountingWindowReceipts({
+    previous: before, indexFile, hmacKey: KEY,
+    declaredSpeedBaselines: baselines, now: () => NOW,
+  });
+  assert.deepEqual({ mode: updated.mode, reason: updated.reason },
+    { mode: "full", reason: "baselines_changed" });
+  const full = await createAccountingWindowReceipts({
+    indexFile, hmacKey: KEY, declaredSpeedBaselines: baselines, now: () => NOW,
+  });
+  assert.deepEqual(full, after);
 });

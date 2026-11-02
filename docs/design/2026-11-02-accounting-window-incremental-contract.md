@@ -112,17 +112,25 @@ updates them from the durable impact manifest when every change is an ordinary
 append with a bounded time range, builds keyed derived-row digests for named UTC
 days, serializes the exact pre-finalize accumulator, and folds interior day rows
 plus at most two recomputed edge fragments into 24h/7d/30d/all and history.
-Unsafe change modes, session/lineage/coverage partitions, pruned manifests, or
-missing ranges fall back to a full receipt scan. The cache is persisted in
-owner-only collector state, but it is not wired to readers and does not replace
-the shipping rebuild. The derived-row `row_digest` is required before a reader
-consumes a window or an incremental merge trusts it; it is not inferred from
-`fact_digest`.
+Unsafe change modes, lineage/coverage partitions, pruned manifests, or missing
+ranges fall back to a full receipt scan. Declared speed-baseline coverage is
+part of each window digest: extending a baseline that covers existing unknown
+speed facts forces a full receipt scan but rebuilds only the windows whose
+digest moved. The cache is persisted in owner-only collector state, but it is
+not wired to readers and does not replace the shipping rebuild. The derived-row
+`row_digest` is required before a reader consumes a window or an incremental
+merge trusts it; it is not inferred from `fact_digest`.
 
 The receipt never contains raw facts. The input digest includes the stable
 occurrence key and only the fields that participate in accounting derivation.
 The output digest is computed over canonical serialized rows, not over object
 property order or formatting.
+
+A receipt counts every committed row in its window, including rows whose token
+components are all zero. Derived periods count only rows with a positive token
+total, so period event counts can be lower than receipt usage counts. That
+difference is explicit evidence, not a missing window, and it must not be
+reported as full reconciliation.
 
 A receipt is evidence, not authority over source facts. If a receipt is missing
 or invalid, the window is dirty or unavailable; the source facts remain the
@@ -176,6 +184,11 @@ These are expected and must never invoke a full rebuild.
 
 A source replacement that spans every window of every source is a basis-scale
 rewrite, not a normal change; it is handled by the explicit full-rebuild policy.
+
+These rules describe the shipping accounting cache. The shadow implementation
+may perform a full receipt scan for a source replacement, lineage, or coverage
+change, but it still rebuilds only the day rows whose digest moved; it does not
+replace or force a shipping full rebuild.
 
 # Proof failures
 

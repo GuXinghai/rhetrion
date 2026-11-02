@@ -60,9 +60,14 @@ export async function buildAccountingRollingPeriods({
   const reader = scan ?? createLocalIndexAccountingScan({ indexFile });
   const days = new Map(dayAccumulators);
   const fragments = new Map();
-  // Capture the known history beginning before rolling-period edge builds add
-  // empty days to the working map.
-  const historyStartMs = [...days.keys()].sort((left, right) => left - right)[0] ?? null;
+  // The day map covers the fact-bearing range. A day absent inside that range
+  // is known empty from the receipts; a day outside it has no facts to add.
+  // Capture both bounds before edge fragments can extend the working map.
+  const knownDays = [...days.keys()].sort((left, right) => left - right);
+  const historyStartMs = knownDays[0] ?? null;
+  const coveredEndMs = knownDays.length === 0
+    ? endMs
+    : knownDays.at(-1) + DAY_MS - 1;
 
   const buildRange = async (startMs, finishMs) => {
     const built = await buildReplaySafeAccountingPeriod({
@@ -79,13 +84,6 @@ export async function buildAccountingRollingPeriods({
     return built.accumulator;
   };
 
-  const getDay = async key => {
-    if (days.has(key)) return days.get(key);
-    const accumulator = await buildRange(key, key + DAY_MS - 1);
-    days.set(key, accumulator);
-    return accumulator;
-  };
-
   const getFragment = async (startMs, finishMs) => {
     const key = `${startMs}:${finishMs}`;
     if (!fragments.has(key)) fragments.set(key, await buildRange(startMs, finishMs));
@@ -94,26 +92,32 @@ export async function buildAccountingRollingPeriods({
 
   const fold = async (id, label, startMs, finishMs) => {
     const target = createAccountingPeriodAccumulator(id, label);
-    const first = dayStart(startMs);
-    const last = dayStart(finishMs);
+    const from = Math.max(startMs, historyStartMs ?? endMs);
+    const to = Math.min(finishMs, coveredEndMs);
+    if (from > to) return finalizeAccountingPeriodAccumulator(target);
+    const first = dayStart(from);
+    const last = dayStart(to);
     if (first === last) {
-      mergeAccountingPeriodAccumulator(target, await getFragment(startMs, finishMs));
+      mergeAccountingPeriodAccumulator(target, await getFragment(from, to));
     } else {
-      if (startMs === first) {
-        mergeAccountingPeriodAccumulator(target, await getDay(first));
+      if (from === first) {
+        const day = days.get(first);
+        if (day !== undefined) mergeAccountingPeriodAccumulator(target, day);
       } else {
         mergeAccountingPeriodAccumulator(
-          target, await getFragment(startMs, first + DAY_MS - 1),
+          target, await getFragment(from, first + DAY_MS - 1),
         );
       }
       for (let at = first + DAY_MS; at < last; at += DAY_MS) {
-        mergeAccountingPeriodAccumulator(target, await getDay(at));
+        const day = days.get(at);
+        if (day !== undefined) mergeAccountingPeriodAccumulator(target, day);
       }
-      if (finishMs === last + DAY_MS - 1) {
-        mergeAccountingPeriodAccumulator(target, await getDay(last));
+      if (to === last + DAY_MS - 1) {
+        const day = days.get(last);
+        if (day !== undefined) mergeAccountingPeriodAccumulator(target, day);
       } else {
         mergeAccountingPeriodAccumulator(
-          target, await getFragment(last, finishMs),
+          target, await getFragment(last, to),
         );
       }
     }

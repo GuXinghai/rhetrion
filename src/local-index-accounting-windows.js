@@ -15,10 +15,11 @@ import { stableJson } from "./export/index.js";
 // committed accounting inputs belong to the window; it is not a second fact
 // ledger and it does not yet contain derived output rows.
 export const ACCOUNTING_WINDOW_MS = 86_400_000;
-export const ACCOUNTING_WINDOW_RECEIPT_VERSION = 2;
+export const ACCOUNTING_WINDOW_RECEIPT_VERSION = 3;
 // Bumped when the hashed field order, predicate, or canonicalization changes.
-export const ACCOUNTING_WINDOW_ALGORITHM_VERSION = 3;
+export const ACCOUNTING_WINDOW_ALGORITHM_VERSION = 4;
 const DOMAIN = "rhetrion-accounting-window-v2";
+const DECLARED_SPEED_MODES = new Set(["standard", "fast", "ultrafast"]);
 const MIN_DATE_MS = Date.parse("0001-01-01T00:00:00.000Z");
 const MAX_DATE_MS = Date.parse("9999-12-31T23:59:59.999Z");
 const MAX_YIELD_EVERY = 1_000_000;
@@ -52,8 +53,9 @@ const USAGE_FIELDS = [
 const QUOTA_FIELDS = [
   "source_id", "source_offset", "slot_order", "observed_at_ms", "provider",
   "plan_type", "limit_id", "slot", "used_percent", "resets_at_ms",
-  "duration_mins", "admission", "surface_id", "source_local", "source_ordinal",
-  "surface", "thread_source", "agent_scope", "lineage_disposition",
+  "duration_mins", "admission", "surface_id", "canonical_observation_id",
+  "source_local", "source_ordinal", "surface", "thread_source", "agent_scope",
+  "lineage_disposition",
 ];
 
 const USAGE_SELECT = `SELECT
@@ -98,6 +100,7 @@ const QUOTA_SELECT = `SELECT
   q.slot AS slot, q.used_percent AS used_percent,
   q.resets_at_ms AS resets_at_ms, q.duration_mins AS duration_mins,
   q.admission AS admission, q.surface_id AS surface_id,
+  q.canonical_observation_id AS canonical_observation_id,
   hex(s.source_local) AS source_local, s.source_ordinal AS source_ordinal,
   c.surface AS surface, c.thread_source AS thread_source,
   c.agent_scope AS agent_scope, c.lineage_disposition AS lineage_disposition
@@ -134,6 +137,50 @@ function digestValue(value, key, domain) {
   // stored receipt verifiable after a JSON round-trip.
   hash.update(stableJson(value));
   return hash.digest("hex");
+}
+
+function canonicalInstantMs(value) {
+  if (typeof value !== "string" || value.length > 32) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) && new Date(ms).toISOString() === value ? ms : null;
+}
+
+/**
+ * Normalize declared speed windows into the receipt's canonical order. The
+ * windows are an accounting input: they resolve unknown-speed events to a
+ * declared mode, so a coverage change must dirty the windows it newly covers.
+ */
+export function normalizeDeclaredSpeedBaselines(value = []) {
+  if (!Array.isArray(value)) {
+    throw new TypeError("accounting window declaredSpeedBaselines is invalid");
+  }
+  const windows = value.map(row => {
+    const first = canonicalInstantMs(row?.firstSeenAt);
+    const last = canonicalInstantMs(row?.lastSeenAt);
+    if (first === null || last === null || first > last
+        || !DECLARED_SPEED_MODES.has(row?.mode)) {
+      throw new TypeError("accounting window declaredSpeedBaselines is invalid");
+    }
+    return { mode: row.mode, firstSeenAt: row.firstSeenAt, lastSeenAt: row.lastSeenAt };
+  });
+  return windows.sort((left, right) => (
+    Date.parse(left.firstSeenAt) - Date.parse(right.firstSeenAt)
+    || Date.parse(left.lastSeenAt) - Date.parse(right.lastSeenAt)
+    || left.mode.localeCompare(right.mode)
+  ));
+}
+
+function windowSpeedDigest(window, baselines, key) {
+  const covered = baselines.flatMap(row => {
+    const first = Date.parse(row.firstSeenAt);
+    const last = Date.parse(row.lastSeenAt);
+    if (last < window.lowerMs || first >= window.upperMs) return [];
+    const start = Math.max(first, window.lowerMs);
+    const end = Math.min(last, window.upperMs - 1);
+    return [{ mode: row.mode, firstSeenAt: new Date(start).toISOString(),
+      lastSeenAt: new Date(end).toISOString() }];
+  });
+  return digestValue(covered, key, `${DOMAIN}-window-speed`);
 }
 
 function windowKey(atMs) {
@@ -176,11 +223,12 @@ function hashRow(hash, row, fields) {
   hash.update("\n");
 }
 
-function finalizeWindow(window, key) {
+function finalizeWindow(window, key, baselines) {
   const usageCount = window.usageCount;
   const quotaCount = window.quotaCount;
   const usageDigest = (window.usageHash ?? createDigest(key)).digest("hex");
   const quotaDigest = (window.quotaHash ?? createDigest(key)).digest("hex");
+  const speedDigest = windowSpeedDigest(window, baselines, key);
   return {
     key: window.key,
     lowerMs: window.lowerMs,
@@ -188,6 +236,7 @@ function finalizeWindow(window, key) {
     usageCount,
     quotaCount,
     factCount: usageCount + quotaCount,
+    speedDigest,
     factDigest: digestValue({
       key: window.key,
       lowerMs: window.lowerMs,
@@ -196,6 +245,7 @@ function finalizeWindow(window, key) {
       quotaCount,
       usageDigest,
       quotaDigest,
+      speedDigest,
     }, key, `${DOMAIN}-window`),
   };
 }
@@ -213,6 +263,7 @@ function receiptForDigest(receipt) {
     calculationRevision: receipt.calculationRevision,
     lastChangeId: receipt.lastChangeId,
     manifestSinceChangeId: receipt.manifestSinceChangeId,
+    declaredSpeedBaselines: receipt.declaredSpeedBaselines,
     usageCount: receipt.usageCount,
     quotaCount: receipt.quotaCount,
     factCount: receipt.factCount,
@@ -270,7 +321,7 @@ function readBasis(database, unknownSpeedPolicy, key) {
 
 function buildReceipt({
   windows, commitSeq, calculationRevision, lastChangeId, manifestSinceChangeId,
-  basis, basisFingerprint, key, now,
+  basis, basisFingerprint, declaredSpeedBaselines, key, now,
 }) {
   const usageCount = windows.reduce((sum, window) => sum + window.usageCount, 0);
   const quotaCount = windows.reduce((sum, window) => sum + window.quotaCount, 0);
@@ -290,6 +341,7 @@ function buildReceipt({
     calculationRevision,
     lastChangeId,
     manifestSinceChangeId,
+    declaredSpeedBaselines,
     computedAtMs: Number(now()),
     usageCount,
     quotaCount,
@@ -304,7 +356,7 @@ function buildReceipt({
 }
 
 async function collectWindows(database, {
-  key, windowKeys = null, signal, yieldEvery,
+  key, windowKeys = null, signal, yieldEvery, baselines,
 }) {
   const windows = new Map();
   let processed = 0;
@@ -364,7 +416,7 @@ async function collectWindows(database, {
   }
   return [...windows.values()]
     .sort((left, right) => left.key < right.key ? -1 : left.key > right.key ? 1 : 0)
-    .map(window => finalizeWindow(window, key));
+    .map(window => finalizeWindow(window, key, baselines));
 }
 
 function validateOptions({ indexFile, allowUnkeyed, yieldEvery, signal }) {
@@ -432,6 +484,7 @@ export async function createAccountingWindowReceipts({
   hmacKey = null,
   allowUnkeyed = false,
   unknownSpeedPolicy = DEFAULT_UNKNOWN_SPEED_POLICY,
+  declaredSpeedBaselines = [],
   signal = null,
   yieldEvery = DEFAULT_YIELD_EVERY,
   now = () => Date.now(),
@@ -439,16 +492,18 @@ export async function createAccountingWindowReceipts({
   validateOptions({ indexFile, allowUnkeyed, yieldEvery, signal });
   const key = normalizeHmacKey(hmacKey);
   if (key === null && !allowUnkeyed) throw fixedError("accounting_window_key_required");
+  const baselines = normalizeDeclaredSpeedBaselines(declaredSpeedBaselines);
   return withSourceDatabase(indexFile, async database => {
     const state = readSnapshotState(database);
     const windows = await collectWindows(database, {
-      key, signal, yieldEvery,
+      key, signal, yieldEvery, baselines,
     });
     const { basis, fingerprint: basisFingerprint } = readBasis(
       database, unknownSpeedPolicy, key,
     );
     return buildReceipt({
-      windows, ...state, basis, basisFingerprint, key, now,
+      windows, ...state, basis, basisFingerprint,
+      declaredSpeedBaselines: baselines, key, now,
     });
   });
 }
@@ -568,6 +623,7 @@ export async function updateAccountingWindowReceipts({
   indexFile,
   hmacKey = null,
   unknownSpeedPolicy = DEFAULT_UNKNOWN_SPEED_POLICY,
+  declaredSpeedBaselines = [],
   signal = null,
   yieldEvery = DEFAULT_YIELD_EVERY,
   now = () => Date.now(),
@@ -575,6 +631,7 @@ export async function updateAccountingWindowReceipts({
   validateOptions({ indexFile, yieldEvery, signal });
   const key = normalizeHmacKey(hmacKey);
   if (key === null) throw fixedError("accounting_window_key_required");
+  const baselines = normalizeDeclaredSpeedBaselines(declaredSpeedBaselines);
   assertAccountingWindowReceipts(previous, { hmacKey });
   try {
     return await withSourceDatabase(indexFile, async database => {
@@ -584,6 +641,12 @@ export async function updateAccountingWindowReceipts({
       );
       if (basisFingerprint !== previous.basisFingerprint) {
         return { mode: "full", reason: "basis_changed" };
+      }
+      if (stableJson(previous.declaredSpeedBaselines) !== stableJson(baselines)) {
+        // A full receipt pass is needed to reprice every window whose declared
+        // speed coverage changed; the cache updater will still rebuild only
+        // the windows whose digest moved.
+        return { mode: "full", reason: "baselines_changed" };
       }
       if (state.lastChangeId < previous.lastChangeId) {
         return { mode: "full", reason: "manifest_rewound" };
@@ -613,7 +676,7 @@ export async function updateAccountingWindowReceipts({
         throw error;
       }
       const rebuilt = await collectWindows(database, {
-        key, windowKeys: plan.dayKeys, signal, yieldEvery,
+        key, windowKeys: plan.dayKeys, signal, yieldEvery, baselines,
       });
       const affected = new Set(plan.dayKeys);
       const windows = previous.windows
@@ -628,6 +691,7 @@ export async function updateAccountingWindowReceipts({
         manifestSinceChangeId: state.manifestSinceChangeId,
         basis,
         basisFingerprint,
+        declaredSpeedBaselines: baselines,
         key,
         now,
       });
@@ -675,8 +739,18 @@ export function assertAccountingWindowReceipts(receipts, { hmacKey = null } = {}
       || !Number.isSafeInteger(receipts.lastChangeId) || receipts.lastChangeId < 0
       || !Number.isSafeInteger(receipts.manifestSinceChangeId)
         || receipts.manifestSinceChangeId < 0
+      || !Array.isArray(receipts.declaredSpeedBaselines)
       || !Number.isSafeInteger(receipts.computedAtMs) || receipts.computedAtMs < 0
       || !Array.isArray(receipts.windows)) {
+    throw fixedError("accounting_window_receipts_invalid");
+  }
+  let normalizedBaselines;
+  try {
+    normalizedBaselines = normalizeDeclaredSpeedBaselines(receipts.declaredSpeedBaselines);
+  } catch {
+    throw fixedError("accounting_window_receipts_invalid");
+  }
+  if (stableJson(normalizedBaselines) !== stableJson(receipts.declaredSpeedBaselines)) {
     throw fixedError("accounting_window_receipts_invalid");
   }
   const key = normalizeHmacKey(hmacKey);
@@ -693,6 +767,7 @@ export function assertAccountingWindowReceipts(receipts, { hmacKey = null } = {}
         || !Number.isSafeInteger(window.quotaCount) || window.quotaCount < 0
         || window.factCount !== window.usageCount + window.quotaCount
         || !validDigest(window.factDigest)
+        || !validDigest(window.speedDigest)
         || previous !== null && window.key <= previous) {
       throw fixedError("accounting_window_receipts_invalid");
     }

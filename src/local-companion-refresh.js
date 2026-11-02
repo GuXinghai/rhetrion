@@ -1290,7 +1290,7 @@ export function createLocalCollectorRefreshRunner({
         && unifiedIndexFile !== null
         && stateFile !== null
         && unifiedIndexSecretFile !== null
-        && accountingRefreshStatus === "rebuilt"
+        && accountingRefreshStatus !== "deferred"
         && !accountingRetainedGeneration
         && signal?.aborted !== true) {
       try {
@@ -1309,9 +1309,10 @@ export function createLocalCollectorRefreshRunner({
             // The first 251-day build is a one-time maintenance pass. Doing it
             // inline here would add several minutes to an already long cold
             // refresh; the refresh maintains an existing shadow cache only.
-            // Reuse/time-projection cycles skip the shadow because their fact
-            // set is unchanged and folding every five minutes is pure work.
+            // A reuse/time-projection cycle now folds the persisted days in
+            // about a second, so it can keep the shadow anchored and audited.
             allowCreate: false,
+            allowFullRebuild: false,
             signal,
             now: clock,
           }));
@@ -1322,9 +1323,10 @@ export function createLocalCollectorRefreshRunner({
             // An observer never affects the refresh.
           }
         }
-      } catch (error) {
-        if (error?.name === "AbortError") throw error;
-        // Shadow maintenance is bounded to this stage.
+      } catch {
+        // The accounting cache was already published. A cancellation or
+        // failure during shadow maintenance must not turn a successful rebuild
+        // into a failed refresh; the prior shadow copy stays untouched.
       }
     }
     const notificationEvidence = publicNotificationEvidence(

@@ -1,7 +1,9 @@
 import {
   assertAccountingWindowReceipts,
   compareAccountingWindowReceipts,
+  normalizeDeclaredSpeedBaselines,
 } from "./local-index-accounting-windows.js";
+import { stableJson } from "./export/index.js";
 import { buildAccountingWindowRows } from "./local-index-accounting-window-rows.js";
 import { buildAccountingRollingPeriods } from "./local-index-accounting-window-fold.js";
 import { readLocalIndexGenerationIdentity } from "./local-index-companion-source.js";
@@ -20,6 +22,23 @@ function fixedError(code) {
 
 function validKey(value) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(value);
+}
+
+function assertReceiptBaselines(receipts, declaredSpeedBaselines) {
+  const normalized = normalizeDeclaredSpeedBaselines(declaredSpeedBaselines);
+  if (stableJson(normalized) !== stableJson(receipts.declaredSpeedBaselines)) {
+    throw fixedError("accounting_window_cache_baselines_mismatch");
+  }
+  return normalized;
+}
+
+function assertGenerationUnchanged(indexFile, identity) {
+  const current = readLocalIndexGenerationIdentity({ indexFile });
+  if (current === null || String(current.id) !== String(identity.id)
+      || current.fingerprint !== identity.fingerprint
+      || current.calculationRevision !== identity.calculationRevision) {
+    throw fixedError("accounting_window_cache_generation_changed");
+  }
 }
 
 function validateCache(cache) {
@@ -62,15 +81,13 @@ function validateCache(cache) {
 function dayMap(cache) {
   const map = new Map();
   for (const day of cache.days) {
-    map.set(day.lowerMs, importAccountingPeriodAccumulator(day.snapshot, {
-      trusted: true,
-    }));
+    map.set(day.lowerMs, importAccountingPeriodAccumulator(day.snapshot));
   }
   return map;
 }
 
 function endOfReceipts(receipts) {
-  if (receipts.windows.length === 0) return Date.now();
+  if (receipts.windows.length === 0) return 0;
   return receipts.windows.at(-1).upperMs - 1;
 }
 
@@ -128,6 +145,7 @@ export async function createAccountingWindowCache({
   now = () => Date.now(),
 } = {}) {
   assertAccountingWindowReceipts(receipts, { hmacKey });
+  assertReceiptBaselines(receipts, declaredSpeedBaselines);
   const identity = readLocalIndexGenerationIdentity({ indexFile });
   if (identity === null || identity.calculationRevision !== receipts.calculationRevision) {
     throw fixedError("accounting_window_cache_generation_changed");
@@ -152,6 +170,7 @@ export async function createAccountingWindowCache({
     audit: null,
   };
   await fold(cache, { indexFile, endMs, declaredSpeedBaselines, signal });
+  assertGenerationUnchanged(indexFile, identity);
   return validateCache(cache);
 }
 
@@ -171,6 +190,7 @@ export async function updateAccountingWindowCache({
 } = {}) {
   validateCache(previous);
   assertAccountingWindowReceipts(receipts, { hmacKey });
+  assertReceiptBaselines(receipts, declaredSpeedBaselines);
   const comparison = compareAccountingWindowReceipts(previous.receipts, receipts, { hmacKey });
   if (comparison.basisChanged) {
     return {
@@ -193,19 +213,27 @@ export async function updateAccountingWindowCache({
   const anchorMs = endMs ?? lastFactMs;
   const historyEndMs = Math.max(anchorMs, lastFactMs);
   if (rebuiltKeys.length === 0
+      && comparison.removed.length === 0
       && previous.periodEndMs === anchorMs
-      && previous.historyEndMs === historyEndMs
-      && previous.receipts.commitSeq === receipts.commitSeq
-      && previous.receipts.calculationRevision === receipts.calculationRevision
-      && previous.generation === String(identity.id)
-      && previous.generationFingerprint === identity.fingerprint) {
+      && previous.historyEndMs === historyEndMs) {
+    // The per-window digests did not move, so the usage days, folded periods,
+    // and history are unchanged even when the publication/receipt watermark
+    // advanced. Keep the expensive artifacts and refresh only the metadata.
+    const cache = {
+      ...previous,
+      generation: String(identity.id),
+      generationFingerprint: identity.fingerprint,
+      calculationRevision: receipts.calculationRevision,
+      computedAtMs: Number(now()),
+      receipts,
+    };
     return {
-      cache: previous,
+      cache: validateCache(cache),
       basisChanged: false,
       rebuiltKeys: [],
-      added: [],
-      removed: [],
-      changed: [],
+      added: comparison.added,
+      removed: comparison.removed,
+      changed: comparison.changed,
       unchanged: true,
     };
   }
@@ -237,6 +265,7 @@ export async function updateAccountingWindowCache({
     audit: null,
   };
   await fold(cache, { indexFile, endMs, declaredSpeedBaselines, signal });
+  assertGenerationUnchanged(indexFile, identity);
   return {
     cache: validateCache(cache),
     basisChanged: false,

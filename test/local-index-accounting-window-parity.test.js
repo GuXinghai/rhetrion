@@ -58,7 +58,7 @@ test("shadow window periods equal the shipping full accounting periods", async t
     lastSeenAt: new Date(END_MS - 86_400_000).toISOString(),
   }];
   const receipts = await createAccountingWindowReceipts({
-    indexFile, hmacKey: KEY, now: () => END_MS,
+    indexFile, hmacKey: KEY, declaredSpeedBaselines, now: () => END_MS,
   });
   const windowCache = await createAccountingWindowCache({
     indexFile, receipts, hmacKey: KEY, endMs: END_MS,
@@ -74,6 +74,46 @@ test("shadow window periods equal the shipping full accounting periods", async t
     now: () => END_MS,
     codexHome: workspace.codexHome,
     scan,
+    calibrationSource: localIndexCalibrationSource({ indexFile }),
+    windowDays: 365,
+    declaredSpeedBaselines,
+  });
+  assert.deepEqual(windowCache.periods, full.periods);
+  assert.deepEqual(windowCache.history, full.history.period);
+});
+
+test("a mid-day anchor folds exact edge fragments", async t => {
+  const workspace = createWorkspace({
+    files: 2, events: 300, days: 35, fillerBytesPerEvent: 0,
+  });
+  t.after(() => workspace.cleanup());
+  const indexFile = join(workspace.state, "index.sqlite");
+  await refreshLocalIndex({
+    codexHome: workspace.codexHome, indexFile,
+    secretFile: workspace.secretFile, workerCount: 1,
+  });
+  const midMs = Date.parse("2026-09-01T12:06:14.356Z");
+  const declaredSpeedBaselines = [{
+    mode: "standard",
+    firstSeenAt: new Date(midMs - 20 * 86_400_000).toISOString(),
+    lastSeenAt: new Date(midMs - 86_400_000).toISOString(),
+  }];
+  const receipts = await createAccountingWindowReceipts({
+    indexFile, hmacKey: KEY, declaredSpeedBaselines, now: () => midMs,
+  });
+  const windowCache = await createAccountingWindowCache({
+    indexFile, receipts, hmacKey: KEY, endMs: midMs,
+    declaredSpeedBaselines, now: () => midMs,
+  });
+  const generation = (await readLocalIndexCompanionProjection({
+    indexFile, nowMs: midMs,
+  })).generation;
+  const full = await buildReplaySafeAccountingCache({
+    sourceMode: "unified",
+    expectedGeneration: generation,
+    now: () => midMs,
+    codexHome: workspace.codexHome,
+    scan: createLocalIndexAccountingScan({ indexFile }),
     calibrationSource: localIndexCalibrationSource({ indexFile }),
     windowDays: 365,
     declaredSpeedBaselines,

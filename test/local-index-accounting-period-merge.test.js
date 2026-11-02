@@ -92,3 +92,16 @@ test("serialized day accumulators round-trip to the same merged range", async t 
   });
   assert.deepEqual(merged, full.period);
 });
+
+test("serialized accumulator import rejects prototype keys", () => {
+  const snapshot = exportAccountingPeriodAccumulator(
+    createAccountingPeriodAccumulator("range", "Range"),
+  );
+  snapshot.period.componentCosts = JSON.parse(
+    '{"__proto__":{"polluted":true}}',
+  );
+  assert.throws(() => importAccountingPeriodAccumulator(snapshot), {
+    code: "accounting_period_snapshot_invalid",
+  });
+  assert.equal({}.polluted, undefined);
+});

@@ -680,7 +680,8 @@ export function serializeLocalCollectorAccountingCache(cache) {
 const ACCOUNTING_REUSE_META_KEY = "accounting_reuse_proof";
 const ACCOUNTING_WINDOW_CACHE_META_KEY = "accounting_window_cache";
 const ACCOUNTING_WINDOW_CACHE_ENVELOPE_SCHEMA = "local-accounting-window-cache-v1";
-const MAX_ACCOUNTING_WINDOW_CACHE_BYTES = 64 * 1024 * 1024;
+// 4096 cached days at the measured ~34 KiB/day fit below this ceiling.
+const MAX_ACCOUNTING_WINDOW_CACHE_BYTES = 192 * 1024 * 1024;
 
 function validAccountingWindowCache(cache) {
   return cache !== null && typeof cache === "object" && !Array.isArray(cache)
@@ -1735,6 +1736,23 @@ export async function writeLocalCollectorAccountingWindowCache({
     database = openDatabase(stateFile, { readOnly: false });
     signal?.throwIfAborted();
     transaction(database, () => {
+      const prior = readMeta(database, ACCOUNTING_WINDOW_CACHE_META_KEY);
+      if (validAccountingWindowCacheEnvelope(prior)) {
+        const priorReceipts = prior.cache.receipts;
+        const priorSeq = priorReceipts?.commitSeq;
+        const priorRevision = priorReceipts?.calculationRevision;
+        const nextSeq = cache.receipts.commitSeq;
+        const nextRevision = cache.receipts.calculationRevision;
+        const stale = Number.isSafeInteger(priorSeq) && Number.isSafeInteger(nextSeq)
+          && (priorSeq > nextSeq
+            || (priorSeq === nextSeq && Number.isSafeInteger(priorRevision)
+              && Number.isSafeInteger(nextRevision) && priorRevision > nextRevision)
+            || (priorSeq === nextSeq && priorRevision === nextRevision
+              && prior.cache.computedAtMs > cache.computedAtMs));
+        if (stale) {
+          throw fixedError("local_collector_accounting_window_cache_stale");
+        }
+      }
       writeMeta(database, ACCOUNTING_WINDOW_CACHE_META_KEY, envelope);
     });
     database.exec("PRAGMA optimize");

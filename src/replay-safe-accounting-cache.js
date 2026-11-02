@@ -2587,7 +2587,9 @@ export async function buildAccountingPeriodAccumulatorsByDay({
   scan,
   signal = null,
   declaredSpeedBaselines = [],
-  grouped = true,
+  // Rollup grouping is opt-in: a whole bucket resolves declared speed at the
+  // bucket timestamp, which is not exact at baseline edges.
+  grouped = false,
   rss = () => process.memoryUsage().rss,
   maximumRssBytes = null,
 } = {}) {
@@ -2916,29 +2918,17 @@ export function exportAccountingPeriodAccumulator(period) {
 }
 
 /** Rehydrate the exact ledgers produced by exportAccountingPeriodAccumulator. */
-const IMPORTED_ACCUMULATOR = Symbol("importedAccountingPeriodAccumulator");
-
-/**
- * Rehydrate a serialized accumulator. `trusted` is for an owner-only window
- * cache whose snapshots were produced by this module: it skips the recursive
- * shape scan and the deep clone, and reuses the imported object if the same
- * snapshot is folded into several periods. The public default remains strict.
- */
-export function importAccountingPeriodAccumulator(snapshot, { trusted = false } = {}) {
+/** Rehydrate a serialized accumulator after the strict shape check. */
+export function importAccountingPeriodAccumulator(snapshot) {
   if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
       || snapshot.schemaVersion !== 1
       || !snapshot.period || typeof snapshot.period !== "object" || Array.isArray(snapshot.period)
-      || !Array.isArray(snapshot.projected) || !Array.isArray(snapshot.speed)
-      || typeof trusted !== "boolean") {
+      || !Array.isArray(snapshot.projected) || !Array.isArray(snapshot.speed)) {
     throw fixedError("accounting_period_snapshot_invalid");
   }
-  if (trusted && snapshot[IMPORTED_ACCUMULATOR] !== undefined) {
-    return snapshot[IMPORTED_ACCUMULATOR];
-  }
-  if (!trusted) assertSafeSnapshot(snapshot);
-  const period = trusted
-    ? snapshot.period
-    : Object.assign(newPeriod("window", "UTC day"), structuredClone(snapshot.period));
+  assertSafeSnapshot(snapshot);
+  const period = newPeriod("window", "UTC day");
+  Object.assign(period, structuredClone(snapshot.period));
   for (const entry of snapshot.projected) {
     if (!safePath(entry?.path)
         || !["apiPriceEquivalentUsd", "costUsd"].includes(entry?.key)
@@ -2961,11 +2951,6 @@ export function importAccountingPeriodAccumulator(snapshot, { trusted = false } 
   for (const entry of snapshot.speed) {
     if (!safePath(entry?.path)) throw fixedError("accounting_period_snapshot_invalid");
     importSpeedApiCost(resolveAccumulatorPath(period, entry.path), entry.state);
-  }
-  if (trusted) {
-    Object.defineProperty(snapshot, IMPORTED_ACCUMULATOR, {
-      value: period, enumerable: false, configurable: false,
-    });
   }
   return period;
 }

@@ -19,7 +19,10 @@ const cache = {
   computedAtMs: 1_790_000_000_000,
   periodEndMs: 1_790_000_000_000,
   historyEndMs: 1_790_000_000_000,
-  receipts: { schemaVersion: 2, windows: [] },
+  receipts: {
+    schemaVersion: 3, commitSeq: 10, calculationRevision: 7,
+    declaredSpeedBaselines: [], windows: [],
+  },
   days: [],
   periods: [{ id: "24h" }, { id: "7d" }, { id: "30d" }, { id: "all" }],
   history: null,
@@ -67,4 +70,19 @@ test("malformed window cache is reported invalid without deleting the prior row"
   assert.deepEqual(await readLocalCollectorAccountingWindowCache({ stateFile }), {
     status: "invalid", cache: null,
   });
+});
+
+test("an older window-cache writer cannot replace a newer publication", async t => {
+  const stateFile = await fixture(t);
+  await writeLocalCollectorAccountingWindowCache({ stateFile, cache });
+  const stale = {
+    ...cache,
+    computedAtMs: cache.computedAtMs - 1,
+    receipts: { ...cache.receipts, commitSeq: 9 },
+  };
+  await assert.rejects(
+    writeLocalCollectorAccountingWindowCache({ stateFile, cache: stale }),
+    { code: "local_collector_accounting_window_cache_stale" },
+  );
+  assert.deepEqual((await readLocalCollectorAccountingWindowCache({ stateFile })).cache, cache);
 });

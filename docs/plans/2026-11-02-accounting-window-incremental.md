@@ -59,22 +59,30 @@ provisional-row exclusion, and cooperative abort. Ordinary appends update only
 bounded dirty days; unsafe modes, session/lineage/coverage partitions, pruned
 manifests, or missing ranges fall back to a full receipt scan.
 
-A protected-copy rehearsal on a 251-day, 1.04M-fact index matched the shipping
-24h/7d/30d/all periods and history exactly: the full build took about 421
-seconds and the shadow build about 263 seconds at 273 MiB RSS; the stored
-snapshot was 8.57 MB. A same-anchor no-change update took about 0.24 seconds,
-but folding the stored days at a new five-minute anchor took about 51 seconds
-because the rolling fold still scans up to five edge fragments. The refresh
-runner therefore maintains an existing shadow cache only on a rebuilt
-accounting result, never on reuse/time projection, and never creates the first
-251-day build inline. The exact path currently prices individual events; a
-faster rollup-bucket path moved a few hundred declared-speed provenance events
-across a baseline edge, so it is implemented but not used for the equality
-proof. The shipping refresh still runs the full accounting rebuild, readers do
-not consume the window cache, and weekly/transition/calibration splitting,
-reader overlay, settings UI, and the closed full-rebuild enum are not
-implemented. No page-speed improvement is claimed yet, and read-time folding is
-blocked on cheaper edge buckets.
+A protected-copy rehearsal on 2026-11-02 (Windows x64, Node.js 22.21.1,
+branch `refactor/local-index-v11-impact-projections`) on a 251-day, 1.04M-fact
+index matched the shipping 24h/7d/30d/all periods and history exactly: the full
+build took about 421
+seconds and the shadow build about 210 seconds at 264 MiB RSS; the stored
+snapshot was 8.59 MB. A same-anchor no-change update took about 0.24 seconds.
+After treating absent days inside the receipt range as known empty, a new-anchor
+fold over the 251 stored days took about 1.1 seconds and 4 scans instead of
+rebuilding every missing interior day; the end-to-end five-minute advance was
+about 6 seconds including the receipt check. A declared-baseline extension
+forced a full receipt scan but rebuilt only the one affected day and still
+matched the shipping periods. The refresh runner maintains an existing shadow
+cache on rebuilt and reuse/time-projection cycles, but never creates the first
+251-day build inline; a global basis change is deferred (`allowFullRebuild:
+false`) to a maintenance pass rather than adding a full shadow rebuild to the
+foreground refresh. The exact path currently prices individual events;
+a faster rollup-bucket path moved a few hundred declared-speed provenance
+events across a baseline edge, so it is implemented but not used for the
+equality proof. The shipping refresh still runs the full accounting rebuild,
+readers do not consume the window cache, and weekly/transition/calibration
+splitting, reader overlay, settings UI, and the closed full-rebuild enum are not
+implemented. No page-speed improvement is claimed yet; the remaining costs are
+the initial 251-day day build, full receipt scans after unsafe changes, and the
+shipping rebuild itself.
 
 # Decisions
 

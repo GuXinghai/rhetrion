@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { createWorkspace } from "./helpers/local-index-facts.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import {
@@ -140,6 +141,56 @@ test("an absent cache is not created when creation is disallowed", async t => {
   assert.equal(result.status, "absent");
   const stored = await readLocalCollectorAccountingWindowCache({ stateFile });
   assert.equal(stored.status, "missing");
+});
+
+test("a full receipt scan with unchanged windows does not rebuild days", async t => {
+  const { workspace, indexFile, stateFile } = await setup(t);
+  const full = await fullCache(indexFile, workspace.codexHome);
+  await refreshAccountingWindowShadow({
+    indexFile, stateFile, hmacKey: KEY, endMs: END_MS,
+    expectedPeriods: full.periods, expectedHistory: full.history.period,
+    now: () => END_MS,
+  });
+  const database = new DatabaseSync(indexFile);
+  try {
+    database.prepare("UPDATE store_state SET calculation_revision = calculation_revision + 1 WHERE id = 1").run();
+  } finally {
+    database.close();
+  }
+  const result = await refreshAccountingWindowShadow({
+    indexFile, stateFile, hmacKey: KEY, endMs: END_MS,
+    expectedPeriods: full.periods, expectedHistory: full.history.period,
+    allowCreate: false, now: () => END_MS,
+  });
+  assert.equal(result.receiptMode, "full");
+  assert.equal(result.rebuiltDays, 0);
+  assert.equal(result.periodsMatched, true);
+  assert.equal(result.status, "updated");
+});
+
+test("a basis change defers a full shadow rebuild when it is not allowed", async t => {
+  const { workspace, indexFile, stateFile } = await setup(t);
+  const full = await fullCache(indexFile, workspace.codexHome);
+  await refreshAccountingWindowShadow({
+    indexFile, stateFile, hmacKey: KEY, endMs: END_MS,
+    expectedPeriods: full.periods, expectedHistory: full.history.period,
+    now: () => END_MS,
+  });
+  const before = await readLocalCollectorAccountingWindowCache({ stateFile });
+  const database = new DatabaseSync(indexFile);
+  try {
+    database.prepare("UPDATE meta SET value = 'synthetic-basis' WHERE key = 'rollup_basis'").run();
+  } finally {
+    database.close();
+  }
+  const result = await refreshAccountingWindowShadow({
+    indexFile, stateFile, hmacKey: KEY, endMs: END_MS,
+    allowCreate: false, allowFullRebuild: false, now: () => END_MS,
+  });
+  assert.deepEqual({ status: result.status, reason: result.reason },
+    { status: "deferred", reason: "basis_changed" });
+  const after = await readLocalCollectorAccountingWindowCache({ stateFile });
+  assert.deepEqual(after.cache, before.cache);
 });
 
 test("tampered receipts mark the shadow cache invalid without deleting it", async t => {

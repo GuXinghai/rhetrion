@@ -79,6 +79,7 @@ export async function refreshAccountingWindowShadow({
   expectedPeriods = null,
   expectedHistory = null,
   allowCreate = true,
+  allowFullRebuild = true,
   signal = null,
   now = () => Date.now(),
   readCache = readLocalCollectorAccountingWindowCache,
@@ -95,6 +96,9 @@ export async function refreshAccountingWindowShadow({
   }
   if (typeof allowCreate !== "boolean") {
     throw new TypeError("accounting window shadow allowCreate must be boolean");
+  }
+  if (typeof allowFullRebuild !== "boolean") {
+    throw new TypeError("accounting window shadow allowFullRebuild must be boolean");
   }
   if (!Array.isArray(declaredSpeedBaselines)) {
     throw new TypeError("accounting window shadow baselines are invalid");
@@ -116,21 +120,21 @@ export async function refreshAccountingWindowShadow({
   }
   const stored = await readCache({ stateFile });
   let previous = stored.status === "available" ? stored.cache : null;
-  let invalidReceipts = false;
+  let invalidReason = stored.status === "invalid" ? "cache_invalid" : null;
   if (previous !== null) {
     try {
       assertAccountingWindowReceipts(previous.receipts, { hmacKey: key });
     } catch (error) {
       if (error?.name === "AbortError" || error instanceof TypeError) throw error;
       previous = null;
-      invalidReceipts = true;
+      invalidReason = "receipts_invalid";
     }
   }
   if (previous === null && !allowCreate) {
     return summary({
-      status: invalidReceipts ? "invalid" : "absent",
+      status: invalidReason === null ? "absent" : "invalid",
       receiptMode: null,
-      reason: invalidReceipts ? "receipts_invalid" : null,
+      reason: invalidReason,
     });
   }
   let receipts;
@@ -142,12 +146,14 @@ export async function refreshAccountingWindowShadow({
       indexFile,
       hmacKey: key,
       unknownSpeedPolicy,
+      declaredSpeedBaselines,
       signal,
       now,
     });
     if (update.mode === "full") {
       receipts = await createAccountingWindowReceipts({
-        indexFile, hmacKey: key, unknownSpeedPolicy, signal, now,
+        indexFile, hmacKey: key, unknownSpeedPolicy,
+        declaredSpeedBaselines, signal, now,
       });
       receiptMode = "full";
       receiptReason = update.reason;
@@ -157,14 +163,24 @@ export async function refreshAccountingWindowShadow({
     }
   } else {
     receipts = await createAccountingWindowReceipts({
-      indexFile, hmacKey: key, unknownSpeedPolicy, signal, now,
+      indexFile, hmacKey: key, unknownSpeedPolicy,
+      declaredSpeedBaselines, signal, now,
     });
     receiptMode = "full";
+  }
+  if (previous !== null
+      && receipts.basisFingerprint !== previous.basisFingerprint
+      && !allowFullRebuild) {
+    return summary({
+      status: "deferred",
+      receiptMode,
+      reason: "basis_changed",
+    });
   }
   let cache;
   let rebuiltKeys = [];
   let unchanged = false;
-  if (previous !== null && receiptMode !== "full") {
+  if (previous !== null) {
     const updated = await updateAccountingWindowCache({
       previous,
       indexFile,
@@ -195,8 +211,9 @@ export async function refreshAccountingWindowShadow({
   if (expectedPeriods !== null) {
     periodsMatched = isDeepStrictEqual(cache.periods, expectedPeriods);
     historyMatched = expectedHistory === null
-      || isDeepStrictEqual(cache.history, expectedHistory);
-    if (!periodsMatched || !historyMatched) {
+      ? null
+      : isDeepStrictEqual(cache.history, expectedHistory);
+    if (!periodsMatched || historyMatched === false) {
       const mismatchFields = [];
       for (const [index, expected] of expectedPeriods.entries()) {
         for (const path of mismatchPaths(cache.periods[index], expected)) {
