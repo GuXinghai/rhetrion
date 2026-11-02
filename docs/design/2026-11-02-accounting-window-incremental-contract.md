@@ -103,11 +103,13 @@ row_digest          digest of canonical derived rows
 status              ready | unavailable
 ```
 
-The current implementation produces input receipts for every covered window and
-can build a keyed derived-row digest for a named UTC day in shadow mode. The
-derived row is not parsed into the shipping cache or merged across windows. The
-derived-row `row_digest` is required before a reader consumes a window or an
-incremental merge trusts it; it is not inferred from `fact_digest`.
+The current implementation produces input receipts for every covered window,
+builds keyed derived-row digests for named UTC days, serializes the exact
+pre-finalize accumulator, and folds interior day rows plus at most two
+recomputed edge fragments into 24h/7d/30d/all and history. It is not wired to
+the shipping refresh or readers. The derived-row `row_digest` is required before
+a reader consumes a window or an incremental merge trusts it; it is not inferred
+from `fact_digest`.
 
 The receipt never contains raw facts. The input digest includes the stable
 occurrence key and only the fields that participate in accounting derivation.
@@ -249,7 +251,8 @@ block on the calibration schedule.
 - The reader shows the last-good value with an explicit age or partial label and
   a **Recalculate** entry. The entry escalates window → related range → full
   rebuild with confirmation; it never jumps straight to a full rebuild.
-- Rolling 24h/7d/30d/all totals fold window rows. They do not rescan all facts.
+- Rolling 24h/7d/30d/all totals fold interior day rows plus at most two
+  recomputed edge fragments; they do not rescan all facts.
 - A stale calibration is shown with its timestamp; it is not presented as a
   current provider measurement.
 - The previous complete manifest remains readable until a new manifest is

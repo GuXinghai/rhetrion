@@ -49,14 +49,17 @@ These source facts decide the plan:
   both refreshes, so those projections are already incremental and are not the
   subject of this plan.
 
-Implementation status (2026-11-02): the input-receipt primitive and named-day
-derived-row digest are implemented and shadow-tested. Receipts use the committed
-accounting predicates, joined dimension values, a keyed digest, a global basis
-fingerprint, `commit_seq` plus `calculation_revision`, provisional-row exclusion,
-and cooperative abort. A 1.04M-fact receipt pass took about 8.8 seconds at 82 MiB
-RSS; one real latest-day derived row took about 279 ms. Receipt persistence,
-multi-window merge, dirty-window recompute, reader integration, settings UI, and
-the closed full-rebuild enum are not implemented.
+Implementation status (2026-11-02): the input-receipt primitive, exact named-day
+derived rows, pre-finalize accumulator merge, non-aligned rolling-period fold,
+and owner-only window-cache storage are implemented in shadow. Receipts use the
+committed accounting predicates, joined dimension values, a keyed digest, a
+global basis fingerprint, `commit_seq` plus `calculation_revision`,
+provisional-row exclusion, and cooperative abort. A real 251-day shadow cache
+took about 47 seconds initially, a no-change update took about 0.6 seconds, and
+the stored snapshot was about 8.6 MiB at 160 MiB RSS; the earlier full receipt
+pass over 1.04M facts took about 8.8 seconds. Refresh integration, incremental
+receipt updates, reader overlay, weekly/transition/calibration splitting,
+settings UI, and the closed full-rebuild enum are not implemented.
 
 # Decisions
 
