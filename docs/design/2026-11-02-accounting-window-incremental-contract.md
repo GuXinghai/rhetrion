@@ -103,9 +103,11 @@ row_digest          digest of canonical derived rows
 status              ready | unavailable
 ```
 
-The current implementation produces input receipts only. The derived-row
-`row_digest` is required before a reader consumes a window or an incremental
-merge trusts it; it is not inferred from `fact_digest`.
+The current implementation produces input receipts for every covered window and
+can build a keyed derived-row digest for a named UTC day in shadow mode. The
+derived row is not parsed into the shipping cache or merged across windows. The
+derived-row `row_digest` is required before a reader consumes a window or an
+incremental merge trusts it; it is not inferred from `fact_digest`.
 
 The receipt never contains raw facts. The input digest includes the stable
 occurrence key and only the fields that participate in accounting derivation.

@@ -49,13 +49,14 @@ These source facts decide the plan:
   both refreshes, so those projections are already incremental and are not the
   subject of this plan.
 
-Implementation status (2026-11-02): the input-receipt primitive is implemented
-and shadow-tested. It uses the committed accounting predicates, joined dimension
-values, a keyed digest, a global basis fingerprint, `commit_seq` plus
-`calculation_revision`, provisional-row exclusion, and cooperative abort. A
-1.04M-fact read-only pass took about 8.8 seconds at 82 MiB RSS. Receipt
-persistence, derived-row output digests, dirty-window recompute, reader
-integration, settings UI, and the closed full-rebuild enum are not implemented.
+Implementation status (2026-11-02): the input-receipt primitive and named-day
+derived-row digest are implemented and shadow-tested. Receipts use the committed
+accounting predicates, joined dimension values, a keyed digest, a global basis
+fingerprint, `commit_seq` plus `calculation_revision`, provisional-row exclusion,
+and cooperative abort. A 1.04M-fact receipt pass took about 8.8 seconds at 82 MiB
+RSS; one real latest-day derived row took about 279 ms. Receipt persistence,
+multi-window merge, dirty-window recompute, reader integration, settings UI, and
+the closed full-rebuild enum are not implemented.
 
 # Decisions
 
