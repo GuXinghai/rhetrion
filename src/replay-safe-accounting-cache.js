@@ -1,5 +1,5 @@
 import { DEFAULT_UNKNOWN_SPEED_POLICY, validateUnknownSpeedPolicy, unknownSpeedScenario, unknownSpeedCalculationIdentity, unknownSpeedCalibrationOptions, mixUnknownSpeedUsd } from "./unknown-speed-policy.js";
-import { speedApiPrice, addSpeedApiCost, speedApiCostSummary } from "./speed-api-cost.js";
+import { speedApiPrice, addSpeedApiCost, speedApiCostSummary, mergeSpeedApiCost } from "./speed-api-cost.js";
 import { createLocalRefreshTimer } from "./local-refresh-timing.js";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -2473,6 +2473,9 @@ export async function buildReplaySafeAccountingPeriod({
   signal = null,
   declaredSpeedBaselines = [],
   rss = () => process.memoryUsage().rss,
+  // A shadow caller may need the pre-finalize accumulator for an exact merge.
+  // It is never part of the persisted cache and must not be JSON-serialized.
+  includeAccumulator = false,
   // null is "the caller does not name a ceiling", which is the ARCHIVE case:
   // resolve one off this pass's own baseline from the archive policy. The
   // rebuild names its own and is unaffected. Inheriting the rebuild's number
@@ -2492,6 +2495,7 @@ export async function buildReplaySafeAccountingPeriod({
       || typeof scan !== "function"
       || !validAbortSignal(signal)
       || typeof rss !== "function"
+      || typeof includeAccumulator !== "boolean"
       || (maximumRssBytes !== null
         && (!Number.isSafeInteger(maximumRssBytes) || maximumRssBytes < 1))) {
     throw new TypeError("Replay-safe accounting period options are invalid");
@@ -2565,7 +2569,157 @@ export async function buildReplaySafeAccountingPeriod({
     priceRegistryVersion: APP_PRICE_REGISTRY_MANIFEST.version,
     priceRegistryObservedAt: APP_PRICE_REGISTRY_MANIFEST.observedAt,
     period: finalizePeriod(period),
+    ...(includeAccumulator ? { accumulator: period } : {}),
   };
+}
+
+function mergeProjectedUsd(target, source) {
+  const incoming = PROJECTED_USD.get(source);
+  if (incoming === undefined) return;
+  let fields = PROJECTED_USD.get(target);
+  if (fields === undefined) {
+    fields = new Map();
+    PROJECTED_USD.set(target, fields);
+  }
+  for (const [key, sum] of incoming) {
+    flushExactUsd(sum, "exact");
+    let targetSum = fields.get(key);
+    if (targetSum === undefined) {
+      targetSum = { exact: "0" };
+      fields.set(key, targetSum);
+    }
+    addExactUsd(targetSum, "exact", sum.exact, null);
+  }
+}
+
+function mergeComponentCosts(target, source) {
+  for (const [key, row] of Object.entries(source)) {
+    const out = target[key];
+    out.tokens += row.tokens;
+    out.pricedTokens += row.pricedTokens;
+    out.unpricedTokens += row.unpricedTokens;
+    out.costUsd += row.costUsd;
+    mergeProjectedUsd(out, row);
+  }
+}
+
+function mergePricingCoverage(target, source) {
+  target.fullyPricedEvents += source.fullyPricedEvents;
+  target.partiallyPricedEvents += source.partiallyPricedEvents;
+  target.unpricedEvents += source.unpricedEvents;
+}
+
+function mergePriceCardBreakdown(target, source) {
+  for (const [id, row] of Object.entries(source)) {
+    const out = target[id] ??= { priceCardId: id, events: 0, costUsd: "0" };
+    out.events += row.events;
+    out.costUsd = addUsdStrings(out.costUsd, row.costUsd);
+  }
+}
+
+function zeroModelRow(source) {
+  return {
+    model: source.model,
+    pricingStatus: source.pricingStatus,
+    allowanceTrack: source.allowanceTrack,
+    apiPriceEquivalentApplicable: source.apiPriceEquivalentApplicable,
+    events: 0,
+    totalTokens: 0,
+    apiPriceEquivalentUsd: 0,
+    components: emptyComponents(),
+    componentCosts: emptyComponentCosts(),
+    pricingCoverage: {
+      fullyPricedEvents: 0,
+      partiallyPricedEvents: 0,
+      unpricedEvents: 0,
+    },
+  };
+}
+
+function mergeModelRow(target, source) {
+  target.events += source.events;
+  target.totalTokens += source.totalTokens;
+  target.apiPriceEquivalentUsd += source.apiPriceEquivalentUsd;
+  addComponents(target.components, source.components);
+  mergeComponentCosts(target.componentCosts, source.componentCosts);
+  mergePricingCoverage(target.pricingCoverage, source.pricingCoverage);
+  mergeProjectedUsd(target, source);
+  mergeSpeedApiCost(target, source);
+}
+
+function mergeDimensionMap(target, source) {
+  for (const [key, row] of Object.entries(source)) {
+    const out = target[key] ??= { events: 0, totalTokens: 0, apiPriceEquivalentUsd: 0 };
+    out.events += row.events;
+    out.totalTokens += row.totalTokens;
+    out.apiPriceEquivalentUsd += row.apiPriceEquivalentUsd;
+    mergeProjectedUsd(out, row);
+  }
+}
+
+function mergeSpeedCrossing(target, source) {
+  for (const [speed, families] of Object.entries(source)) {
+    const targetFamilies = target[speed] ??= {};
+    for (const [family, cell] of Object.entries(families)) {
+      const out = targetFamilies[family] ??= { events: 0, apiPriceEquivalentUsd: 0 };
+      out.events += cell.events;
+      out.apiPriceEquivalentUsd += cell.apiPriceEquivalentUsd;
+      mergeProjectedUsd(out, cell);
+    }
+  }
+}
+
+/** Create an empty internal period accumulator for a shadow merge. */
+export function createAccountingPeriodAccumulator(id, label) {
+  return newPeriod(id, label);
+}
+
+/**
+ * Merge one internal period accumulator into another. The merge is exact
+ * because it reads the same accumulator ledgers the full build uses; the
+ * finalized output is produced once, after the merge.
+ */
+export function mergeAccountingPeriodAccumulator(target, source) {
+  if (!target || !source || typeof target !== "object" || typeof source !== "object"
+      || target === source) {
+    throw new TypeError("accounting period accumulators are invalid");
+  }
+  target.events += source.events;
+  target.totalTokens += source.totalTokens;
+  addComponents(target.components, source.components);
+  mergeComponentCosts(target.componentCosts, source.componentCosts);
+  target.apiPriceEquivalentUsd += source.apiPriceEquivalentUsd;
+  target.apiPriceEquivalentUsdExact = addUsdStrings(
+    target.apiPriceEquivalentUsdExact, source.apiPriceEquivalentUsdExact,
+  );
+  for (const id of source.priceCardIds) {
+    if (!target.priceCardIds.includes(id)) target.priceCardIds.push(id);
+  }
+  mergePriceCardBreakdown(target.priceCardBreakdown, source.priceCardBreakdown);
+  mergePricingCoverage(target.pricingCoverage, source.pricingCoverage);
+  for (const row of Object.values(source.byModel)) {
+    const out = target.byModel[row.model] ??= zeroModelRow(row);
+    mergeModelRow(out, row);
+  }
+  mergeDimensionMap(target.bySpeed, source.bySpeed);
+  mergeDimensionMap(target.byApiServiceTier, source.byApiServiceTier);
+  mergeDimensionMap(target.bySurface, source.bySurface);
+  mergeDimensionMap(target.byAgentScope, source.byAgentScope);
+  mergeDimensionMap(target.byLineage, source.byLineage);
+  mergeSpeedCrossing(target.speedWeighting, source.speedWeighting);
+  mergeSpeedCrossing(target.declaredSpeedWeighting, source.declaredSpeedWeighting);
+  mergeProjectedUsd(target, source);
+  mergeSpeedApiCost(target, source);
+  if (source.spark) {
+    target.spark ??= newPeriod("spark", "Spark allowance", { includeSpark: false });
+    mergeAccountingPeriodAccumulator(target.spark, source.spark);
+  }
+  return target;
+}
+
+/** Finalize an internal accumulator exactly once. */
+export function finalizeAccountingPeriodAccumulator(period) {
+  return finalizePeriod(period);
 }
 
 function newTimelineBucket(startMs) {

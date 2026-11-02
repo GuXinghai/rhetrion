@@ -42,6 +42,49 @@ export function addSpeedApiCost(target, components, priced, weight = 1) {
   }
 }
 
+export function mergeSpeedApiCost(target, source) {
+  const incoming = sums.get(source);
+  if (!incoming) return;
+  let state = sums.get(target);
+  if (!state) {
+    state = {
+      sum: new ExactUsdSum(),
+      priced: incoming.priced,
+      incomplete: incoming.incomplete,
+      components: {},
+      provenance: { ...incoming.provenance },
+    };
+    state.sum.add(incoming.sum.toString());
+    for (const [name, row] of Object.entries(incoming.components)) {
+      const cell = {
+        sum: new ExactUsdSum(),
+        tokens: row.tokens,
+        pricedTokens: row.pricedTokens,
+        unpricedTokens: row.unpricedTokens,
+      };
+      cell.sum.add(row.sum.toString());
+      state.components[name] = cell;
+    }
+    sums.set(target, state);
+    return;
+  }
+  state.sum.add(incoming.sum.toString());
+  state.priced += incoming.priced;
+  state.incomplete += incoming.incomplete;
+  for (const key of ["observedEvents", "declaredEvents", "unknownEvents"]) {
+    state.provenance[key] += incoming.provenance[key];
+  }
+  for (const [name, row] of Object.entries(incoming.components)) {
+    const cell = state.components[name] ??= {
+      sum: new ExactUsdSum(), tokens: 0, pricedTokens: 0, unpricedTokens: 0,
+    };
+    cell.tokens += row.tokens;
+    cell.pricedTokens += row.pricedTokens;
+    cell.unpricedTokens += row.unpricedTokens;
+    cell.sum.add(row.sum.toString());
+  }
+}
+
 export function speedApiCostSummary(target) {
   const state = sums.get(target);
   if (!state) return { speedApiPriceEquivalentUsd: null, speedApiPriceEquivalentUsdExact: null, speedComponentCosts: {}, speedPricingCoverageStatus: "unpriced" };
