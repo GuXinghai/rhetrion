@@ -8,14 +8,17 @@ status: proposed
 # Status and claim boundary
 
 This is a proposed design contract for the accounting derived cache. The
-input-receipt, derived-row, exact accumulator-merge, rolling-fold, and
-owner-only window-cache storage slices are implemented in source and
-shadow-tested. A protected-copy rehearsal matched the shipping periods and
-history exactly for one 251-day generation. The window cache is not wired to
-readers and does not replace or accelerate the shipping accounting rebuild; the
-refresh runner maintains an existing shadow cache but does not create the first
-one inline. No reader, schema, migration, performance, installed-app, or release
-claim is made. It follows the
+input-receipt, derived-row, exact accumulator-merge, rolling-fold, owner-only
+window-cache storage, and shipping fast-path composition slices are implemented
+in source and tested. A protected-copy rehearsal matched the shipping periods,
+history, timeline, quota timeline, and weekly forecast exactly for one 251-day
+generation, including a forced three-day rescan. Normal appends compose the
+shipping cache without a full replay; the first pass after an upgrade still
+needs a full rebuild to seed the provenance and window markers. Low-frequency
+calibration and capped quota series are retained with explicit `asOf` markers;
+the reader overlay that surfaces those markers as `部分数据 · 截至 X` is not
+implemented. No schema, migration, installed-app, or release claim is made. It
+follows the
 [v11 impact-manifest plan](../plans/2026-11-01-local-index-impact-and-work-projections.md)
 and the [local index schema](../reference/local-index-schema.md); the
 [implementation plan](../plans/2026-11-02-accounting-window-incremental.md)
@@ -119,12 +122,59 @@ speed facts forces a full receipt scan but rebuilds only the windows whose
 digest moved. A shipping full rebuild can hand over per-day accumulators from
 the same fused history read, so the first window cache does not need a second
 251-day scan; the handoff is shadow-only and does not change the shipping cache.
-The cache is persisted in owner-only collector state, but it is not wired to
-readers and does not replace the shipping rebuild. Every stored day
+The cache is persisted in owner-only collector state. The shipping fast path
+reads it only after proving that the previous published cache consumed exactly
+the stored window digest; it then folds exact periods/history, rescans the
+timeline from the earliest dirty day, and retains the low-frequency artifacts
+with explicit `asOf` markers. Every stored day
 row's keyed `row_digest` is recomputed before the row is folded; a mismatch
 marks the whole cache invalid and leaves it untouched. The derived-row
 `row_digest` is required before a reader consumes a window or an incremental
 merge trusts it; it is not inferred from `fact_digest`.
+
+# Shipping fast-path contract
+
+The fast path is a composition, not a second accounting implementation.
+
+1. **Eligibility is closed.** It requires a valid previous cache carrying the
+   freshness envelope, a stored window digest equal to the window state that
+   cache consumed, an unchanged window basis fingerprint, stable thread-origin
+   and policy proof components, available history and weekly-interval receipts,
+   and zero fallback. A missing marker, a changed basis, a changed origin set,
+   a tampered day, or an unknown state falls through to the existing reuse or
+   full-rebuild path. The fallback code is a bounded public diagnostic
+   (`fastPathFallbackCode`); no raw path, origin, or session identity is exposed.
+2. **Windows are exact.** `periods` and `history` come from the verified window
+   cache. This is the same fold the equality audit compared against a full
+   rebuild.
+3. **The timeline is exact from a proven boundary.** Rows strictly before the
+   earliest dirty UTC day (and before the previous anchor for the new tail) are
+   retained from the previous cache; rows at or after that boundary are rebuilt
+   from one bounded usage scan. The boundary is clamped to the new window start
+   so the first partial 15-minute bucket uses the same event predicate as a full
+   build. Quota and Spark quota series are range-global and capped, so they are
+   rebuilt as a whole when due and otherwise retained with an explicit `asOf`.
+4. **Low-frequency artifacts are labelled, never silently fresh.** Calibration,
+   weekly API intervals, plan-scope receipts, and retained quota series carry
+   `freshness.calibration`, `freshness.weeklyApiIntervals`, `freshness.planScope`,
+   and `freshness.quota` records with `status` and `asOf`/`coveredTo`. The cache
+   validator rejects a shape that loses the exactness markers. Readers must
+   surface a retained component as partial/aged until its next exact refresh.
+5. **A full rebuild seeds the markers.** The rebuild's fused history read hands
+   over the day accumulators; after the shadow pass writes the window cache, the
+   runner republishes the cache with the consumed window digest and the
+   provenance components. Until that succeeds, the next pass remains ineligible
+   and repeats the rebuild rather than composing from an unproven state.
+6. **Publication is atomic.** The composed cache is validated (including the
+   freshness envelope and size ceiling) and written through the existing
+   collector-state atomic publication. A failed composition leaves the last
+   good cache untouched.
+
+The measured result on the protected 251-day copy is exact parity for periods,
+history, timeline, Spark timeline, both quota timelines, and the weekly
+forecast. Retaining the capped quota series made a five-minute advance take about
+13 seconds; refreshing it took about 37 seconds. Quota candidate projection
+remains the largest fast-path cost and is the next optimization target.
 
 The receipt never contains raw facts. The input digest includes the stable
 occurrence key and only the fields that participate in accounting derivation.

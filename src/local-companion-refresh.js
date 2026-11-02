@@ -12,8 +12,16 @@ import {
 import { selectProductionAccountObservationSecret } from "./account-observation-production.js";
 import { runCollectorOnce } from "./passive-collector.js";
 import { createLocalIndexAccountingReuse } from "./local-index-accounting-reuse.js";
-import { projectLocalIndexAccountingTime } from "./local-index-accounting-cache.js";
+import { createLocalIndexAccountingScan, projectLocalIndexAccountingTime } from "./local-index-accounting-cache.js";
 import { refreshAccountingWindowShadow } from "./local-accounting-window-refresh.js";
+import {
+  LOCAL_ACCOUNTING_FRESHNESS_VERSION,
+  accountingFastPathProvenanceMatches,
+  accountingProvenanceFromProof,
+  composeLocalAccountingFastPath,
+  completeAccountingFreshness,
+} from "./local-accounting-fast-path.js";
+import { writeLocalCollectorAccountingCache } from "./local-collector-state.js";
 import {
   REPLAY_SAFE_ACCOUNTING_SCHEMA_VERSION,
   readReplaySafeAccountingCache,
@@ -67,7 +75,7 @@ const INDEXING_PHASES = new Set([
   "prospective",
 ]);
 const LOCAL_REFRESH_MODES = new Set(["quick", "detailed", "overview"]);
-const ACCOUNTING_REFRESH_STATUSES = new Set(["reused", "rebuilt", "deferred"]);
+const ACCOUNTING_REFRESH_STATUSES = new Set(["reused", "rebuilt", "deferred", "fast_path"]);
 const GENERATION_TOKEN_PATTERN = /^[A-Za-z0-9._:-]{1,256}$/u;
 // Accounting reader failures are deliberately closed over a fixed vocabulary.
 // A caller-controlled `accounting_*` string must never become a public
@@ -757,6 +765,18 @@ export function createLocalCollectorRefreshRunner({
   readAccountingCache = readReplaySafeAccountingCache,
   projectAccountingTime = projectLocalIndexAccountingTime,
   refreshAccounting = null,
+  // Shipping fast path: compose periods/history from the incremental window
+  // cache and re-read only the dirty timeline tail, instead of replaying the
+  // full history. Every eligibility check fails closed to the existing reuse
+  // or full-rebuild path.
+  accountingFastPath = true,
+  // Quota-series selection is range-global and capped, so it is refreshed as
+  // a low-frequency component. Between refreshes it is retained with an
+  // explicit asOf instead of being silently presented as current.
+  accountingQuotaRefreshIntervalMs = 10 * 60_000,
+  composeAccountingFastPath = composeLocalAccountingFastPath,
+  writeAccountingCache = writeLocalCollectorAccountingCache,
+  createCalculationReuse = createLocalIndexAccountingReuse,
   // Shadow maintenance of the incremental window cache. It never changes the
   // shipping accounting result; a failure is bounded to this stage.
   runAccountingWindowShadow = refreshAccountingWindowShadow,
@@ -793,6 +813,24 @@ export function createLocalCollectorRefreshRunner({
   }
   if (refreshAccounting !== null && typeof refreshAccounting !== "function") {
     throw new TypeError("refreshAccounting must be a function or null");
+  }
+  if (typeof accountingFastPath !== "boolean") {
+    throw new TypeError("accountingFastPath must be boolean");
+  }
+  if (!Number.isSafeInteger(accountingQuotaRefreshIntervalMs)
+      || accountingQuotaRefreshIntervalMs < 0) {
+    throw new TypeError(
+      "accountingQuotaRefreshIntervalMs must be a non-negative safe integer",
+    );
+  }
+  for (const [name, value] of Object.entries({
+    composeAccountingFastPath,
+    writeAccountingCache,
+    createCalculationReuse,
+  })) {
+    if (typeof value !== "function") {
+      throw new TypeError(`${name} must be a function`);
+    }
   }
   if (typeof runAccountingWindowShadow !== "function") {
     throw new TypeError("runAccountingWindowShadow must be a function");
@@ -837,7 +875,7 @@ export function createLocalCollectorRefreshRunner({
   // bounded keyed-fingerprint checkpoint is committed with the existing
   // collector state so an ordinary companion restart preserves continuity.
   const resetEventClassifier = createResetEventClassifier();
-  const calculationReuse = createLocalIndexAccountingReuse({
+  const calculationReuse = createCalculationReuse({
     indexFile: unifiedIndexFile, codexHome, stateFile,
   });
   return async function refreshLocalCollector({
@@ -1054,6 +1092,11 @@ export function createLocalCollectorRefreshRunner({
     let accountingRetainedGeneration = false;
     let accountingRebuildDeferred = null;
     let capturedDayAccumulators = null;
+    let pendingReuseProof = null;
+    let reuseProofPersisted = false;
+    let fastPathUsed = false;
+    let fastPathReason = null;
+    let calculationProof = null;
     let accountingUnavailableCode = accountingMayRun
         && !unifiedAccountingReady
       ? unifiedIndex?.status === "failed"
@@ -1064,13 +1107,122 @@ export function createLocalCollectorRefreshRunner({
     if (refreshAccounting !== null
         && accountingMayRun
         && unifiedAccountingReady) {
-      let calculationProof = null;
-      let timeProjectionFailed = false;
-      try {
-        if (signal?.aborted !== true) {
+      if (accountingFastPath
+          && unifiedIndexFile !== null
+          && stateFile !== null
+          && unifiedIndexSecretFile !== null
+          && signal?.aborted !== true) {
+        try {
           calculationProof = await timing.measure("reuse_proof_before", () => calculationReuse.readProof({
             generation: unifiedIndex.generation, declaredSpeedBaselines, unknownSpeedPolicy, nowMs: clock(), signal, onTiming, monotonicClock, onReuseDiagnostic, onOriginDiagnostic,
           }));
+          const existing = await timing.measure("cache_read", () => readAccountingCache({
+            stateFile,
+            now: clock,
+            sourceMode: "unified",
+            contextBehavior: "source_native",
+            expectedGeneration: unifiedIndex.generation,
+            includeStaleGeneration: true,
+          }));
+          const previousCache = existing?.status === "available"
+            ? existing.cache
+            : existing?.staleCache?.reason === "cache_generation_mismatch"
+              ? existing.staleCache.cache
+              : null;
+          const provenance = accountingProvenanceFromProof(calculationProof);
+          if (previousCache?.freshness?.schemaVersion
+                === LOCAL_ACCOUNTING_FRESHNESS_VERSION
+              && typeof previousCache.freshness?.windows?.digest === "string"
+              && accountingFastPathProvenanceMatches(
+                previousCache.freshness?.provenance, provenance,
+              )) {
+            const fastPathEndMs = clock();
+            let windowCache = null;
+            const shadow = await timing.measure(
+              "accounting_window_shadow",
+              () => runAccountingWindowShadow({
+                indexFile: unifiedIndexFile,
+                stateFile,
+                secretFile: unifiedIndexSecretFile,
+                unknownSpeedPolicy,
+                declaredSpeedBaselines,
+                endMs: fastPathEndMs,
+                expectedPeriods: null,
+                expectedHistory: null,
+                allowCreate: false,
+                allowFullRebuild: false,
+                allowUnaudited: true,
+                onCache: cache => { windowCache = cache; },
+                signal,
+                now: clock,
+              }),
+            );
+            if (windowCache !== null
+                && ["created", "updated", "unchanged"].includes(shadow.status)
+                && typeof shadow.previousDigest === "string") {
+              const quotaAsOfMs = Date.parse(
+                previousCache.freshness?.quota?.asOf
+                  ?? previousCache.coveredAt.endAt,
+              );
+              const retainQuota = Number.isFinite(quotaAsOfMs)
+                && fastPathEndMs - quotaAsOfMs
+                  < accountingQuotaRefreshIntervalMs;
+              const composed = await timing.measure(
+                "accounting_fast_path",
+                () => composeAccountingFastPath({
+                  previousCache,
+                  windowCache,
+                  previousWindowDigest: shadow.previousDigest,
+                  windowVerified: true,
+                  scan: createLocalIndexAccountingScan({
+                    indexFile: unifiedIndexFile,
+                  }),
+                  expectedGeneration: unifiedIndex.generation,
+                  endMs: fastPathEndMs,
+                  windowDays: ACCOUNTING_SCAN_WINDOW_DAYS,
+                  staleFromMs: shadow.dirtyFromMs ?? null,
+                  retainQuota,
+                  declaredSpeedBaselines,
+                  provenance,
+                  signal,
+                  now: clock,
+                  onTiming,
+                  monotonicClock,
+                }),
+              );
+              await timing.measure("accounting_publish",
+                () => writeAccountingCache({
+                  stateFile, cache: composed.cache, signal,
+                }));
+              accounting = composed.cache;
+              accountingRefreshStatus = "fast_path";
+              fastPathUsed = true;
+              accountingRebuildDeferUntilMs = 0;
+              accountingRebuildDeferredStreak = 0;
+            } else {
+              fastPathReason = shadow.reason ?? shadow.status;
+            }
+          } else {
+            fastPathReason = "retained_marker_absent";
+          }
+        } catch (error) {
+          if (error?.name === "AbortError") throw error;
+          fastPathReason = REFRESH_FAILURE_CODE_PATTERN.test(error?.code ?? "")
+            ? error.code : "fast_path_failed";
+          reportLocalRefreshReuseDiagnostic(
+            onReuseDiagnostic, "lookup", "fast_path_fallback",
+          );
+        }
+      }
+      let timeProjectionFailed = false;
+      if (!fastPathUsed) {
+      try {
+        if (signal?.aborted !== true) {
+          if (calculationProof === null) {
+            calculationProof = await timing.measure("reuse_proof_before", () => calculationReuse.readProof({
+              generation: unifiedIndex.generation, declaredSpeedBaselines, unknownSpeedPolicy, nowMs: clock(), signal, onTiming, monotonicClock, onReuseDiagnostic, onOriginDiagnostic,
+            }));
+          }
           accounting = await timing.measure("reuse_check", () => calculationReuse.reuse({
             proof: calculationProof, nowMs: clock(),
             signal, onReuseDiagnostic,
@@ -1104,6 +1256,7 @@ export function createLocalCollectorRefreshRunner({
         // A missing or changing proof is an ordinary cache miss. Preserve the
         // existing authoritative reader/rebuild path and its last-good state.
         reportLocalRefreshReuseDiagnostic(onReuseDiagnostic, "lookup", "operation_failed");
+      }
       }
       // A provider quota observation does not alter replay-safe token
       // accounting. Reuse a current cache when no rollout usage record was
@@ -1273,7 +1426,10 @@ export function createLocalCollectorRefreshRunner({
                 generation: unifiedIndex.generation, declaredSpeedBaselines, unknownSpeedPolicy, nowMs: clock(), signal, onTiming, monotonicClock,
                 onReuseDiagnostic, onOriginDiagnostic, diagnosticPhase: "proof_after",
               }));
-              await timing.measure("reuse_remember", () => calculationReuse.persist({ cache: accounting, before: calculationProof, after, signal, onReuseDiagnostic }));
+              // The cache is republished once more after the window-shadow
+              // pass attaches its digest, so write the receipt together with
+              // that final byte image instead of here.
+              pendingReuseProof = { before: calculationProof, after };
             } catch (error) {
               if (error?.name === "AbortError") throw error;
               reportLocalRefreshReuseDiagnostic(onReuseDiagnostic, "remember", "operation_failed");
@@ -1296,7 +1452,9 @@ export function createLocalCollectorRefreshRunner({
         && unifiedIndexSecretFile !== null
         && accountingRefreshStatus !== "deferred"
         && !accountingRetainedGeneration
+        && !fastPathUsed
         && signal?.aborted !== true) {
+      let shadowCache = null;
       try {
         const shadow = await timing.measure("accounting_window_shadow",
           () => runAccountingWindowShadow({
@@ -1317,6 +1475,7 @@ export function createLocalCollectorRefreshRunner({
             dayAccumulators: capturedDayAccumulators,
             allowCreate: capturedDayAccumulators !== null,
             allowFullRebuild: false,
+            onCache: cache => { shadowCache = cache; },
             signal,
             now: clock,
           }));
@@ -1328,10 +1487,53 @@ export function createLocalCollectorRefreshRunner({
             // An observer never affects the refresh.
           }
         }
+        // Mark the rebuilt cache with the exact window state it consumed. The
+        // digest is what authorizes the next fast path to mutate only the
+        // diff since this state; without it the next pass fails closed.
+        if (pendingReuseProof !== null
+            && shadowCache !== null
+            && typeof shadow.digest === "string"
+            && ["created", "updated", "unchanged"].includes(shadow.status)) {
+          completeAccountingFreshness({
+            cache: accounting,
+            provenance: accountingProvenanceFromProof(calculationProof),
+            windowDigest: shadow.digest,
+            windowCache: shadowCache,
+          });
+          await timing.measure("reuse_remember",
+            () => calculationReuse.persist({
+              cache: accounting,
+              before: pendingReuseProof.before,
+              after: pendingReuseProof.after,
+              signal,
+              onReuseDiagnostic,
+            }));
+          reuseProofPersisted = true;
+        }
       } catch {
         // The accounting cache was already published. A cancellation or
         // failure during shadow maintenance must not turn a successful rebuild
         // into a failed refresh; the prior shadow copy stays untouched.
+      }
+    }
+    if (pendingReuseProof !== null && !reuseProofPersisted) {
+      // No window shadow ran (or it did not produce a digest): persist the
+      // ordinary reuse receipt so a later pass can still prove this rebuild.
+      try {
+        await timing.measure("reuse_remember",
+          () => calculationReuse.persist({
+            cache: accounting,
+            before: pendingReuseProof.before,
+            after: pendingReuseProof.after,
+            signal,
+            onReuseDiagnostic,
+          }));
+        reuseProofPersisted = true;
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        reportLocalRefreshReuseDiagnostic(
+          onReuseDiagnostic, "remember", "operation_failed",
+        );
       }
     }
     const notificationEvidence = publicNotificationEvidence(
@@ -1363,6 +1565,9 @@ export function createLocalCollectorRefreshRunner({
             status: "replay_safe",
             sourceMode: "unified",
             refreshStatus: accountingRefreshStatus,
+            ...(fastPathReason === null
+              ? {}
+              : { fastPathFallbackCode: fastPathReason }),
             readerVersion: accounting.sourceDescriptor?.readerVersion ?? null,
             compatibilityBehavior:
               accounting.sourceDescriptor?.contextBehavior ?? null,

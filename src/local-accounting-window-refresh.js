@@ -9,6 +9,7 @@ import {
   updateAccountingWindowReceipts,
 } from "./local-index-accounting-windows.js";
 import {
+  accountingWindowCacheDigest,
   createAccountingWindowCache,
   updateAccountingWindowCache,
   verifyAccountingWindowDays,
@@ -49,6 +50,7 @@ function mismatchPaths(left, right, path = [], out = []) {
 function summary({
   status, receiptMode, rebuiltKeys = [], periodsMatched = null,
   historyMatched = null, unchanged = false, reason = null, mismatchFields = null,
+  digest = null, previousDigest = null, dirtyFromMs = null,
 }) {
   return {
     status,
@@ -59,6 +61,9 @@ function summary({
     unchanged,
     ...(reason === null ? {} : { reason }),
     ...(mismatchFields === null ? {} : { mismatchFields }),
+    ...(digest === null ? {} : { digest }),
+    ...(previousDigest === null ? {} : { previousDigest }),
+    ...(dirtyFromMs === null ? {} : { dirtyFromMs }),
   };
 }
 
@@ -81,6 +86,15 @@ export async function refreshAccountingWindowShadow({
   expectedHistory = null,
   allowCreate = true,
   allowFullRebuild = true,
+  // A shipping fast path consumes this cache as its periods/history source.
+  // It may persist a cache that has not been parity-audited against a full
+  // rebuild; the audit records `source` so that claim is never inferred as
+  // `matched`. Deployments that have not enabled the fast path leave this off
+  // and keep the parity-required behavior.
+  allowUnaudited = false,
+  // Optional observer for the exact in-memory cache of this pass. The message
+  // is read-only: mutating it would corrupt the value the caller persists.
+  onCache = null,
   dayAccumulators = null,
   signal = null,
   now = () => Date.now(),
@@ -101,6 +115,12 @@ export async function refreshAccountingWindowShadow({
   }
   if (typeof allowFullRebuild !== "boolean") {
     throw new TypeError("accounting window shadow allowFullRebuild must be boolean");
+  }
+  if (typeof allowUnaudited !== "boolean") {
+    throw new TypeError("accounting window shadow allowUnaudited must be boolean");
+  }
+  if (onCache !== null && typeof onCache !== "function") {
+    throw new TypeError("accounting window shadow onCache must be a function or null");
   }
   if (dayAccumulators !== null && !(dayAccumulators instanceof Map)) {
     throw new TypeError("accounting window shadow dayAccumulators must be a Map or null");
@@ -144,6 +164,12 @@ export async function refreshAccountingWindowShadow({
       invalidReason = "cache_days_invalid";
     }
   }
+  // The digest of the state this pass starts from. A shipping cache records
+  // the digest it consumed; equality proves the incremental dirty set below
+  // is relative to exactly that state, even after a failed publication.
+  const previousDigest = previous === null
+    ? null
+    : accountingWindowCacheDigest(previous);
   if (previous === null && !allowCreate) {
     return summary({
       status: invalidReason === null ? "absent" : "invalid",
@@ -194,6 +220,7 @@ export async function refreshAccountingWindowShadow({
   let cache;
   let rebuiltKeys = [];
   let unchanged = false;
+  let dirtyFromMs = null;
   if (previous !== null) {
     let updated;
     try {
@@ -220,6 +247,7 @@ export async function refreshAccountingWindowShadow({
     cache = updated.cache;
     rebuiltKeys = updated.rebuiltKeys;
     unchanged = updated.unchanged === true;
+    dirtyFromMs = updated.dirtyFromMs ?? null;
   } else {
     cache = await createAccountingWindowCache({
       indexFile,
@@ -232,7 +260,11 @@ export async function refreshAccountingWindowShadow({
       now,
     });
     rebuiltKeys = receipts.windows.map(window => window.key);
+    dirtyFromMs = receipts.windows.length === 0
+      ? null
+      : Math.min(...receipts.windows.map(window => window.lowerMs));
   }
+  const digest = accountingWindowCacheDigest(cache);
   let periodsMatched = null;
   let historyMatched = null;
   if (expectedPeriods !== null) {
@@ -274,13 +306,17 @@ export async function refreshAccountingWindowShadow({
   const factsChanged = previous === null || receiptMode !== "unchanged";
   const auditAdded = expectedPeriods !== null
     && (previous === null || previous.audit === null);
+  const expose = () => {
+    if (onCache !== null) onCache(cache);
+  };
   if (!factsChanged && !auditAdded) {
+    expose();
     return summary({
       status: "unchanged", receiptMode, rebuiltKeys, periodsMatched,
-      historyMatched, unchanged: true,
+      historyMatched, unchanged: true, digest, previousDigest,
     });
   }
-  if (expectedPeriods === null) {
+  if (expectedPeriods === null && !allowUnaudited) {
     return summary({
       status: "unaudited",
       receiptMode,
@@ -291,14 +327,20 @@ export async function refreshAccountingWindowShadow({
       reason: "parity_required",
     });
   }
-  if (expectedPeriods !== null) {
-    cache.audit = {
+  cache.audit = expectedPeriods === null
+    ? {
+      status: "source",
+      comparedAtMs: Number(now()),
+      periods: 4,
+      history: true,
+    }
+    : {
       status: "matched",
       comparedAtMs: Number(now()),
       periods: 4,
       history: expectedHistory !== null,
     };
-  }
+  expose();
   signal?.throwIfAborted?.();
   await writeCache({ stateFile, cache, signal });
   return summary({
@@ -309,5 +351,8 @@ export async function refreshAccountingWindowShadow({
     historyMatched,
     unchanged,
     reason: receiptReason,
+    digest,
+    previousDigest,
+    dirtyFromMs,
   });
 }

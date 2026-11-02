@@ -79,16 +79,50 @@ still matched the shipping periods. The refresh runner maintains an existing
 shadow cache on rebuilt and reuse/time-projection cycles, and creates the first
 cache only when the full rebuild hands over its day accumulators. A global
 basis change is deferred (`allowFullRebuild: false`) to a maintenance pass
-rather than adding a full shadow rebuild to the foreground refresh. The exact
-path currently prices individual events; a faster rollup-bucket path moved a
-few hundred declared-speed provenance events across a baseline edge, so it is
-implemented but not used for the equality proof. The shipping refresh still
-runs the full accounting rebuild, readers do not consume the window cache, and
-weekly/transition/calibration splitting, reader overlay, settings UI, and the
-closed full-rebuild enum are not implemented. No page-speed improvement is
-claimed yet; the remaining costs are receipt scans after unsafe changes, the
-full shipping rebuild, and the calibration/weekly/transition work that still
-runs inside it.
+rather than adding a full shadow rebuild to the foreground refresh.
+
+Implementation status (2026-11-03): the shipping fast path is wired. A normal
+refresh composes the published cache from the exact window-cache
+periods/history, an exact timeline rescan from the earliest dirty day, and the
+previous cache's retained low-frequency artifacts (calibration, weekly API
+intervals, plan-scope receipts). The composer writes explicit `freshness`
+markers: `windows` and `timeline` are `exact`; `calibration`, `weeklyApiIntervals`,
+and `planScope` are `retained` with `asOf`/`coveredTo`. Quota series selection is
+range-global and capped, so it is retained between bounded refreshes
+(`accountingQuotaRefreshIntervalMs`, 10 minutes by default) and labelled
+`retained` with its exact `asOf`; a refresh pass rebuilds it exactly.
+
+Eligibility fails closed. The fast path requires a previous valid cache with a
+freshness marker, a window cache whose stored digest is exactly the state the
+previous cache consumed, an unchanged window basis fingerprint, stable
+thread-origin and policy proofs, an available history and weekly-interval
+receipt, and zero fallback. Any doubt runs the existing reuse or full-rebuild
+path. A full rebuild records its provenance and the digest of the window state
+it consumed, so the next normal append can fast-path. The closed reason is
+recorded as `fastPathFallbackCode` on the result.
+
+A protected-copy rehearsal on 2026-11-03 (same 251-day, 1.04M-fact index)
+composed a five-minute advance with a forced three-day timeline rescan. The
+24h/7d/30d/all periods, history, timeline, Spark timeline, quota timeline, Spark
+quota timeline, and weekly forecast all matched a full rebuild exactly. With
+the quota series retained, the pass took about 13 seconds (25 ms receipts, 8.3
+seconds window verification/fold, 4.8 seconds compose); the same pass with a
+quota refresh took about 37 seconds. The cold full rebuild on the same copy
+took 416 seconds; the earlier warm full rebuild took about 76 seconds. A
+synthetic three-append sequence recorded zero additional full rebuilds after
+the initial one.
+
+The exact path currently prices individual events; a faster rollup-bucket path
+moved a few hundred declared-speed provenance events across a baseline edge, so
+it is implemented but not used for the equality proof. The reader overlay and
+the user-visible `部分数据 · 截至 X` label are not implemented, the settings UI
+and manual **重新计算** escalation are not implemented, and the capped quota
+selection is refreshed on a low-frequency interval rather than every tick. The
+remaining costs are receipt scans after unsafe baseline/lineage changes, quota
+candidate projection (about 28 seconds per refresh pass on the protected copy),
+and the one-time full rebuild that seeds the first marker. A 10x reduction in
+the normal append cost is measured; no end-to-end page-speed or installed-app
+claim is made.
 
 # Decisions
 

@@ -266,7 +266,10 @@ export function createLocalIndexAccountingScan({
             };
           }
         }
-        for (const row of usageRows()) {
+        const wantsUsage = onUsage !== undefined
+          || onUsageGroup !== undefined
+          || indexedHistory !== undefined;
+        if (wantsUsage) for (const row of usageRows()) {
           const { ms: observedAtMs, iso: timestamp } = instant(row.observed_at_ms);
           const inWindow = observedAtMs >= startMs && observedAtMs <= endMs;
           const inHistory = history !== null

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   assertAccountingWindowReceipts,
   compareAccountingWindowReceipts,
@@ -19,7 +20,11 @@ import {
 
 export const ACCOUNTING_WINDOW_CACHE_VERSION = 3;
 const MAX_DAYS = 4_096;
-const AUDIT_STATUSES = new Set(["matched"]);
+// `matched` records a successful parity audit against a shipping rebuild.
+// `source` records a window cache that a shipping fast path consumed as its
+// authoritative periods/history source. Both are explicit; a cache without an
+// audit was never used for a reader-visible claim.
+const AUDIT_STATUSES = new Set(["matched", "source"]);
 
 function fixedError(code) {
   return Object.assign(new Error(code), { code });
@@ -91,6 +96,25 @@ export function verifyAccountingWindowDays(cache, hmacKey) {
   validateCache(cache);
   dayMap(cache, hmacKey);
   return true;
+}
+
+/**
+ * A content-only identity for the persisted day snapshots and their input
+ * receipts. It deliberately excludes anchors and wall-clock publication
+ * fields: advancing `endMs` without new facts must not change it. A shipping
+ * cache records this digest so a later fast path can prove that the window
+ * state it is about to mutate is exactly the state that shipping cache
+ * already consumed.
+ */
+export function accountingWindowCacheDigest(cache) {
+  validateCache(cache);
+  return createHash("sha256").update(stableJson({
+    schemaVersion: ACCOUNTING_WINDOW_CACHE_VERSION,
+    basisFingerprint: cache.basisFingerprint,
+    calculationRevision: cache.calculationRevision,
+    receiptDigest: cache.receipts.receiptDigest,
+    days: cache.days.map(day => [day.key, day.rowDigest]),
+  })).digest("hex");
 }
 
 function dayMap(cache, hmacKey) {
@@ -232,6 +256,19 @@ export async function createAccountingWindowCache({
   return validateCache(cache);
 }
 
+function dirtyFromMsFor(comparison, receipts, previousReceipts) {
+  const next = new Map(receipts.windows.map(window => [window.key, window.lowerMs]));
+  const prior = new Map(previousReceipts.windows.map(window => [window.key, window.lowerMs]));
+  let from = null;
+  const note = value => {
+    if (!Number.isSafeInteger(value)) return;
+    from = from === null ? value : Math.min(from, value);
+  };
+  for (const key of [...comparison.changed, ...comparison.added]) note(next.get(key));
+  for (const key of comparison.removed) note(prior.get(key));
+  return from;
+}
+
 /**
  * Update a shadow window cache from new receipts. Only changed/added windows
  * are rebuilt; unchanged day snapshots are preserved and folded again.
@@ -260,6 +297,7 @@ export async function updateAccountingWindowCache({
       added: comparison.added,
       removed: comparison.removed,
       changed: comparison.changed,
+      dirtyFromMs: dirtyFromMsFor(comparison, receipts, previous.receipts),
     };
   }
   const rebuiltKeys = [...new Set([...comparison.changed, ...comparison.added])].sort();
@@ -293,6 +331,7 @@ export async function updateAccountingWindowCache({
       removed: comparison.removed,
       changed: comparison.changed,
       unchanged: true,
+      dirtyFromMs: null,
     };
   }
   const previousDays = new Map(previous.days.map(day => [day.key, day]));
@@ -334,5 +373,6 @@ export async function updateAccountingWindowCache({
     removed: comparison.removed,
     changed: comparison.changed,
     unchanged: false,
+    dirtyFromMs: dirtyFromMsFor(comparison, receipts, previous.receipts),
   };
 }

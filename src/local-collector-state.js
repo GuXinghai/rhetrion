@@ -699,7 +699,8 @@ function validAccountingWindowCache(cache) {
     && Array.isArray(cache.periods) && cache.periods.length === 4
     && (cache.history === null || typeof cache.history === "object")
     && (cache.audit === null || (typeof cache.audit === "object"
-      && !Array.isArray(cache.audit) && cache.audit.status === "matched"
+      && !Array.isArray(cache.audit)
+      && ["matched", "source"].includes(cache.audit.status)
       && Number.isSafeInteger(cache.audit.comparedAtMs)
       && cache.audit.periods === 4 && typeof cache.audit.history === "boolean"));
 }

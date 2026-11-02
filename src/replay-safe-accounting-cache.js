@@ -4919,6 +4919,179 @@ export async function projectReplaySafeAccountingTime({ cache, scan, calibration
   return result;
 }
 
+/**
+ * Rebuild only the moving timeline and quota slices for the incremental
+ * shipping fast path.
+ *
+ * The caller has already folded exact periods/history from the window cache.
+ * Rows strictly before `staleFromMs` are retained from `cache`; rows at or
+ * after it are rebuilt from a bounded scan. Quota predictions are rebuilt for
+ * the whole window because their selection is range-global and quota rows are
+ * orders of magnitude cheaper than usage rows.
+ */
+export async function projectReplaySafeAccountingRetainedSlices({
+  cache,
+  scan,
+  expectedGeneration,
+  endMs,
+  windowDays = DEFAULT_WINDOW_DAYS,
+  staleFromMs = null,
+  // Quota-series selection is range-global and capped, so it cannot be merged
+  // from a dirty prefix. A caller may retain the previous exact series for a
+  // bounded low-frequency interval and refresh it on a later pass.
+  retainQuota = false,
+  declaredSpeedBaselines = [],
+  signal = null,
+  onTiming = null,
+  monotonicClock = undefined,
+  rss = () => process.memoryUsage().rss,
+  maximumRssBytes = MAX_ACCOUNTING_RSS_BYTES,
+} = {}) {
+  assertReplaySafeAccountingCache(cache);
+  const previousEnd = Date.parse(cache.coveredAt.endAt);
+  if (!Number.isSafeInteger(endMs) || endMs < previousEnd
+      || !Number.isSafeInteger(windowDays) || windowDays < MINIMUM_WINDOW_DAYS
+      || windowDays > MAXIMUM_WINDOW_DAYS) {
+    throw fixedError("accounting_fast_path_window_invalid");
+  }
+  if (staleFromMs !== null
+      && (!Number.isSafeInteger(staleFromMs) || staleFromMs < 0)) {
+    throw fixedError("accounting_fast_path_window_invalid");
+  }
+  const baselineRss = rss();
+  if (!Number.isSafeInteger(baselineRss) || baselineRss < 0
+      || !Number.isSafeInteger(maximumRssBytes) || maximumRssBytes < 1) {
+    throw fixedError("accounting_fast_path_rss_measurement_invalid");
+  }
+  const ceiling = Math.min(
+    maximumRssBytes, baselineRss + ACCOUNTING_RSS_DELTA_BUDGET_BYTES,
+  );
+  let processed = 0;
+  const checkRuntimeMemory = () => {
+    const current = rss();
+    if (!Number.isSafeInteger(current) || current < 0) {
+      throw fixedError("accounting_fast_path_rss_measurement_invalid");
+    }
+    if (current > ceiling) {
+      throw fixedError("accounting_fast_path_rss_limit_exceeded");
+    }
+  };
+  checkRuntimeMemory();
+  const timing = createLocalRefreshTimer({ onTiming, clock: monotonicClock });
+  const startMs = endMs - windowDays * 86_400_000;
+  // A dirty day boundary is UTC-aligned, but the cache window start is not.
+  // Clamp to the new window start so the first partial bucket is rebuilt from
+  // the same event predicate the full build uses.
+  const rescanFromMs = Math.max(
+    startMs,
+    Math.floor(
+      Math.min(staleFromMs ?? previousEnd, previousEnd)
+        / TIMELINE_BUCKET_MS,
+    ) * TIMELINE_BUCKET_MS,
+  );
+  const retainedRows = (rows, field = "startAt") => (Array.isArray(rows) ? rows : [])
+    .filter(row => {
+      const at = Date.parse(row?.[field]);
+      return Number.isFinite(at) && at >= startMs && at < rescanFromMs;
+    });
+  const retainedTimeline = retainedRows(cache.timeline);
+  const retainedSparkTimeline = retainedRows(cache.sparkUsageTimeline);
+  const timeline = new Map();
+  const sparkTimeline = new Map();
+  const price = createAccountingPricer();
+  let usageScanned = null;
+  if (rescanFromMs <= endMs) {
+    usageScanned = await timing.measure("accounting_fast_path_usage", () => scan({
+      startAt: new Date(rescanFromMs).toISOString(),
+      endAt: new Date(endMs).toISOString(),
+      usageBoundaryMs: [],
+      declaredSpeedBaselines,
+      signal,
+      onUsage: (raw) => {
+        throwIfAborted(signal);
+        if (++processed % ACCOUNTING_RSS_CHECK_INTERVAL === 0) {
+          checkRuntimeMemory();
+        }
+        const observedMs = Date.parse(raw?.timestamp);
+        if (!Number.isFinite(observedMs)
+            || observedMs < rescanFromMs || observedMs > endMs) return;
+        const event = eventProjection(raw, price);
+        if (event === null) return;
+        event.declaredSpeed = event.speed === "unknown"
+          ? declaredSpeedModeAt(declaredSpeedBaselines, observedMs) ?? "unknown"
+          : "unknown";
+        addTimelineEvent(event.isSpark ? sparkTimeline : timeline, event);
+      },
+    }));
+  }
+  const coverage = usageScanned === null
+    ? null
+    : normalizeUnifiedCoverage(usageScanned, expectedGeneration);
+  if (coverage !== null
+      && (String(coverage.generation) !== String(expectedGeneration?.id)
+        || coverage.generationFingerprint
+          !== expectedGeneration?.fingerprint)) {
+    throw fixedError("accounting_unified_generation_mismatch");
+  }  const nextTimeline = [...retainedTimeline, ...finalizeTimeline(timeline)]
+    .sort((left, right) => Date.parse(left.startAt) - Date.parse(right.startAt));
+  const nextSparkTimeline = [
+    ...retainedSparkTimeline, ...finalizeTimeline(sparkTimeline),
+  ].sort((left, right) => Date.parse(left.startAt) - Date.parse(right.startAt));
+  const quota = new Map();
+  const sparkQuota = new Map();
+  const pace = [];
+  if (!retainQuota) {
+    await timing.measure("accounting_fast_path_quota", () => scan({
+      startAt: new Date(startMs).toISOString(),
+      endAt: new Date(endMs).toISOString(),
+      usageBoundaryMs: [],
+      declaredSpeedBaselines,
+      signal,
+      onRateLimitSnapshot: (snapshot) => {
+        throwIfAborted(signal);
+        if (++processed % ACCOUNTING_RSS_CHECK_INTERVAL === 0) {
+          checkRuntimeMemory();
+        }
+        const at = Date.parse(snapshot?.timestamp);
+        const window = snapshot?.window;
+        if (!Number.isFinite(at) || at < startMs || at > endMs) return;
+        if (SPARK_QUOTA_LIMIT_IDS.includes(window?.limitId)
+            && window.provider === "openai_codex"
+            && isValidQuotaWindowDuration(window.windowDurationMins)) {
+          retainQuotaTimeline(sparkQuota, snapshot, {
+            limitId: window.limitId, durationMinutes: null,
+          });
+        } else if (window?.limitId === "codex"
+            && window.windowDurationMins === WEEKLY_WINDOW_MINUTES) {
+          retainQuotaTimeline(quota, snapshot, {
+            limitId: "codex", durationMinutes: WEEKLY_WINDOW_MINUTES,
+          });
+          const projected = weeklyPaceSnapshotProjection(snapshot);
+          if (projected !== null) pace.push(projected);
+        }
+      },
+    }));
+  }
+  throwIfAborted(signal);
+  checkRuntimeMemory();
+  const forecast = retainQuota
+    ? null
+    : projectWeeklyPaceForecast(pace, endMs);
+  timing.flush();
+  return {
+    timeline: nextTimeline,
+    sparkUsageTimeline: nextSparkTimeline,
+    quotaTimeline: retainQuota ? null : finalizeWeeklyQuotaTimeline(quota),
+    sparkQuotaTimeline: retainQuota ? null : finalizeWeeklyQuotaTimeline(sparkQuota),
+    weekly: forecast === null ? null : { paceForecast: forecast },
+    quotaRetained: retainQuota,
+    coverage: coverage?.coverage ?? null,
+    generation: coverage?.generation ?? null,
+    generationFingerprint: coverage?.generationFingerprint ?? null,
+    rescanFromMs,
+  };
+}
+
 export async function refreshReplaySafeAccountingCache({
   stateFile = null,
   // A JSON cache is no longer a supported durable target. Keeping this
