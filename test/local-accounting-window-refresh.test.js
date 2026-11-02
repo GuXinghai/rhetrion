@@ -168,6 +168,28 @@ test("a full receipt scan with unchanged windows does not rebuild days", async t
   assert.equal(result.status, "updated");
 });
 
+test("a tampered day snapshot is invalid before it can be folded", async t => {
+  const { workspace, indexFile, stateFile } = await setup(t);
+  const full = await fullCache(indexFile, workspace.codexHome);
+  await refreshAccountingWindowShadow({
+    indexFile, stateFile, hmacKey: KEY, endMs: END_MS,
+    expectedPeriods: full.periods, expectedHistory: full.history.period,
+    now: () => END_MS,
+  });
+  const stored = await readLocalCollectorAccountingWindowCache({ stateFile });
+  const tampered = structuredClone(stored.cache);
+  tampered.days[0].snapshot.period.events += 1;
+  await writeLocalCollectorAccountingWindowCache({ stateFile, cache: tampered });
+  const result = await refreshAccountingWindowShadow({
+    indexFile, stateFile, hmacKey: KEY, endMs: END_MS, allowCreate: false,
+  });
+  assert.deepEqual({ status: result.status, reason: result.reason },
+    { status: "invalid", reason: "cache_days_invalid" });
+  const after = await readLocalCollectorAccountingWindowCache({ stateFile });
+  assert.equal(after.cache.days[0].snapshot.period.events,
+    tampered.days[0].snapshot.period.events);
+});
+
 test("a basis change defers a full shadow rebuild when it is not allowed", async t => {
   const { workspace, indexFile, stateFile } = await setup(t);
   const full = await fullCache(indexFile, workspace.codexHome);

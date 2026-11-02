@@ -685,7 +685,7 @@ const MAX_ACCOUNTING_WINDOW_CACHE_BYTES = 192 * 1024 * 1024;
 
 function validAccountingWindowCache(cache) {
   return cache !== null && typeof cache === "object" && !Array.isArray(cache)
-    && cache.schemaVersion === 2
+    && cache.schemaVersion === 3
     && typeof cache.basisFingerprint === "string"
     && /^[a-f0-9]{64}$/u.test(cache.basisFingerprint)
     && typeof cache.generation === "string" && cache.generation.length > 0

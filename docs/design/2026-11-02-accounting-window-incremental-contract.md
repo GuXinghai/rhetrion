@@ -117,7 +117,9 @@ ranges fall back to a full receipt scan. Declared speed-baseline coverage is
 part of each window digest: extending a baseline that covers existing unknown
 speed facts forces a full receipt scan but rebuilds only the windows whose
 digest moved. The cache is persisted in owner-only collector state, but it is
-not wired to readers and does not replace the shipping rebuild. The derived-row
+not wired to readers and does not replace the shipping rebuild. Every stored day
+row's keyed `row_digest` is recomputed before the row is folded; a mismatch
+marks the whole cache invalid and leaves it untouched. The derived-row
 `row_digest` is required before a reader consumes a window or an incremental
 merge trusts it; it is not inferred from `fact_digest`.
 

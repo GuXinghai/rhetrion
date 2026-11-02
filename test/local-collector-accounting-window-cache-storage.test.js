@@ -11,7 +11,7 @@ import {
 } from "../src/local-collector-state.js";
 
 const cache = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   basisFingerprint: "a".repeat(64),
   generation: "3",
   generationFingerprint: "generation-v2-synthetic",

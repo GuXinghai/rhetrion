@@ -11,6 +11,7 @@ import {
 import {
   createAccountingWindowCache,
   updateAccountingWindowCache,
+  verifyAccountingWindowDays,
 } from "./local-index-accounting-window-cache.js";
 import {
   readLocalCollectorAccountingWindowCache,
@@ -130,6 +131,15 @@ export async function refreshAccountingWindowShadow({
       invalidReason = "receipts_invalid";
     }
   }
+  if (previous !== null) {
+    try {
+      verifyAccountingWindowDays(previous, key);
+    } catch (error) {
+      if (error?.name === "AbortError" || error instanceof TypeError) throw error;
+      previous = null;
+      invalidReason = "cache_days_invalid";
+    }
+  }
   if (previous === null && !allowCreate) {
     return summary({
       status: invalidReason === null ? "absent" : "invalid",
@@ -181,16 +191,28 @@ export async function refreshAccountingWindowShadow({
   let rebuiltKeys = [];
   let unchanged = false;
   if (previous !== null) {
-    const updated = await updateAccountingWindowCache({
-      previous,
-      indexFile,
-      receipts,
-      hmacKey: key,
-      declaredSpeedBaselines,
-      endMs,
-      signal,
-      now,
-    });
+    let updated;
+    try {
+      updated = await updateAccountingWindowCache({
+        previous,
+        indexFile,
+        receipts,
+        hmacKey: key,
+        declaredSpeedBaselines,
+        endMs,
+        signal,
+        now,
+      });
+    } catch (error) {
+      if (error?.code === "accounting_window_cache_day_digest_mismatch") {
+        return summary({
+          status: "invalid",
+          receiptMode,
+          reason: "day_digest_mismatch",
+        });
+      }
+      throw error;
+    }
     cache = updated.cache;
     rebuiltKeys = updated.rebuiltKeys;
     unchanged = updated.unchanged === true;
@@ -251,6 +273,17 @@ export async function refreshAccountingWindowShadow({
     return summary({
       status: "unchanged", receiptMode, rebuiltKeys, periodsMatched,
       historyMatched, unchanged: true,
+    });
+  }
+  if (expectedPeriods === null) {
+    return summary({
+      status: "unaudited",
+      receiptMode,
+      rebuiltKeys,
+      periodsMatched,
+      historyMatched,
+      unchanged: false,
+      reason: "parity_required",
     });
   }
   if (expectedPeriods !== null) {

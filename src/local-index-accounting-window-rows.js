@@ -7,8 +7,9 @@ import {
   finalizeAccountingPeriodAccumulator,
 } from "./replay-safe-accounting-cache.js";
 import { ACCOUNTING_WINDOW_MS } from "./local-index-accounting-windows.js";
+import { stableJson } from "./export/index.js";
 
-const DOMAIN = "rhetrion-accounting-window-row-v1";
+const DOMAIN = "rhetrion-accounting-window-row-v2";
 const MAX_WINDOWS = 4_096;
 
 function fixedError(code) {
@@ -27,13 +28,21 @@ function normalizeKey(hmacKey) {
 }
 
 function digest(value, key) {
-  return createHmac("sha256", key).update(`${DOMAIN}\0`).update(JSON.stringify(value)).digest("hex");
+  return createHmac("sha256", key).update(`${DOMAIN}\0`)
+    .update(stableJson(value)).digest("hex");
 }
 
 function validKey(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
   const ms = Date.parse(`${value}T00:00:00.000Z`);
   return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === value;
+}
+
+/** The keyed proof over one finalized UTC-day row. */
+export function accountingWindowRowDigest({
+  key, lowerMs, upperMs, period, hmacKey,
+}) {
+  return digest({ key, lowerMs, upperMs, period }, normalizeKey(hmacKey));
 }
 
 function contiguousRuns(windows) {

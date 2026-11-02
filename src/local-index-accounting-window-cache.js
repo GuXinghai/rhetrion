@@ -4,15 +4,19 @@ import {
   normalizeDeclaredSpeedBaselines,
 } from "./local-index-accounting-windows.js";
 import { stableJson } from "./export/index.js";
-import { buildAccountingWindowRows } from "./local-index-accounting-window-rows.js";
+import {
+  accountingWindowRowDigest,
+  buildAccountingWindowRows,
+} from "./local-index-accounting-window-rows.js";
 import { buildAccountingRollingPeriods } from "./local-index-accounting-window-fold.js";
 import { readLocalIndexGenerationIdentity } from "./local-index-companion-source.js";
 import {
   exportAccountingPeriodAccumulator,
+  finalizeAccountingPeriodAccumulator,
   importAccountingPeriodAccumulator,
 } from "./replay-safe-accounting-cache.js";
 
-export const ACCOUNTING_WINDOW_CACHE_VERSION = 2;
+export const ACCOUNTING_WINDOW_CACHE_VERSION = 3;
 const MAX_DAYS = 4_096;
 const AUDIT_STATUSES = new Set(["matched"]);
 
@@ -78,10 +82,32 @@ function validateCache(cache) {
   return cache;
 }
 
-function dayMap(cache) {
+/**
+ * Verify every stored day's keyed output digest. A cache that fails this check
+ * is not a trusted last-good artifact and must be treated as invalid.
+ */
+export function verifyAccountingWindowDays(cache, hmacKey) {
+  validateCache(cache);
+  dayMap(cache, hmacKey);
+  return true;
+}
+
+function dayMap(cache, hmacKey) {
   const map = new Map();
   for (const day of cache.days) {
-    map.set(day.lowerMs, importAccountingPeriodAccumulator(day.snapshot));
+    const accumulator = importAccountingPeriodAccumulator(day.snapshot);
+    const period = finalizeAccountingPeriodAccumulator(accumulator);
+    const expected = accountingWindowRowDigest({
+      key: day.key,
+      lowerMs: day.lowerMs,
+      upperMs: day.upperMs,
+      period,
+      hmacKey,
+    });
+    if (expected !== day.rowDigest) {
+      throw fixedError("accounting_window_cache_day_digest_mismatch");
+    }
+    map.set(day.lowerMs, accumulator);
   }
   return map;
 }
@@ -91,7 +117,9 @@ function endOfReceipts(receipts) {
   return receipts.windows.at(-1).upperMs - 1;
 }
 
-async function fold(cache, { indexFile, endMs, declaredSpeedBaselines, signal }) {
+async function fold(cache, {
+  indexFile, hmacKey, endMs, declaredSpeedBaselines, signal,
+}) {
   const lastFactMs = endOfReceipts(cache.receipts);
   const anchorMs = endMs ?? lastFactMs;
   const historyEndMs = Math.max(anchorMs, lastFactMs);
@@ -99,7 +127,7 @@ async function fold(cache, { indexFile, endMs, declaredSpeedBaselines, signal })
     indexFile,
     endMs: anchorMs,
     historyEndMs,
-    dayAccumulators: dayMap(cache),
+    dayAccumulators: dayMap(cache, hmacKey),
     declaredSpeedBaselines,
     includeHistory: true,
     signal,
@@ -169,7 +197,9 @@ export async function createAccountingWindowCache({
     history: null,
     audit: null,
   };
-  await fold(cache, { indexFile, endMs, declaredSpeedBaselines, signal });
+  await fold(cache, {
+    indexFile, hmacKey, endMs, declaredSpeedBaselines, signal,
+  });
   assertGenerationUnchanged(indexFile, identity);
   return validateCache(cache);
 }
@@ -264,7 +294,9 @@ export async function updateAccountingWindowCache({
     history: null,
     audit: null,
   };
-  await fold(cache, { indexFile, endMs, declaredSpeedBaselines, signal });
+  await fold(cache, {
+    indexFile, hmacKey, endMs, declaredSpeedBaselines, signal,
+  });
   assertGenerationUnchanged(indexFile, identity);
   return {
     cache: validateCache(cache),
