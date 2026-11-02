@@ -17,6 +17,7 @@ import {
   RETAINED_PROJECTION_SURFACE_PATHS,
   buildLocalCompanionSnapshot,
   isInformationalTerminalHistoryGap,
+  projectAccountingFreshness,
 } from "../src/local-companion-data.js";
 import {
   createAccountingPricer,
@@ -133,6 +134,42 @@ function rolloutToken(timestamp, total, last, usedPercent) {
     },
   });
 }
+
+test("accounting freshness projection exposes only status and asOf", () => {
+  const asOf = "2026-11-02T12:06:14.356Z";
+  const projected = projectAccountingFreshness({
+    freshness: {
+      schemaVersion: "local-accounting-freshness-v1",
+      windows: {
+        status: "exact", asOf, digest: "private-digest",
+        basisFingerprint: "private-basis", calculationRevision: 7,
+      },
+      timeline: { status: "exact", asOf, rescanFromAt: asOf },
+      quota: { status: "retained", asOf },
+      calibration: { status: "retained", asOf, coveredTo: asOf },
+      weeklyApiIntervals: { status: "retained", asOf, coveredTo: asOf },
+      planScope: { status: "retained", asOf },
+      provenance: { originFingerprint: "private-origin" },
+    },
+  });
+  assert.deepEqual(projected, {
+    windows: { status: "exact", asOf },
+    timeline: { status: "exact", asOf },
+    quota: { status: "retained", asOf },
+    calibration: { status: "retained", asOf },
+    weeklyApiIntervals: { status: "retained", asOf },
+    planScope: { status: "retained", asOf },
+  });
+  assert.equal(JSON.stringify(projected).includes("private"), false);
+  assert.equal(projectAccountingFreshness(null), null);
+  assert.equal(projectAccountingFreshness({}), null);
+  assert.equal(projectAccountingFreshness({
+    freshness: {
+      schemaVersion: "local-accounting-freshness-v1",
+      quota: { status: "retained", asOf: "not-an-instant" },
+    },
+  }), null);
+});
 
 test("usage projection preserves explicit context and absent-field pricing at 272k", () => {
   const pricer = createAccountingPricer();

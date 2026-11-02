@@ -1244,6 +1244,44 @@ test("local dashboard normalizer accepts artifact rows and keeps stale state exp
   assert.equal(result.gradient.rollingHistory.length, 1);
 });
 
+test("dashboard normalization keeps accounting freshness bounded to status and asOf", () => {
+  const asOf = "2026-11-02T12:06:14.356Z";
+  const result = normalizeDashboardPayload({
+    freshness: {
+      accountingFreshness: {
+        windows: {
+          status: "exact", asOf, digest: "private-digest",
+        },
+        timeline: { status: "exact", asOf, rescanFromAt: asOf },
+        quota: { status: "retained", asOf },
+        calibration: { status: "retained", asOf },
+        weeklyApiIntervals: { status: "retained", asOf },
+        planScope: { status: "retained", asOf },
+      },
+    },
+  });
+  assert.deepEqual(result.freshness.accountingFreshness, {
+    windows: { status: "exact", asOf },
+    timeline: { status: "exact", asOf },
+    quota: { status: "retained", asOf },
+    calibration: { status: "retained", asOf },
+    weeklyApiIntervals: { status: "retained", asOf },
+    planScope: { status: "retained", asOf },
+  });
+  assert.equal(
+    JSON.stringify(result.freshness.accountingFreshness).includes("private"),
+    false,
+  );
+  assert.equal(normalizeDashboardPayload({
+    freshness: {
+      accountingFreshness: {
+        quota: { status: "retained", asOf: "not-an-instant" },
+      },
+    },
+  }).freshness.accountingFreshness, null);
+  assert.equal(normalizeDashboardPayload({}).freshness.accountingFreshness, null);
+});
+
 test("history coverage only becomes complete from coherent archive evidence", () => {
   const complete = {
     status: "complete",

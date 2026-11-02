@@ -1413,6 +1413,33 @@ function renderLiveObservationPresentation(data, recency = observationRecency(da
   else setRawText($("#data-source"), formatLocal(data.quotaFreshness === null || data.quotaFreshness === undefined
     ? data.freshness.latestObservedAt : data.quotaFreshness.latestObservedAt));
 
+  // A retained moving component is exact as of its `asOf`, not current. The
+  // window/timeline/quota receipts are the ones a reader can see directly in
+  // totals and charts; calibration and plan receipts keep their own clocks.
+  const accountingFreshness = data?.freshness?.accountingFreshness ?? null;
+  const retainedAccounting = accountingFreshness
+    ? ["windows", "timeline", "quota"]
+      .map(key => accountingFreshness[key])
+      .filter(row => row?.status === "retained" && row.asOf !== null)
+    : [];
+  const accountingFreshnessNode = $("#accounting-freshness");
+  if (accountingFreshnessNode) {
+    if (retainedAccounting.length === 0) {
+      accountingFreshnessNode.hidden = true;
+      setRawText(accountingFreshnessNode, "");
+    } else {
+      retainedAccounting.sort((left, right) => (
+        Date.parse(left.asOf) - Date.parse(right.asOf)
+      ));
+      accountingFreshnessNode.hidden = false;
+      setLocalizedText(
+        accountingFreshnessNode,
+        "dashboard.freshness.partial",
+        { time: formatLocal(retainedAccounting[0].asOf) },
+      );
+    }
+  }
+
   if (priorStatus !== presentationStatus) {
     setGlobalState(presentation.state, {
       companionReachable: data.mode !== "demo"

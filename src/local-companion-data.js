@@ -52,6 +52,9 @@ import {
   readReplaySafeAccountingCache,
 } from "./replay-safe-accounting-cache.js";
 import {
+  LOCAL_ACCOUNTING_FRESHNESS_VERSION,
+} from "./local-accounting-fast-path.js";
+import {
   defaultLocalCollectorStatePath,
   forEachLocalCollectorRecord,
   prepareLocalCollectorState,
@@ -108,6 +111,44 @@ const TIMELINE_WEIGHTING_STATUS_CODE = Object.freeze({
   partial: 1,
   unknown: 2,
 });
+
+/**
+ * Project the accounting cache's component freshness into the public
+ * dashboard. Only status and a canonical `asOf` cross the boundary; the
+ * window digest, provenance digests, and diagnostics never do. A retained
+ * component means the value is exact as of that instant, not that it is
+ * current.
+ */
+export function projectAccountingFreshness(cache) {
+  const freshness = cache?.freshness;
+  if (!freshness
+      || freshness.schemaVersion !== LOCAL_ACCOUNTING_FRESHNESS_VERSION) {
+    return null;
+  }
+  const component = value => {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || !["exact", "retained"].includes(value.status)) {
+      return null;
+    }
+    const asOf = typeof value.asOf === "string"
+        && Number.isFinite(Date.parse(value.asOf))
+        && new Date(Date.parse(value.asOf)).toISOString() === value.asOf
+      ? value.asOf
+      : null;
+    return asOf === null ? null : { status: value.status, asOf };
+  };
+  const projected = {
+    windows: component(freshness.windows),
+    timeline: component(freshness.timeline),
+    quota: component(freshness.quota),
+    calibration: component(freshness.calibration),
+    weeklyApiIntervals: component(freshness.weeklyApiIntervals),
+    planScope: component(freshness.planScope),
+  };
+  return Object.values(projected).some(row => row !== null)
+    ? projected
+    : null;
+}
 
 export function isInformationalTerminalHistoryGap(historyCoverage) {
   const sourceCount = Number.isSafeInteger(historyCoverage?.sourceCount)
@@ -2916,6 +2957,7 @@ export async function buildLocalCompanionSnapshot({
           staleAfterSeconds: MAX_COLLECTOR_LIVE_AGE_MS / 1_000,
           accountingStatus,
           accountingAgeSeconds: replaySafeAccounting.ageSeconds ?? null,
+          accountingFreshness: projectAccountingFreshness(replaySafeCache),
         },
       collector: {
         status: collector.status,

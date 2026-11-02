@@ -3952,8 +3952,29 @@ function normalizeQuality(payload = {}) {
   };
 }
 
-function normalizeQuotaFreshness(value) {
-  if (value === undefined) return null;
+function normalizeAccountingComponentFreshness(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || !["exact", "retained"].includes(value.status)) return null;
+  const asOf = value.asOf === null ? null : canonicalInstant(value.asOf);
+  if (asOf === null) return null;
+  return { status: value.status, asOf };
+}
+
+function normalizeAccountingFreshness(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const projected = {};
+  for (const key of [
+    "windows", "timeline", "quota", "calibration",
+    "weeklyApiIntervals", "planScope",
+  ]) {
+    projected[key] = normalizeAccountingComponentFreshness(value[key]);
+  }
+  return Object.values(projected).some(row => row !== null)
+    ? projected
+    : null;
+}
+
+function normalizeQuotaFreshness(value) {  if (value === undefined) return null;
   const unavailable = { status: "unavailable", latestObservedAt: null, ageSeconds: null,
     staleAfterSeconds: null, source: null };
   if (!value || typeof value !== "object" || Array.isArray(value)
@@ -4024,7 +4045,10 @@ export function normalizeDashboardPayload(payload = {}, fragments = {}) {
       // keeping this one lets the page name what is actually stale instead of
       // telling a reader their observation is old when it is not.
       accountingStatus: text(freshness?.accountingStatus, ""),
-      accountingAgeSeconds: finite(freshness?.accountingAgeSeconds, null)
+      accountingAgeSeconds: finite(freshness?.accountingAgeSeconds, null),
+      accountingFreshness: normalizeAccountingFreshness(
+        freshness?.accountingFreshness,
+      )
     },
     quotaFreshness: normalizeQuotaFreshness(overview?.quotaFreshness),
     quotaWindows,

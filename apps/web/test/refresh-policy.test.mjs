@@ -1239,7 +1239,11 @@ test("real client normalization keeps newly published quota freshness separate f
   const usageAt = "2026-10-20T00:00:00.000Z";
   const quotaAt = "2026-10-21T11:59:50.000Z";
   const overview = { mode: "local", freshness: { status: "stale", latestObservedAt: usageAt,
-    ageSeconds: 129600, staleAfterSeconds: 1800, accountingStatus: "stale" },
+    ageSeconds: 129600, staleAfterSeconds: 1800, accountingStatus: "stale",
+    accountingFreshness: {
+      quota: { status: "retained", asOf: "2026-11-02T12:06:14.356Z" },
+      timeline: { status: "exact", asOf: "2026-11-02T12:06:14.356Z" },
+    } },
     quotaFreshness: { status: "live", latestObservedAt: quotaAt, ageSeconds: 10,
       staleAfterSeconds: 1800, source: "content_free_collector_state", privateExtra: "omitted" },
     quotaWindows: [{ limitId: "codex", durationMinutes: 300, observedAt: quotaAt,
@@ -1279,6 +1283,9 @@ test("real client normalization keeps newly published quota freshness separate f
   harness.context.renderLiveObservationPresentation(loaded, usageRecency);
   assert.equal(harness.context.$("#latest-observation").textContent, "10s");
   assert.equal(harness.context.$("#data-source").textContent, quotaAt);
+  assert.equal(harness.context.$("#accounting-freshness").hidden, false);
+  assert.match(harness.context.$("#accounting-freshness").textContent,
+    /Partial data/u);
   assert.equal(harness.context.lastQuotaPresentation.quotaWindows[0].status, "live");
 
   overview.quotaFreshness = { ...overview.quotaFreshness,

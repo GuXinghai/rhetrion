@@ -114,15 +114,17 @@ the initial one.
 
 The exact path currently prices individual events; a faster rollup-bucket path
 moved a few hundred declared-speed provenance events across a baseline edge, so
-it is implemented but not used for the equality proof. The reader overlay and
-the user-visible `部分数据 · 截至 X` label are not implemented, the settings UI
-and manual **重新计算** escalation are not implemented, and the capped quota
-selection is refreshed on a low-frequency interval rather than every tick. The
-remaining costs are receipt scans after unsafe baseline/lineage changes, quota
-candidate projection (about 28 seconds per refresh pass on the protected copy),
-and the one-time full rebuild that seeds the first marker. A 10x reduction in
-the normal append cost is measured; no end-to-end page-speed or installed-app
-claim is made.
+it is implemented but not used for the equality proof. The dashboard now
+projects the cache's `freshness` as status plus `asOf` only, and shows
+`部分数据 · 截至 X` when a window, timeline, or quota series is retained;
+digests, provenance, and diagnostics stay out of the browser payload. The
+settings UI and manual **重新计算** escalation are not implemented, and the
+capped quota selection is refreshed on a low-frequency interval rather than
+every tick. The remaining costs are receipt scans after unsafe
+baseline/lineage changes, quota candidate projection (about 28 seconds per
+refresh pass on the protected copy), and the one-time full rebuild that seeds
+the first marker. A 10x reduction in the normal append cost is measured; no
+end-to-end page-speed or installed-app claim is made.
 
 # Decisions
 

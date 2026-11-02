@@ -16,8 +16,10 @@ generation, including a forced three-day rescan. Normal appends compose the
 shipping cache without a full replay; the first pass after an upgrade still
 needs a full rebuild to seed the provenance and window markers. Low-frequency
 calibration and capped quota series are retained with explicit `asOf` markers;
-the reader overlay that surfaces those markers as `部分数据 · 截至 X` is not
-implemented. No schema, migration, installed-app, or release claim is made. It
+the dashboard surfaces retained moving components as `部分数据 · 截至 X` and
+never sends the digest, provenance, or diagnostics across the browser boundary.
+The calibration and plan-scope clocks remain internal. No schema, migration,
+installed-app, or release claim is made. It
 follows the
 [v11 impact-manifest plan](../plans/2026-11-01-local-index-impact-and-work-projections.md)
 and the [local index schema](../reference/local-index-schema.md); the
@@ -158,8 +160,12 @@ The fast path is a composition, not a second accounting implementation.
    weekly API intervals, plan-scope receipts, and retained quota series carry
    `freshness.calibration`, `freshness.weeklyApiIntervals`, `freshness.planScope`,
    and `freshness.quota` records with `status` and `asOf`/`coveredTo`. The cache
-   validator rejects a shape that loses the exactness markers. Readers must
-   surface a retained component as partial/aged until its next exact refresh.
+   validator rejects a shape that loses the exactness markers. The dashboard
+   projects only `status` and canonical `asOf` for the moving components and
+   shows `部分数据 · 截至 X` when a window, timeline, or quota series is
+   retained. Digests, provenance, and diagnostics never cross the browser
+   boundary. Calibration and plan clocks stay internal until their own surfaces
+   are designed.
 5. **A full rebuild seeds the markers.** The rebuild's fused history read hands
    over the day accumulators; after the shadow pass writes the window cache, the
    runner republishes the cache with the consumed window digest and the
