@@ -1129,14 +1129,32 @@ export function createLocalCollectorRefreshRunner({
     let reuseProofPersisted = false;
     let fastPathUsed = false;
     let fastPathReason = null;
-    let calibrationDue = false;
-    // A basis change makes the retained window state unusable. The fast-path
-    // shadow cannot rebuild it in the foreground, so the next step must be a
-    // real accounting rebuild; the post-rebuild shadow then reseeds the window
-    // cache from that rebuild's day accumulators.
-    let accountingRequiresRebuild = false;
+    // One explicit reason drives the reuse, retained, and rebuild decisions.
+    // Calibration is a low-frequency model and must be checked even when the
+    // fast path is disabled or unavailable.
+    let rebuildCause = "none";
     const isBasisChangeReason = value => value === "basis_changed"
       || value === "accounting_fast_path_basis_changed";
+    const calibrationDueFor = cache => {
+      if (cache === null || cache === undefined) return false;
+      try {
+        const calibrationAsOfMs = Date.parse(
+          cache.freshness?.calibration?.asOf
+            ?? cache.weeklyCalibration?.generatedAt
+            ?? cache.coveredAt?.endAt,
+        );
+        return !Number.isFinite(calibrationAsOfMs)
+          || accountingCalibrationDue({
+            nowMs: clock(),
+            intervalHours: calibrationIntervalHours,
+            changedAtMs: accountingCalibrationChangedAtMs,
+            lastRefitAtMs: calibrationAsOfMs,
+          });
+      } catch {
+        // An unreadable schedule is not a reason to retain the model.
+        return true;
+      }
+    };
     let calculationProof = null;
     let accountingUnavailableCode = accountingMayRun
         && !unifiedAccountingReady
@@ -1146,6 +1164,34 @@ export function createLocalCollectorRefreshRunner({
       : null;
     refreshStep = "accounting";
     const withinRebuildBackoff = clock() < accountingRebuildDeferUntilMs;
+    // Read the retained cache once, before the fast-path gate, so calibration
+    // due is evaluated even when the fast path is disabled or unavailable.
+    let previousAccountingCache = null;
+    if (refreshAccounting !== null && accountingMayRun && unifiedAccountingReady
+        && stateFile !== null && unifiedIndex?.generation !== undefined
+        && signal?.aborted !== true) {
+      try {
+        const existing = await timing.measure("cache_read", () => readAccountingCache({
+          stateFile,
+          now: clock,
+          sourceMode: "unified",
+          contextBehavior: "source_native",
+          expectedGeneration: unifiedIndex.generation,
+          includeStaleGeneration: true,
+        }));
+        previousAccountingCache = existing?.status === "available"
+          ? existing.cache
+          : existing?.staleCache?.reason === "cache_generation_mismatch"
+            ? existing.staleCache.cache
+            : null;
+      } catch {
+        // An unreadable cache cannot prove a calibration model; the normal
+        // reuse/rebuild path below remains authoritative.
+      }
+    }
+    if (calibrationDueFor(previousAccountingCache)) {
+      rebuildCause = "calibration_due";
+    }
     // Read the last good cache under the same policy checks everywhere a
     // failed or deferred pass needs to keep the surface usable.
     const readLastGoodAccounting = async ({
@@ -1198,35 +1244,9 @@ export function createLocalCollectorRefreshRunner({
           calculationProof = await timing.measure("reuse_proof_before", () => calculationReuse.readProof({
             generation: unifiedIndex.generation, declaredSpeedBaselines, unknownSpeedPolicy, nowMs: clock(), signal, onTiming, monotonicClock, onReuseDiagnostic, onOriginDiagnostic,
           }));
-          const existing = await timing.measure("cache_read", () => readAccountingCache({
-            stateFile,
-            now: clock,
-            sourceMode: "unified",
-            contextBehavior: "source_native",
-            expectedGeneration: unifiedIndex.generation,
-            includeStaleGeneration: true,
-          }));
-          const previousCache = existing?.status === "available"
-            ? existing.cache
-            : existing?.staleCache?.reason === "cache_generation_mismatch"
-              ? existing.staleCache.cache
-              : null;
+          const previousCache = previousAccountingCache;
           const provenance = accountingProvenanceFromProof(calculationProof);
-          if (previousCache !== null) {
-            const calibrationAsOfMs = Date.parse(
-              previousCache.freshness?.calibration?.asOf
-                ?? previousCache.weeklyCalibration?.generatedAt
-                ?? previousCache.coveredAt?.endAt,
-            );
-            calibrationDue = !Number.isFinite(calibrationAsOfMs)
-              || accountingCalibrationDue({
-                nowMs: clock(),
-                intervalHours: calibrationIntervalHours,
-                changedAtMs: accountingCalibrationChangedAtMs,
-                lastRefitAtMs: calibrationAsOfMs,
-              });
-          }
-          if (calibrationDue) {
+          if (rebuildCause === "calibration_due") {
             fastPathReason = "calibration_due";
           } else if (previousCache?.freshness?.schemaVersion
                 === LOCAL_ACCOUNTING_FRESHNESS_VERSION
@@ -1247,9 +1267,7 @@ export function createLocalCollectorRefreshRunner({
                 endMs: fastPathEndMs,
                 expectedPeriods: null,
                 expectedHistory: null,
-                allowCreate: false,
-                allowFullRebuild: false,
-                allowUnaudited: true,
+                mode: "foreground",
                 onCache: cache => { windowCache = cache; },
                 signal,
                 now: clock,
@@ -1300,7 +1318,7 @@ export function createLocalCollectorRefreshRunner({
             } else {
               fastPathReason = shadow.reason ?? shadow.status;
               if (isBasisChangeReason(fastPathReason)) {
-                accountingRequiresRebuild = true;
+                rebuildCause = "basis_changed";
               }
             }
           } else {
@@ -1311,7 +1329,7 @@ export function createLocalCollectorRefreshRunner({
           fastPathReason = REFRESH_FAILURE_CODE_PATTERN.test(error?.code ?? "")
             ? error.code : "fast_path_failed";
           if (isBasisChangeReason(fastPathReason)) {
-            accountingRequiresRebuild = true;
+            rebuildCause = "basis_changed";
             fastPathReason = "basis_changed";
           }
           reportLocalRefreshReuseDiagnostic(
@@ -1322,16 +1340,21 @@ export function createLocalCollectorRefreshRunner({
       let timeProjectionFailed = false;
       if (!fastPathUsed) {
       try {
-        if (signal?.aborted !== true && !calibrationDue && !accountingRequiresRebuild) {
+        if (signal?.aborted !== true && rebuildCause === "none") {
           if (calculationProof === null) {
             calculationProof = await timing.measure("reuse_proof_before", () => calculationReuse.readProof({
               generation: unifiedIndex.generation, declaredSpeedBaselines, unknownSpeedPolicy, nowMs: clock(), signal, onTiming, monotonicClock, onReuseDiagnostic, onOriginDiagnostic,
             }));
           }
-          accounting = await timing.measure("reuse_check", () => calculationReuse.reuse({
+          const reused = await timing.measure("reuse_check", () => calculationReuse.reuse({
             proof: calculationProof, nowMs: clock(),
             signal, onReuseDiagnostic,
           }));
+          if (reused !== null && calibrationDueFor(reused)) {
+            rebuildCause = "calibration_due";
+          } else {
+            accounting = reused;
+          }
         }
         if (accounting !== null && unifiedIndexFile !== null && stateFile !== null) {
           try {
@@ -1377,8 +1400,7 @@ export function createLocalCollectorRefreshRunner({
       if (accounting === null
           && (collectorWroteNoRolloutUsage || withinRebuildBackoff)
           && (withinRebuildBackoff || existingCalculationProven)
-          && (!calibrationDue || withinRebuildBackoff)
-          && (!accountingRequiresRebuild || withinRebuildBackoff)
+          && (rebuildCause === "none" || withinRebuildBackoff)
           && signal?.aborted !== true) {
         const lastGood = await readLastGoodAccounting({
           includeStaleGeneration: withinRebuildBackoff,
@@ -1461,14 +1483,14 @@ export function createLocalCollectorRefreshRunner({
           accountingUnavailableCode = safeAccountingUnavailableCode(
             error?.code,
           );
-          if (calibrationDue || accountingRequiresRebuild) {
+          if (rebuildCause !== "none") {
             accountingRebuildDeferUntilMs = clock()
               + ACCOUNTING_REBUILD_FAILURE_BACKOFF_MS;
             // A due refit does not make the existing cache invalid. Serve its
             // last-good values now; the retry after the pause re-attempts the
             // refit. A basis change is different: the old cache is not
             // authoritative under the new basis, so leave it unavailable.
-            if (calibrationDue && !accountingRequiresRebuild) {
+            if (rebuildCause === "calibration_due") {
               const lastGood = await readLastGoodAccounting({
                 includeStaleGeneration: true,
                 requireWeeklyIntervals: true,
@@ -1576,11 +1598,10 @@ export function createLocalCollectorRefreshRunner({
             // existing cache is maintained.
             dayAccumulators: capturedDayAccumulators,
             dayAccumulatorsRevision: capturedDayAccumulatorsRevision,
-            allowCreate: capturedDayAccumulators !== null,
             // This pass follows a real accounting rebuild, so it is the
             // maintenance point that may recreate the window cache under a
-            // new basis. The foreground fast path still passes false.
-            allowFullRebuild: true,
+            // new basis. The foreground fast path still uses `foreground`.
+            mode: "maintain",
             onCache: cache => { shadowCache = cache; },
             signal,
             now: clock,

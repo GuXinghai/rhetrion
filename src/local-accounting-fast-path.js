@@ -49,13 +49,11 @@ export const ACCOUNTING_FAST_PATH_FALLBACK_CODES = Object.freeze([
   "manifest_unsafe_mode",
   "manifest_unsafe_partition",
   "mismatch",
-  "parity_required",
   "period_mismatch",
   "receipts_invalid",
   "retained_marker_absent",
   "revision_without_change",
   "source_unavailable",
-  "unaudited",
 ]);
 const ACCOUNTING_FAST_PATH_FALLBACK_CODE_SET =
   new Set(ACCOUNTING_FAST_PATH_FALLBACK_CODES);

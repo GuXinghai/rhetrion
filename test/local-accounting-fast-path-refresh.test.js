@@ -232,3 +232,88 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
   assert.equal(recovered.accounting.refreshStatus, "rebuilt");
   assert.equal(rebuilds, 5, "the retry pauses then refits");
 });
+
+test("calibration due still forces a refit when the fast path is disabled", async t => {
+  const workspace = createWorkspace({
+    files: 2, events: 200, days: 20, fillerBytesPerEvent: 0,
+  });
+  t.after(() => workspace.cleanup());
+  const indexFile = join(workspace.state, "index.sqlite");
+  const stateFile = join(workspace.state, "collector.sqlite");
+  await refreshLocalIndex({
+    codexHome: workspace.codexHome, indexFile,
+    secretFile: workspace.secretFile, workerCount: 1,
+  });
+  let nowMs = Date.parse("2026-09-01T00:00:00.000Z");
+  let rebuilds = 0;
+  let cached = null;
+  const proof = {
+    id: 1,
+    fingerprint: "f".repeat(64),
+    components: {
+      file: "file",
+      revision: 1,
+      baselines: "b".repeat(64),
+      origins: "o".repeat(64),
+      policy: "p".repeat(64),
+    },
+    coverage: null,
+    committedAtMs: 0,
+  };
+  const fakeReuse = {
+    readProof: async () => proof,
+    reuse: async () => cached,
+    matches: () => true,
+    persist: async ({ cache, signal }) => {
+      cached = cache;
+      await writeLocalCollectorAccountingCache({ stateFile, cache, signal });
+      return true;
+    },
+  };
+  const runner = createLocalCollectorRefreshRunner({
+    codexHome: workspace.codexHome,
+    stateFile,
+    unifiedIndexFile: indexFile,
+    unifiedIndexSecretFile: null,
+    clock: () => nowMs,
+    accountingFastPath: false,
+    accountingCalibrationIntervalHours: 6,
+    createCalculationReuse: () => fakeReuse,
+    selectAccountObservationSecret: () => ({
+      loadAccountObservationSecret: null,
+    }),
+    runCollector: async () => ({
+      rolloutRecordsWritten: 1,
+      filesDiscovered: 1,
+      refresh: { attempted: true, recordWritten: true, errorCode: null },
+      indexing: COMPLETE_INDEX,
+    }),
+    refreshUnifiedIndex: async () => ({
+      status: "ingested",
+      generation: (await readLocalIndexCompanionProjection({
+        indexFile, nowMs,
+      })).generation,
+    }),
+    refreshAccounting: async options => {
+      rebuilds += 1;
+      return refreshLocalIndexAccountingCache({
+        ...options,
+        indexFile,
+        stateFile,
+      });
+    },
+  });
+
+  const first = await runner();
+  assert.equal(first.accounting.refreshStatus, "rebuilt");
+  assert.equal(rebuilds, 1);
+
+  const reused = await runner();
+  assert.equal(reused.accounting.refreshStatus, "reused");
+  assert.equal(rebuilds, 1, "the ordinary reuse path is active");
+
+  nowMs += 7 * 3_600_000;
+  const due = await runner();
+  assert.equal(due.accounting.refreshStatus, "rebuilt");
+  assert.equal(rebuilds, 2, "due calibration bypasses reuse without the fast path");
+});

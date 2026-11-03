@@ -4709,8 +4709,7 @@ test("a rebuilt accounting result maintains the shadow window cache once", async
   assert.equal(shadowArgs.indexFile, "/private/local-unified-index-v1.sqlite");
   assert.equal(shadowArgs.stateFile, "/private/collector.sqlite");
   assert.equal(shadowArgs.secretFile, "/private/device-salt");
-  assert.equal(shadowArgs.allowCreate, false);
-  assert.equal(shadowArgs.allowFullRebuild, true);
+  assert.equal(shadowArgs.mode, "maintain");
   assert.equal(shadowArgs.endMs, Date.parse("2026-07-23T12:00:00.000Z"));
   assert.equal(shadowArgs.expectedHistory.events, 2);
 });
@@ -4763,8 +4762,7 @@ test("a rebuilt accounting pass hands its day accumulators to the shadow cache",
   });
   const result = await runner();
   assert.equal(result.accounting.refreshStatus, "rebuilt");
-  assert.equal(shadowArgs.allowCreate, true);
-  assert.equal(shadowArgs.allowFullRebuild, true);
+  assert.equal(shadowArgs.mode, "maintain");
   assert.equal(shadowArgs.dayAccumulators, dayAccumulators);
 });
 

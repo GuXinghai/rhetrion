@@ -81,7 +81,7 @@ still takes the full receipt scan. The refresh runner maintains an existing
 shadow cache on rebuilt and reuse/time-projection cycles, and creates the first
 cache only when the full rebuild hands over its day accumulators. A global
 basis change defers the foreground shadow; the next real rebuild runs the
-maintenance pass with `allowFullRebuild: true` and reseeds the window cache
+maintenance pass with `mode: "maintain"` and reseeds the window cache
 from that rebuild's day accumulators.
 
 Implementation status (2026-11-03): the shipping fast path is wired. A normal
@@ -132,17 +132,15 @@ projects the cache's `freshness` as status plus `asOf` only, and shows
 digests and provenance digests stay out of the browser payload, while the
 pre-existing bounded replay diagnostics remain a separate projection. The
 calibration card keeps its last refit time visible, and the
-default 24-hour calibration due check is wired into the fast path; the Settings
-UI, persisted interval/change-time selection, and manual **重新计算**
-escalation are not implemented, and the
-capped quota selection is refreshed on a low-frequency interval rather than
-every tick. The remaining costs are receipt scans after unsafe
-baseline/lineage changes, quota candidate projection (about 28 seconds per
+default 24-hour calibration due check is evaluated before reuse and the fast
+path, so a due refit forces a real rebuild even when the fast path is disabled.
+The Settings UI, persisted interval/change-time selection, and manual
+**重新计算** escalation are not implemented, and the capped quota selection is
+refreshed on a low-frequency interval rather than every tick. The remaining
+costs are receipt scans after a new or removed baseline declaration, an
+unbounded lineage change, quota candidate projection (about 28 seconds per
 refresh pass on the protected copy), and the one-time full rebuild that seeds
-the first marker. The remaining costs are receipt scans after a new or removed
-baseline declaration, an unbounded lineage change, quota candidate projection
-(about 28 seconds per refresh pass on the protected copy), and the one-time
-full rebuild that seeds the first marker. A 10x reduction in the normal append
+the first marker. A 10x reduction in the normal append
 cost is measured; no end-to-end page-speed or installed-app claim is made.
 
 # Decisions

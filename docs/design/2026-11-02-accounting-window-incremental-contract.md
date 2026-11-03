@@ -171,11 +171,11 @@ The fast path is a composition, not a second accounting implementation.
    boundary; the pre-existing bounded replay diagnostics and generation
    fingerprints are a separate projection. The calibration card keeps its own
    refit time visible; the plan-scope status/asOf is projected but has no
-   dedicated surface. The closed calibration interval is enforced on the
-   fast-path eligibility path: when the last real refit is due, the pass records
-   `calibration_due` and runs a full rebuild instead of retaining the model
-   indefinitely. Hoisting the same due check outside the fast-path gate remains
-   part of the settings/scheduler work.
+   dedicated surface. The closed calibration interval is enforced before the
+   fast-path gate: when the last real refit is due, reuse is skipped and the
+   pass records `calibration_due` and runs a full rebuild instead of retaining
+   the model indefinitely. A failed refit keeps the last-good cache visible and
+   retries after a bounded pause.
 5. **A full rebuild seeds the markers.** The rebuild's fused history read hands
    over the day accumulators; after the shadow pass writes the window cache, the
    runner republishes the cache with the consumed window digest and the

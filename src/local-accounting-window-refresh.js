@@ -98,14 +98,10 @@ export async function refreshAccountingWindowShadow({
   endMs,
   expectedPeriods = null,
   expectedHistory = null,
-  allowCreate = true,
-  allowFullRebuild = true,
-  // A shipping fast path consumes this cache as its periods/history source.
-  // It may persist a cache that has not been parity-audited against a full
-  // rebuild; the audit records `source` so that claim is never inferred as
-  // `matched`. Deployments that have not enabled the fast path leave this off
-  // and keep the parity-required behavior.
-  allowUnaudited = false,
+  // `foreground` may update an existing cache and publish source-audited
+  // state, but never creates a cache or rebuilds one under a new basis.
+  // `maintain` is the post-rebuild maintenance pass: it may create or rebuild.
+  mode = "maintain",
   // Optional observer for the exact in-memory cache of this pass. The message
   // is read-only: mutating it would corrupt the value the caller persists.
   onCache = null,
@@ -125,15 +121,10 @@ export async function refreshAccountingWindowShadow({
   if (!Number.isSafeInteger(endMs) || endMs < 0) {
     throw new TypeError("accounting window shadow endMs is invalid");
   }
-  if (typeof allowCreate !== "boolean") {
-    throw new TypeError("accounting window shadow allowCreate must be boolean");
+  if (!["foreground", "maintain"].includes(mode)) {
+    throw new TypeError("accounting window shadow mode must be foreground or maintain");
   }
-  if (typeof allowFullRebuild !== "boolean") {
-    throw new TypeError("accounting window shadow allowFullRebuild must be boolean");
-  }
-  if (typeof allowUnaudited !== "boolean") {
-    throw new TypeError("accounting window shadow allowUnaudited must be boolean");
-  }
+  const foreground = mode === "foreground";
   if (onCache !== null && typeof onCache !== "function") {
     throw new TypeError("accounting window shadow onCache must be a function or null");
   }
@@ -192,7 +183,7 @@ export async function refreshAccountingWindowShadow({
   const previousDigest = previous === null
     ? null
     : accountingWindowCacheDigest(previous);
-  if (previous === null && !allowCreate) {
+  if (previous === null && foreground) {
     return summary({
       status: invalidReason === null ? "absent" : "invalid",
       receiptMode: null,
@@ -232,7 +223,7 @@ export async function refreshAccountingWindowShadow({
   }
   if (previous !== null
       && receipts.basisFingerprint !== previous.basisFingerprint
-      && !allowFullRebuild) {
+      && foreground) {
     return summary({
       status: "deferred",
       receiptMode,
@@ -344,17 +335,6 @@ export async function refreshAccountingWindowShadow({
     return summary({
       status: "unchanged", receiptMode, rebuiltKeys, periodsMatched,
       historyMatched, unchanged: true, digest, previousDigest,
-    });
-  }
-  if (expectedPeriods === null && !allowUnaudited) {
-    return summary({
-      status: "unaudited",
-      receiptMode,
-      rebuiltKeys,
-      periodsMatched,
-      historyMatched,
-      unchanged: false,
-      reason: "parity_required",
     });
   }
   cache.audit = expectedPeriods === null

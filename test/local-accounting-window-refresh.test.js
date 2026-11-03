@@ -133,10 +133,10 @@ test("a mismatch is reported and does not replace the last matched cache", async
   assert.deepEqual(after.cache, before.cache);
 });
 
-test("an absent cache is not created when creation is disallowed", async t => {
+test("a foreground pass does not create a cache", async t => {
   const { workspace, indexFile, stateFile } = await setup(t);
   const result = await refreshAccountingWindowShadow({
-    indexFile, stateFile, hmacKey: KEY, endMs: END_MS, allowCreate: false,
+    indexFile, stateFile, hmacKey: KEY, endMs: END_MS, mode: "foreground",
   });
   assert.equal(result.status, "absent");
   const stored = await readLocalCollectorAccountingWindowCache({ stateFile });
@@ -160,7 +160,7 @@ test("a full receipt scan with unchanged windows does not rebuild days", async t
   const result = await refreshAccountingWindowShadow({
     indexFile, stateFile, hmacKey: KEY, endMs: END_MS,
     expectedPeriods: full.periods, expectedHistory: full.history.period,
-    allowCreate: false, now: () => END_MS,
+    mode: "foreground", now: () => END_MS,
   });
   assert.equal(result.receiptMode, "full");
   assert.equal(result.rebuiltDays, 0);
@@ -181,7 +181,7 @@ test("a tampered day snapshot is invalid before it can be folded", async t => {
   tampered.days[0].snapshot.period.events += 1;
   await writeLocalCollectorAccountingWindowCache({ stateFile, cache: tampered });
   const result = await refreshAccountingWindowShadow({
-    indexFile, stateFile, hmacKey: KEY, endMs: END_MS, allowCreate: false,
+    indexFile, stateFile, hmacKey: KEY, endMs: END_MS, mode: "foreground",
   });
   assert.deepEqual({ status: result.status, reason: result.reason },
     { status: "invalid", reason: "cache_days_invalid" });
@@ -207,7 +207,7 @@ test("a basis change defers a full shadow rebuild when it is not allowed", async
   }
   const result = await refreshAccountingWindowShadow({
     indexFile, stateFile, hmacKey: KEY, endMs: END_MS,
-    allowCreate: false, allowFullRebuild: false, now: () => END_MS,
+    mode: "foreground", now: () => END_MS,
   });
   assert.deepEqual({ status: result.status, reason: result.reason },
     { status: "deferred", reason: "basis_changed" });
@@ -232,7 +232,7 @@ test("a maintenance pass recreates the cache under a new basis", async t => {
   }
   const result = await refreshAccountingWindowShadow({
     indexFile, stateFile, hmacKey: KEY, endMs: END_MS,
-    allowCreate: false, allowFullRebuild: true, allowUnaudited: true,
+    mode: "maintain",
     now: () => END_MS,
   });
   assert.equal(result.status, "updated");
@@ -257,7 +257,7 @@ test("tampered receipts mark the shadow cache invalid without deleting it", asyn
   tampered.receipts.windows[0].factDigest = "0".repeat(64);
   await writeLocalCollectorAccountingWindowCache({ stateFile, cache: tampered });
   const result = await refreshAccountingWindowShadow({
-    indexFile, stateFile, hmacKey: KEY, endMs: END_MS, allowCreate: false,
+    indexFile, stateFile, hmacKey: KEY, endMs: END_MS, mode: "foreground",
   });
   assert.equal(result.status, "invalid");
   assert.equal(result.reason, "receipts_invalid");
