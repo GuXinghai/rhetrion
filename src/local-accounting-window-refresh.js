@@ -67,6 +67,20 @@ function summary({
   };
 }
 
+const INVALID_CACHE_REASONS = new Set([
+  "day_digest_mismatch",
+  "day_missing",
+  "day_revision_mismatch",
+]);
+
+function invalidCacheReason(error) {
+  const code = error?.code;
+  if (typeof code !== "string"
+      || !code.startsWith("accounting_window_cache_")) return null;
+  const reason = code.slice("accounting_window_cache_".length);
+  return INVALID_CACHE_REASONS.has(reason) ? reason : null;
+}
+
 /**
  * Maintain the shadow window cache beside the shipping accounting cache.
  *
@@ -245,14 +259,9 @@ export async function refreshAccountingWindowShadow({
         now,
       });
     } catch (error) {
-      if (["accounting_window_cache_day_digest_mismatch",
-        "accounting_window_cache_day_revision_mismatch",
-        "accounting_window_cache_day_missing"].includes(error?.code)) {
-        return summary({
-          status: "invalid",
-          receiptMode,
-          reason: error.code.slice("accounting_window_cache_".length),
-        });
+      const reason = invalidCacheReason(error);
+      if (reason !== null) {
+        return summary({ status: "invalid", receiptMode, reason });
       }
       throw error;
     }
@@ -261,17 +270,25 @@ export async function refreshAccountingWindowShadow({
     unchanged = updated.unchanged === true;
     dirtyFromMs = updated.dirtyFromMs ?? null;
   } else {
-    cache = await createAccountingWindowCache({
-      indexFile,
-      receipts,
-      hmacKey: key,
-      declaredSpeedBaselines,
-      dayAccumulators,
-      dayAccumulatorsRevision,
-      endMs,
-      signal,
-      now,
-    });
+    try {
+      cache = await createAccountingWindowCache({
+        indexFile,
+        receipts,
+        hmacKey: key,
+        declaredSpeedBaselines,
+        dayAccumulators,
+        dayAccumulatorsRevision,
+        endMs,
+        signal,
+        now,
+      });
+    } catch (error) {
+      const reason = invalidCacheReason(error);
+      if (reason !== null) {
+        return summary({ status: "invalid", receiptMode, reason });
+      }
+      throw error;
+    }
     rebuiltKeys = receipts.windows.map(window => window.key);
     dirtyFromMs = receipts.windows.length === 0
       ? null

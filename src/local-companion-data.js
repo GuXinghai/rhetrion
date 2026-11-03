@@ -52,6 +52,7 @@ import {
   readReplaySafeAccountingCache,
 } from "./replay-safe-accounting-cache.js";
 import {
+  LOCAL_ACCOUNTING_FRESHNESS_COMPONENTS,
   LOCAL_ACCOUNTING_FRESHNESS_VERSION,
 } from "./local-accounting-freshness.js";
 import {
@@ -137,14 +138,10 @@ export function projectAccountingFreshness(cache) {
       : null;
     return asOf === null ? null : { status: value.status, asOf };
   };
-  const projected = {
-    windows: component(freshness.windows),
-    timeline: component(freshness.timeline),
-    quota: component(freshness.quota),
-    calibration: component(freshness.calibration),
-    weeklyApiIntervals: component(freshness.weeklyApiIntervals),
-    planScope: component(freshness.planScope),
-  };
+  const projected = {};
+  for (const name of LOCAL_ACCOUNTING_FRESHNESS_COMPONENTS) {
+    projected[name] = component(freshness[name]);
+  }
   return Object.values(projected).some(row => row !== null)
     ? projected
     : null;

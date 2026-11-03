@@ -26,6 +26,7 @@ import {
   completeAccountingFreshness,
   composeLocalAccountingFastPath,
   accountingFastPathProvenanceMatches,
+  normalizeAccountingFastPathFallbackCode,
 } from "../src/local-accounting-fast-path.js";
 
 const KEY = "synthetic-fast-path-key";
@@ -258,6 +259,25 @@ test("a freshness envelope is validated once it exists", async t => {
     provenance: PROVENANCE,
   });
   assert.equal(withoutDigest.freshness, undefined);
+});
+
+test("fast-path fallback codes stay bounded across producer prefixes", () => {
+  assert.equal(
+    normalizeAccountingFastPathFallbackCode("accounting_window_cache_baselines_mismatch"),
+    "baselines_mismatch",
+  );
+  assert.equal(
+    normalizeAccountingFastPathFallbackCode("accounting_window_manifest_range_missing"),
+    "manifest_range_missing",
+  );
+  assert.equal(
+    normalizeAccountingFastPathFallbackCode("accounting_fast_path_basis_changed"),
+    "basis_changed",
+  );
+  assert.equal(
+    normalizeAccountingFastPathFallbackCode("private/free-form-code"),
+    "fast_path_failed",
+  );
 });
 
 test("fast path provenance requires stable origins and policy", () => {

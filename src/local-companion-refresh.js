@@ -1135,6 +1135,8 @@ export function createLocalCollectorRefreshRunner({
     // real accounting rebuild; the post-rebuild shadow then reseeds the window
     // cache from that rebuild's day accumulators.
     let accountingRequiresRebuild = false;
+    const isBasisChangeReason = value => value === "basis_changed"
+      || value === "accounting_fast_path_basis_changed";
     let calculationProof = null;
     let accountingUnavailableCode = accountingMayRun
         && !unifiedAccountingReady
@@ -1297,7 +1299,7 @@ export function createLocalCollectorRefreshRunner({
               accountingRebuildDeferredStreak = 0;
             } else {
               fastPathReason = shadow.reason ?? shadow.status;
-              if (shadow.status === "deferred" && shadow.reason === "basis_changed") {
+              if (isBasisChangeReason(fastPathReason)) {
                 accountingRequiresRebuild = true;
               }
             }
@@ -1308,6 +1310,10 @@ export function createLocalCollectorRefreshRunner({
           if (error?.name === "AbortError") throw error;
           fastPathReason = REFRESH_FAILURE_CODE_PATTERN.test(error?.code ?? "")
             ? error.code : "fast_path_failed";
+          if (isBasisChangeReason(fastPathReason)) {
+            accountingRequiresRebuild = true;
+            fastPathReason = "basis_changed";
+          }
           reportLocalRefreshReuseDiagnostic(
             onReuseDiagnostic, "lookup", "fast_path_fallback",
           );
@@ -1493,32 +1499,16 @@ export function createLocalCollectorRefreshRunner({
             consecutive: accountingRebuildDeferredStreak,
           };
           if (rebuilt.retained === true && signal?.aborted !== true) {
-            try {
-              const existing = await readAccountingCache({
-                ...(stateFile === null ? {} : { stateFile }),
-                now: clock,
-                sourceMode: "unified",
-                contextBehavior: "source_native",
-                expectedGeneration: unifiedIndex.generation,
-                includeStaleGeneration: true,
-              });
-              const retained = existing?.staleCache?.reason === "cache_generation_mismatch"
-                ? existing.staleCache.cache : null;
-              const selected = existing?.status === "available" ? existing.cache : retained;
-              if (selected?.schemaVersion
-                    === REPLAY_SAFE_ACCOUNTING_SCHEMA_VERSION
-                  && cachePolicyMatches(selected)
-                  && unifiedAccountingCacheHasZeroFallback(selected)) {
-                accounting = selected;
-                accountingRetainedGeneration = retained !== null;
-                accountingRefreshStatus = "deferred";
-              } else {
-                accountingUnavailableCode =
-                  "accounting_unified_source_unavailable";
-              }
-            } catch {
-              // Retained-cache read failed; the surface shows honest
-              // insufficient-evidence rather than a fabricated total.
+            const lastGood = await readLastGoodAccounting({
+              includeStaleGeneration: true,
+            });
+            if (lastGood !== null) {
+              accounting = lastGood.cache;
+              accountingRetainedGeneration = lastGood.retained;
+              accountingRefreshStatus = "deferred";
+            } else {
+              accountingUnavailableCode =
+                "accounting_unified_source_unavailable";
             }
           }
         } else if (rebuilt !== null) {

@@ -9,6 +9,7 @@ import {
 } from "./local-index-accounting-window-cache.js";
 import {
   LOCAL_ACCOUNTING_FRESHNESS_VERSION,
+  validAccountingFreshness,
 } from "./local-accounting-freshness.js";
 
 export { LOCAL_ACCOUNTING_FRESHNESS_VERSION } from "./local-accounting-freshness.js";
@@ -27,6 +28,7 @@ export const LOCAL_ACCOUNTING_FAST_PATH_VERSION =
 export const ACCOUNTING_FAST_PATH_FALLBACK_CODES = Object.freeze([
   "absent",
   "baselines_changed",
+  "baselines_mismatch",
   "basis_changed",
   "cache_days_invalid",
   "cache_invalid",
@@ -36,11 +38,12 @@ export const ACCOUNTING_FAST_PATH_FALLBACK_CODES = Object.freeze([
   "day_revision_mismatch",
   "deferred",
   "fast_path_failed",
-  "history_mismatch",
-  "initial_build",
+  "generation_changed",
   "invalid",
   "manifest_incomplete",
   "manifest_pruned",
+  "manifest_range_invalid",
+  "manifest_range_missing",
   "manifest_rewound",
   "manifest_too_wide",
   "manifest_unsafe_mode",
@@ -56,12 +59,22 @@ export const ACCOUNTING_FAST_PATH_FALLBACK_CODES = Object.freeze([
 ]);
 const ACCOUNTING_FAST_PATH_FALLBACK_CODE_SET =
   new Set(ACCOUNTING_FAST_PATH_FALLBACK_CODES);
+const ACCOUNTING_ERROR_PREFIXES = Object.freeze([
+  "accounting_window_cache_",
+  "accounting_window_",
+  "accounting_fast_path_",
+]);
 
 export function normalizeAccountingFastPathFallbackCode(value) {
-  return typeof value === "string"
-      && ACCOUNTING_FAST_PATH_FALLBACK_CODE_SET.has(value)
-    ? value
-    : "fast_path_failed";
+  if (typeof value !== "string") return "fast_path_failed";
+  if (ACCOUNTING_FAST_PATH_FALLBACK_CODE_SET.has(value)) return value;
+  for (const prefix of ACCOUNTING_ERROR_PREFIXES) {
+    if (value.startsWith(prefix)) {
+      const suffix = value.slice(prefix.length);
+      if (ACCOUNTING_FAST_PATH_FALLBACK_CODE_SET.has(suffix)) return suffix;
+    }
+  }
+  return "fast_path_failed";
 }
 
 const DAY_MS = 86_400_000;
@@ -286,9 +299,9 @@ export async function composeLocalAccountingFastPath({
       previousCache.fiveHourAllowanceCalibration,
     weeklyCalibrationInput: previousCache.weeklyCalibrationInput,
     // The fast path does not rescan the full corpus, so replay-exclusion
-    // counts from the last full rebuild remain the only true evidence. Never
-    // replace them with zeros derived from the reuse proof's diagnostic map.
-    diagnostics: previousCache.diagnostics ?? {},
+    // counts from the last full rebuild remain the only true evidence. The
+    // cache validator requires this object on every readable cache.
+    diagnostics: previousCache.diagnostics,
     freshness: {
       schemaVersion: LOCAL_ACCOUNTING_FRESHNESS_VERSION,
       windows: {
@@ -404,7 +417,7 @@ export function completeAccountingFreshness({
     === LOCAL_ACCOUNTING_FRESHNESS_VERSION
     ? cache.freshness
     : null;
-  cache.freshness = {
+  const nextFreshness = {
     schemaVersion: LOCAL_ACCOUNTING_FRESHNESS_VERSION,
     ...(prior ?? {}),
     provenance: prior?.provenance ?? provenance ?? null,
@@ -430,5 +443,7 @@ export function completeAccountingFreshness({
     },
     windows,
   };
+  if (!validAccountingFreshness(nextFreshness)) return cache;
+  cache.freshness = nextFreshness;
   return cache;
 }
