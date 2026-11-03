@@ -96,10 +96,13 @@ Eligibility fails closed. The fast path requires a previous valid cache with a
 freshness marker, a window cache whose stored digest is exactly the state the
 previous cache consumed, an unchanged window basis fingerprint, stable
 thread-origin and policy proofs, an available history and weekly-interval
-receipt, and zero fallback. Any doubt runs the existing reuse or full-rebuild
-path. A full rebuild records its provenance and the digest of the window state
-it consumed, so the next normal append can fast-path. The closed reason is
-recorded as `fastPathFallbackCode` on the result.
+receipt, and zero fallback. The closed calibration interval is checked too:
+when the last real refit is due (default 24 hours), the pass forces a full
+rebuild and records `calibration_due` instead of retaining the model
+indefinitely. Any doubt runs the existing reuse or full-rebuild path. A full
+rebuild records its provenance and the digest of the window state it consumed,
+so the next normal append can fast-path. The closed reason is recorded as
+`fastPathFallbackCode` on the result.
 
 A protected-copy rehearsal on 2026-11-03 (same 251-day, 1.04M-fact index)
 composed a five-minute advance with a forced three-day timeline rescan. The
@@ -118,7 +121,9 @@ it is implemented but not used for the equality proof. The dashboard now
 projects the cache's `freshness` as status plus `asOf` only, and shows
 `数据截至 X` when a window, timeline, or quota series is retained;
 digests, provenance, and diagnostics stay out of the browser payload. The
-settings UI and manual **重新计算** escalation are not implemented, and the
+default 24-hour calibration due check is wired into the fast path; the Settings
+UI, persisted interval/change-time selection, and manual **重新计算**
+escalation are not implemented, and the
 capped quota selection is refreshed on a low-frequency interval rather than
 every tick. The remaining costs are receipt scans after unsafe
 baseline/lineage changes, quota candidate projection (about 28 seconds per

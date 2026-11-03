@@ -370,6 +370,18 @@ export function completeAccountingFreshness({
       status: "exact",
       asOf: cache.coveredAt.endAt,
     },
+    calibration: prior?.calibration ?? {
+      status: "exact",
+      asOf: cache.weeklyCalibration?.generatedAt ?? cache.coveredAt.endAt,
+    },
+    weeklyApiIntervals: prior?.weeklyApiIntervals ?? {
+      status: "exact",
+      asOf: cache.weeklyApiIntervals?.generatedAt ?? cache.coveredAt.endAt,
+    },
+    planScope: prior?.planScope ?? {
+      status: "exact",
+      asOf: cache.coveredAt.endAt,
+    },
     ...(windows === null ? {} : { windows }),
   };
   return cache;

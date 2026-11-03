@@ -99,6 +99,7 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
     unifiedIndexSecretFile: workspace.secretFile,
     clock: () => nowMs,
     accountingQuotaRefreshIntervalMs: 60 * 60_000,
+    accountingCalibrationIntervalHours: 6,
     createCalculationReuse: () => fakeReuse,
     selectAccountObservationSecret: () => ({
       loadAccountObservationSecret: null,
@@ -164,4 +165,19 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
       true,
     );
   }
+
+  // Six hours after the last real refit the default policy is due. The next
+  // append must run a real rebuild instead of retaining calibration forever.
+  nowMs = Date.parse("2026-09-01T00:00:00.000Z") + 7 * 3_600_000;
+  insertUsage(indexFile, nowMs + 5 * 60_000);
+  const due = await runner();
+  assert.equal(due.accounting.refreshStatus, "rebuilt");
+  assert.equal(due.accounting.fastPathFallbackCode, "calibration_due");
+  assert.equal(rebuilds, 2, "a due calibration forces one real refit");
+
+  nowMs += 10 * 60_000;
+  insertUsage(indexFile, nowMs + 5 * 60_000);
+  const afterRefit = await runner();
+  assert.equal(afterRefit.accounting.refreshStatus, "fast_path");
+  assert.equal(rebuilds, 2, "the refit restarts the fast-path interval");
 });

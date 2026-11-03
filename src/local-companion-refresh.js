@@ -23,6 +23,11 @@ import {
 } from "./local-accounting-fast-path.js";
 import { writeLocalCollectorAccountingCache } from "./local-collector-state.js";
 import {
+  ACCOUNTING_CALIBRATION_DEFAULT_HOURS,
+  accountingCalibrationDue,
+  normalizeAccountingCalibrationIntervalHours,
+} from "./local-accounting-calibration-policy.js";
+import {
   REPLAY_SAFE_ACCOUNTING_SCHEMA_VERSION,
   readReplaySafeAccountingCache,
 } from "./replay-safe-accounting-cache.js";
@@ -774,6 +779,11 @@ export function createLocalCollectorRefreshRunner({
   // a low-frequency component. Between refreshes it is retained with an
   // explicit asOf instead of being silently presented as current.
   accountingQuotaRefreshIntervalMs = 10 * 60_000,
+  // Calibration is a low-frequency component. Until the settings surface is
+  // wired, the closed default interval still forces a real refit instead of
+  // retaining the model indefinitely on fast-path-only profiles.
+  accountingCalibrationIntervalHours = ACCOUNTING_CALIBRATION_DEFAULT_HOURS,
+  accountingCalibrationChangedAtMs = null,
   composeAccountingFastPath = composeLocalAccountingFastPath,
   writeAccountingCache = writeLocalCollectorAccountingCache,
   createCalculationReuse = createLocalIndexAccountingReuse,
@@ -823,6 +833,17 @@ export function createLocalCollectorRefreshRunner({
       "accountingQuotaRefreshIntervalMs must be a non-negative safe integer",
     );
   }
+  if (accountingCalibrationChangedAtMs !== null
+      && (!Number.isSafeInteger(accountingCalibrationChangedAtMs)
+        || accountingCalibrationChangedAtMs < 0)) {
+    throw new TypeError(
+      "accountingCalibrationChangedAtMs must be a non-negative safe integer or null",
+    );
+  }
+  const calibrationIntervalHours =
+    normalizeAccountingCalibrationIntervalHours(
+      accountingCalibrationIntervalHours,
+    );
   for (const [name, value] of Object.entries({
     composeAccountingFastPath,
     writeAccountingCache,
@@ -1096,6 +1117,7 @@ export function createLocalCollectorRefreshRunner({
     let reuseProofPersisted = false;
     let fastPathUsed = false;
     let fastPathReason = null;
+    let calibrationDue = false;
     let calculationProof = null;
     let accountingUnavailableCode = accountingMayRun
         && !unifiedAccountingReady
@@ -1130,7 +1152,23 @@ export function createLocalCollectorRefreshRunner({
               ? existing.staleCache.cache
               : null;
           const provenance = accountingProvenanceFromProof(calculationProof);
-          if (previousCache?.freshness?.schemaVersion
+          if (previousCache !== null) {
+            const calibrationAsOfMs = Date.parse(
+              previousCache.freshness?.calibration?.asOf
+                ?? previousCache.weeklyCalibration?.generatedAt
+                ?? previousCache.coveredAt?.endAt,
+            );
+            calibrationDue = !Number.isFinite(calibrationAsOfMs)
+              || accountingCalibrationDue({
+                nowMs: clock(),
+                intervalHours: calibrationIntervalHours,
+                changedAtMs: accountingCalibrationChangedAtMs,
+                lastRefitAtMs: calibrationAsOfMs,
+              });
+          }
+          if (calibrationDue) {
+            fastPathReason = "calibration_due";
+          } else if (previousCache?.freshness?.schemaVersion
                 === LOCAL_ACCOUNTING_FRESHNESS_VERSION
               && typeof previousCache.freshness?.windows?.digest === "string"
               && accountingFastPathProvenanceMatches(
@@ -1217,7 +1255,7 @@ export function createLocalCollectorRefreshRunner({
       let timeProjectionFailed = false;
       if (!fastPathUsed) {
       try {
-        if (signal?.aborted !== true) {
+        if (signal?.aborted !== true && !calibrationDue) {
           if (calculationProof === null) {
             calculationProof = await timing.measure("reuse_proof_before", () => calculationReuse.readProof({
               generation: unifiedIndex.generation, declaredSpeedBaselines, unknownSpeedPolicy, nowMs: clock(), signal, onTiming, monotonicClock, onReuseDiagnostic, onOriginDiagnostic,
@@ -1273,6 +1311,7 @@ export function createLocalCollectorRefreshRunner({
       if (accounting === null
           && (collectorWroteNoRolloutUsage || withinRebuildBackoff)
           && (withinRebuildBackoff || existingCalculationProven)
+          && (!calibrationDue || withinRebuildBackoff)
           && signal?.aborted !== true) {
         try {
           const existing = await timing.measure("cache_read", () => readAccountingCache({
