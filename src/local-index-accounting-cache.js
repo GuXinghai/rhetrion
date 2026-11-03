@@ -7,6 +7,7 @@ import {
   LOCAL_INDEX_PARSER_VERSION,
   LOCAL_INDEX_STORE_USER_VERSION,
   openLocalIndexStore,
+  readCalculationRevision,
 } from "./local-index-store.js";
 import { projectRecordedTokenComponents } from "./reporting/index.js";
 import {
@@ -416,6 +417,11 @@ export function createLocalIndexAccountingScan({
           contractVersion: CONTRACT_VERSION,
           generationId: generation.id,
           generationFingerprint: generation.fingerprint,
+          // Read inside the same snapshot that delivered the usage rows. The
+          // builder hands this value to a shadow consumer with its day
+          // accumulators, so the shadow never has to guess which commit the
+          // map belongs to.
+          calculationRevision: readCalculationRevision(database),
           coverage,
           capabilities,
           diagnosticCoverage: "complete",

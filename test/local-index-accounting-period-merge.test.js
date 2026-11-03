@@ -105,3 +105,15 @@ test("serialized accumulator import rejects prototype keys", () => {
   });
   assert.equal({}.polluted, undefined);
 });
+
+test("a period past the price-card provenance bound fails with its own code", () => {
+  const period = createAccountingPeriodAccumulator("range", "Range");
+  period.priceCardIds.push(...Array.from(
+    { length: 257 },
+    (_, index) => `synthetic-card-${String(index).padStart(3, "0")}`,
+  ));
+  assert.throws(
+    () => finalizeAccountingPeriodAccumulator(period),
+    error => error.code === "accounting_price_card_provenance_limit",
+  );
+});

@@ -4741,7 +4741,7 @@ test("a rebuilt accounting pass hands its day accumulators to the shadow cache",
     }),
     refreshUnifiedIndex: async () => ({ status: "ingested", generation }),
     refreshAccounting: async options => {
-      options.onDayAccumulators(dayAccumulators);
+      options.onDayAccumulators(dayAccumulators, 17);
       return {
         generatedAt: "2026-07-23T12:00:00.000Z",
         coveredAt: {
@@ -4764,6 +4764,60 @@ test("a rebuilt accounting pass hands its day accumulators to the shadow cache",
   assert.equal(result.accounting.refreshStatus, "rebuilt");
   assert.equal(shadowArgs.mode, "maintain");
   assert.equal(shadowArgs.dayAccumulators, dayAccumulators);
+  assert.equal(shadowArgs.dayAccumulatorsRevision, 17);
+});
+
+test("a rebuilt pass without a source revision does not seed the shadow", async () => {
+  let shadowArgs = null;
+  const generation = {
+    id: 15,
+    fingerprint: "v".repeat(64),
+    status: "complete",
+    discoveryComplete: true,
+    diagnosticsComplete: true,
+    usageProvenanceComplete: true,
+    sourceOrderComplete: true,
+    quotaProvenanceComplete: true,
+    toolProvenanceComplete: true,
+  };
+  const dayAccumulators = new Map([[0, { synthetic: true }]]);
+  const runner = createLocalCollectorRefreshRunner({
+    stateFile: "/private/collector.sqlite",
+    unifiedIndexFile: "/private/local-unified-index-v1.sqlite",
+    unifiedIndexSecretFile: "/private/device-salt",
+    selectAccountObservationSecret: () => ({ loadAccountObservationSecret: null }),
+    runCollector: async () => ({
+      rolloutRecordsWritten: 1,
+      filesDiscovered: 1,
+      refresh: { attempted: true, recordWritten: true, errorCode: null },
+      indexing: COMPLETE_INDEX,
+    }),
+    refreshUnifiedIndex: async () => ({ status: "ingested", generation }),
+    refreshAccounting: async options => {
+      // No revision: the map cannot prove which commit produced it.
+      options.onDayAccumulators(dayAccumulators);
+      return {
+        generatedAt: "2026-07-23T12:00:00.000Z",
+        coveredAt: {
+          startAt: "2026-06-23T00:00:00.000Z",
+          endAt: "2026-07-23T12:00:00.000Z",
+        },
+        periods: [{ id: "7d", events: 1 }],
+        history: { period: { id: "history", events: 2 } },
+        diagnostics: {},
+        unknownSpeedPolicy: { mode: "standard", customFastRatioBps: null },
+        sourceDescriptor: { fallbackCount: 0 },
+      };
+    },
+    runAccountingWindowShadow: async args => {
+      shadowArgs = args;
+      return { status: "absent" };
+    },
+  });
+  const result = await runner();
+  assert.equal(result.accounting.refreshStatus, "rebuilt");
+  assert.equal(shadowArgs.dayAccumulators, null);
+  assert.equal(shadowArgs.dayAccumulatorsRevision, null);
 });
 
 test("a cancelled shadow pass does not fail a published accounting rebuild", async () => {

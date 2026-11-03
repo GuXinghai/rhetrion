@@ -2416,13 +2416,20 @@ function finalizePeriod(period) {
   for (const row of Object.values(period.priceCardBreakdown)) {
     flushExactUsd(row, "costUsd");
   }
+  const priceCardIds = [...period.priceCardIds].sort();
+  // The bound is a cache-size guard, not a model limit. Detect an overflow at
+  // construction so the failure names its cause instead of publishing a cache
+  // the validator will reject as generically invalid.
+  if (priceCardIds.length > MAX_PRICE_CARD_PROVENANCE) {
+    throw fixedError("accounting_price_card_provenance_limit");
+  }
   const finalized = {
     ...period,
     ...speedApiCostSummary(period),
     apiPriceEquivalentUsd: roundedExactMoney(
       period.apiPriceEquivalentUsdExact,
     ),
-    priceCardIds: [...period.priceCardIds].sort(),
+    priceCardIds,
     priceCardBreakdown: Object.values(period.priceCardBreakdown).sort(
       (left, right) => left.priceCardId.localeCompare(right.priceCardId),
     ),
@@ -4065,7 +4072,9 @@ export async function buildReplaySafeAccountingCache({
   onCalibrationCorpusMetrics = null,
   // Optional shadow handoff: the same fused history read that fills the
   // shipping history period can also hand over per-UTC-day accumulators. The
-  // callback sees a Map keyed by UTC day start. It never changes the cache.
+  // callback sees a Map keyed by UTC day start plus the calculation revision
+  // of the exact read snapshot that produced it (null when the scanner cannot
+  // prove one). It never changes the cache.
   onDayAccumulators = null,
   onTiming = null,
   monotonicClock = undefined,
@@ -4381,11 +4390,17 @@ export async function buildReplaySafeAccountingCache({
     unifiedCoverage?.generation ?? null,
     unifiedCoverage?.generationFingerprint ?? null,
   );
+  // The revision belongs to the scan that delivered the history rows, which
+  // is also the scan that filled the day accumulators.
+  let dayAccumulatorsRevision = null;
   if (unifiedCoverage !== null) {
     const fusedHistory = scanned?.indexedHistory;
     let historyScanned = null;
     const historyScan = async (scanOptions) => {
       historyScanned = await scan(scanOptions);
+      dayAccumulatorsRevision = Number.isSafeInteger(
+        historyScanned?.calculationRevision,
+      ) ? historyScanned.calculationRevision : null;
       return historyScanned;
     };
     try {
@@ -4407,6 +4422,9 @@ export async function buildReplaySafeAccountingCache({
           capabilities: fusedHistory.capabilities,
           diagnosticsAvailable: fusedHistory.diagnosticsAvailable,
         };
+        dayAccumulatorsRevision = Number.isSafeInteger(
+          scanned?.calculationRevision,
+        ) ? scanned.calculationRevision : null;
         historyValue = {
           generatedAt: unifiedCoverage.coveredAt.endAt,
           coveredAt: {
@@ -4690,7 +4708,7 @@ export async function buildReplaySafeAccountingCache({
   if (onDayAccumulators !== null && dayAccumulators !== null) {
     // This is shadow evidence. It must never change the shipping result.
     try {
-      onDayAccumulators(dayAccumulators);
+      onDayAccumulators(dayAccumulators, dayAccumulatorsRevision);
     } catch {
       /* the optional shadow consumer owns its own failure */
     }

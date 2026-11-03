@@ -13,7 +13,6 @@ import { selectProductionAccountObservationSecret } from "./account-observation-
 import { runCollectorOnce } from "./passive-collector.js";
 import { createLocalIndexAccountingReuse } from "./local-index-accounting-reuse.js";
 import { createLocalIndexAccountingScan, projectLocalIndexAccountingTime } from "./local-index-accounting-cache.js";
-import { readLocalIndexGenerationIdentity } from "./local-index-companion-source.js";
 import { refreshAccountingWindowShadow } from "./local-accounting-window-refresh.js";
 import {
   LOCAL_ACCOUNTING_FRESHNESS_VERSION,
@@ -111,6 +110,7 @@ const ACCOUNTING_UNAVAILABLE_CODES = new Set([
   "accounting_unified_history_unavailable",
   "accounting_calibration_corpus_unavailable",
   "accounting_history_unavailable",
+  "accounting_price_card_provenance_limit",
   "accounting_refresh_aborted",
 ]);
 const ACCOUNTING_RESOURCE_LIMIT_CODES = new Set([
@@ -1435,13 +1435,6 @@ export function createLocalCollectorRefreshRunner({
           });
         }
         let rebuilt = null;
-        // Bind the handoff to the revision the rebuild is about to read. A
-        // commit after this point makes the shadow receipts newer than the
-        // map, and the cache write fails closed instead of seeding stale days.
-        const rebuildRevision = unifiedIndexFile === null
-          ? null
-          : readLocalIndexGenerationIdentity({ indexFile: unifiedIndexFile })
-            ?.calculationRevision ?? null;
         try {
           rebuilt = await timing.measure("accounting_rebuild", () => refreshAccounting({
             codexHome,
@@ -1457,10 +1450,14 @@ export function createLocalCollectorRefreshRunner({
             contextBehavior: "source_native",
             declaredSpeedBaselines,
             unknownSpeedPolicy,
-            onDayAccumulators: (map) => {
-              if (map instanceof Map && map.size > 0) {
+            onDayAccumulators: (map, calculationRevision) => {
+              // Both values come from the builder's exact read snapshot; a
+              // mismatch against the shadow receipts fails closed in the
+              // window cache instead of seeding days from another commit.
+              if (map instanceof Map && map.size > 0
+                  && Number.isSafeInteger(calculationRevision)) {
                 capturedDayAccumulators = map;
-                capturedDayAccumulatorsRevision = rebuildRevision;
+                capturedDayAccumulatorsRevision = calculationRevision;
               }
             },
             signal,

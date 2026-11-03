@@ -10,6 +10,7 @@ import {
 } from "./local-index-accounting-windows.js";
 import {
   accountingWindowCacheDigest,
+  accountingWindowCacheErrorReason,
   createAccountingWindowCache,
   updateAccountingWindowCache,
   verifyAccountingWindowDays,
@@ -65,20 +66,6 @@ function summary({
     ...(previousDigest === null ? {} : { previousDigest }),
     ...(dirtyFromMs === null ? {} : { dirtyFromMs }),
   };
-}
-
-const INVALID_CACHE_REASONS = new Set([
-  "day_digest_mismatch",
-  "day_missing",
-  "day_revision_mismatch",
-]);
-
-function invalidCacheReason(error) {
-  const code = error?.code;
-  if (typeof code !== "string"
-      || !code.startsWith("accounting_window_cache_")) return null;
-  const reason = code.slice("accounting_window_cache_".length);
-  return INVALID_CACHE_REASONS.has(reason) ? reason : null;
 }
 
 /**
@@ -250,7 +237,7 @@ export async function refreshAccountingWindowShadow({
         now,
       });
     } catch (error) {
-      const reason = invalidCacheReason(error);
+      const reason = accountingWindowCacheErrorReason(error);
       if (reason !== null) {
         return summary({ status: "invalid", receiptMode, reason });
       }
@@ -274,7 +261,7 @@ export async function refreshAccountingWindowShadow({
         now,
       });
     } catch (error) {
-      const reason = invalidCacheReason(error);
+      const reason = accountingWindowCacheErrorReason(error);
       if (reason !== null) {
         return summary({ status: "invalid", receiptMode, reason });
       }

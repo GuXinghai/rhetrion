@@ -177,10 +177,12 @@ The fast path is a composition, not a second accounting implementation.
    the model indefinitely. A failed refit keeps the last-good cache visible and
    retries after a bounded pause.
 5. **A full rebuild seeds the markers.** The rebuild's fused history read hands
-   over the day accumulators; after the shadow pass writes the window cache, the
-   runner republishes the cache with the consumed window digest and the
-   provenance components. Until that succeeds, the next pass remains ineligible
-   and repeats the rebuild rather than composing from an unproven state.
+   over the day accumulators together with the `calculation_revision` of the
+   exact read snapshot that produced them; the runner never re-reads the store
+   to label the map. After the shadow pass writes the window cache, the runner
+   republishes the cache with the consumed window digest and the provenance
+   components. Until that succeeds, the next pass remains ineligible and repeats
+   the rebuild rather than composing from an unproven state.
 6. **Publication is atomic.** The composed cache is validated (including the
    freshness envelope and size ceiling) and written through the existing
    collector-state atomic publication. A failed composition leaves the last
@@ -192,8 +194,10 @@ forecast. Retaining the capped quota series made a five-minute advance take abou
 13 seconds; a separate pass refreshing it took about 37 seconds. These are
 separate measurements, not additive. Quota candidate projection remains the
 largest fast-path cost and is the next optimization target. Price-card
-provenance is bounded at 256 distinct cards per period; a period that exceeds
-the bound makes the cache invalid rather than silently truncating history.
+provenance is bounded at 256 distinct cards per period. Construction detects an
+overflow and fails with `accounting_price_card_provenance_limit` instead of
+publishing a cache the validator would reject as generically invalid; a stored
+cache over the bound is still rejected, never truncated.
 
 The receipt never contains raw facts. The input digest includes the stable
 occurrence key and only the fields that participate in accounting derivation.

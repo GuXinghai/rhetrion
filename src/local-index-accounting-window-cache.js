@@ -34,6 +34,28 @@ function validKey(value) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(value);
 }
 
+// A day row that fails verification is recoverable: the shadow pass drops the
+// affected days and rebuilds them. Every other cache error is not.
+const RECOVERABLE_DAY_REASONS = new Set([
+  "day_digest_mismatch",
+  "day_missing",
+  "day_revision_mismatch",
+]);
+const WINDOW_CACHE_ERROR_PREFIX = "accounting_window_cache_";
+
+/**
+ * Map a window-cache error to the recoverable day reason it names, or null.
+ * The prefix and the closed reason set live beside the code that throws them so
+ * no caller has to re-slice the vocabulary.
+ */
+export function accountingWindowCacheErrorReason(error) {
+  const code = error?.code;
+  if (typeof code !== "string"
+      || !code.startsWith(WINDOW_CACHE_ERROR_PREFIX)) return null;
+  const reason = code.slice(WINDOW_CACHE_ERROR_PREFIX.length);
+  return RECOVERABLE_DAY_REASONS.has(reason) ? reason : null;
+}
+
 function assertReceiptBaselines(receipts, declaredSpeedBaselines) {
   const normalized = normalizeDeclaredSpeedBaselines(declaredSpeedBaselines);
   if (stableJson(normalized) !== stableJson(receipts.declaredSpeedBaselines)) {

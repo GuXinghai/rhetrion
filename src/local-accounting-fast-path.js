@@ -121,9 +121,10 @@ export async function composeLocalAccountingFastPath({
   previousCache,
   windowCache,
   previousWindowDigest,
-  // The shadow pass is the only component that holds the key needed to verify
-  // every stored day digest. It passes this flag after that verification.
-  windowVerified = false,
+  // Required proof, never a default: only the shadow pass holds the key needed
+  // to verify every stored day digest, and it passes `true` exactly after that
+  // verification. A caller that omits this is rejected below.
+  windowVerified,
   scan,
   expectedGeneration,
   endMs,

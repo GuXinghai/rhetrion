@@ -77,6 +77,7 @@ async function buildFull({ workspace, indexFile, atMs }) {
     indexFile, nowMs: atMs,
   })).generation;
   let dayAccumulators = null;
+  let dayAccumulatorsRevision = null;
   const cache = await buildReplaySafeAccountingCache({
     sourceMode: "unified",
     expectedGeneration: generation,
@@ -86,9 +87,12 @@ async function buildFull({ workspace, indexFile, atMs }) {
     calibrationSource: localIndexCalibrationSource({ indexFile }),
     windowDays: 365,
     declaredSpeedBaselines: BASELINES,
-    onDayAccumulators: map => { dayAccumulators = map; },
+    onDayAccumulators: (map, revision) => {
+      dayAccumulators = map;
+      dayAccumulatorsRevision = revision;
+    },
   });
-  return { cache, generation, dayAccumulators };
+  return { cache, generation, dayAccumulators, dayAccumulatorsRevision };
 }
 
 test("fast path composes exact windows and timeline after a late fact", async t => {
@@ -105,6 +109,11 @@ test("fast path composes exact windows and timeline after a late fact", async t 
   const receipts0 = await createAccountingWindowReceipts({
     indexFile, hmacKey: KEY, declaredSpeedBaselines: BASELINES, now: () => T0,
   });
+  assert.equal(
+    base.dayAccumulatorsRevision,
+    receipts0.calculationRevision,
+    "the day map carries the exact revision of its read snapshot",
+  );
   const windowCache0 = await createAccountingWindowCache({
     indexFile, receipts: receipts0, hmacKey: KEY, endMs: T0,
     declaredSpeedBaselines: BASELINES, dayAccumulators: base.dayAccumulators,

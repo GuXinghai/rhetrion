@@ -158,8 +158,10 @@ The accounting cache may carry a `local-accounting-freshness-v1` envelope with
 `planScope` components; once present, every component and the window digest
 proof are validated. The incremental window cache is a collector-state
 `accounting_window_cache` meta row (envelope v1, cache v3), never a separate
-file. Price-card provenance is bounded at 256 distinct cards per period; a
-larger period is invalid rather than truncated.
+file. Price-card provenance is bounded at 256 distinct cards per period. A
+period that exceeds the bound fails construction with
+`accounting_price_card_provenance_limit`; a larger stored period is invalid
+rather than truncated.
 
 
 ## Local model performance

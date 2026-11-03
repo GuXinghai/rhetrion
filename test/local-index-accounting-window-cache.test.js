@@ -7,6 +7,7 @@ import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import { appendSyntheticCodexEvents } from "../src/synthetic-codex-rollout-corpus.js";
 import { createAccountingWindowReceipts } from "../src/local-index-accounting-windows.js";
 import {
+  accountingWindowCacheErrorReason,
   createAccountingWindowCache,
   updateAccountingWindowCache,
 } from "../src/local-index-accounting-window-cache.js";
@@ -16,6 +17,26 @@ import { buildReplaySafeAccountingPeriod } from "../src/replay-safe-accounting-c
 const KEY = "synthetic-window-key";
 const NOW = Date.parse("2026-09-02T00:00:00.000Z");
 const DAY = 86_400_000;
+
+test("window cache errors map to recoverable day reasons by owner", () => {
+  const code = value => Object.assign(new Error(value), { code: value });
+  assert.equal(
+    accountingWindowCacheErrorReason(code("accounting_window_cache_day_missing")),
+    "day_missing",
+  );
+  assert.equal(
+    accountingWindowCacheErrorReason(
+      code("accounting_window_cache_day_revision_mismatch"),
+    ),
+    "day_revision_mismatch",
+  );
+  assert.equal(
+    accountingWindowCacheErrorReason(code("accounting_window_cache_invalid")),
+    null,
+  );
+  assert.equal(accountingWindowCacheErrorReason(code("other_error")), null);
+  assert.equal(accountingWindowCacheErrorReason(null), null);
+});
 
 async function setup(t) {
   const workspace = createWorkspace({

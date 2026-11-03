@@ -108,8 +108,9 @@ so the next normal append can fast-path. The bounded reason is recorded as
 `fastPathFallbackCode`, with a lifetime `fastPathFallbackCount`, on the public
 refresh result. A freshness envelope is validated once present; a legacy cache
 without one stays readable but is not fast-path eligible. Price-card provenance
-is bounded at 256 distinct cards per period and rejects the next card rather
-than truncating history.
+is bounded at 256 distinct cards per period; construction fails with
+`accounting_price_card_provenance_limit` rather than publishing an invalid
+cache, and the next card is never silently dropped.
 
 A protected-copy rehearsal on 2026-11-03 (same 251-day, 1.04M-fact index)
 composed a five-minute advance with a forced three-day timeline rescan. The
