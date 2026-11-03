@@ -125,6 +125,15 @@ about 76 seconds. A synthetic three-append sequence recorded zero additional
 full rebuilds after the initial one. The protected-copy run is point-in-time
 local evidence; it is not a tracked receipt or an installed-app measurement.
 
+An end-to-end runner rehearsal on 2026-11-04 on the same protected copy started
+from a cleared collector state. The first pass rebuilt in 130 seconds and seeded
+a 64-hex window digest from the builder's day accumulators and their exact
+`calculation_revision`; the second pass five minutes later composed through
+`fast_path` in 17 seconds and did not run a second rebuild. The lifetime fallback
+counter recorded the initial `retained_marker_absent`. This exercises the
+builder-to-window revision handoff end to end, not only the direct composer
+path.
+
 The exact path currently prices individual events; a faster rollup-bucket path
 moved a few hundred declared-speed provenance events across a baseline edge, so
 it is implemented but not used for the equality proof. The dashboard now

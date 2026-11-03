@@ -192,7 +192,9 @@ The measured result on the protected 251-day copy is exact parity for periods,
 history, timeline, Spark timeline, both quota timelines, and the weekly
 forecast. Retaining the capped quota series made a five-minute advance take about
 13 seconds; a separate pass refreshing it took about 37 seconds. These are
-separate measurements, not additive. Quota candidate projection remains the
+separate measurements, not additive. A 2026-11-04 end-to-end runner pass on the
+same copy rebuilt and seeded the freshness/window markers in 130 seconds, then
+fast-pathed a five-minute advance in 17 seconds without a second rebuild. Quota candidate projection remains the
 largest fast-path cost and is the next optimization target. Price-card
 provenance is bounded at 256 distinct cards per period. Construction detects an
 overflow and fails with `accounting_price_card_provenance_limit` instead of

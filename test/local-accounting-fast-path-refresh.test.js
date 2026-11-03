@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { createWorkspace } from "./helpers/local-index-facts.js";
+import { createWorkspace, insertSyntheticUsageAt } from "./helpers/local-index-facts.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import { createLocalCollectorRefreshRunner } from "../src/local-companion-refresh.js";
 import { refreshLocalIndexAccountingCache } from "../src/local-index-accounting-cache.js";
@@ -27,35 +27,6 @@ const COMPLETE_INDEX = Object.freeze({
   },
 });
 
-function insertUsage(indexFile, observedAtMs) {
-  const database = new DatabaseSync(indexFile);
-  try {
-    const source = database.prepare(`SELECT s.id, s.scanned_bytes,
-      (SELECT MIN(u.source_offset) FROM usage_event u WHERE u.source_id = s.id) AS first_offset
-      FROM source s ORDER BY s.scanned_bytes DESC, s.id LIMIT 1`).get();
-    const offset = Number(source.first_offset) - 1;
-    assert.ok(offset >= 0 && offset <= Number(source.scanned_bytes));
-    database.prepare(`INSERT INTO usage_event(source_id, source_offset,
-      observed_at_ms, event_key, session_id, account_scope_id, model_id, tier_id,
-      surface_id, quota_observation_id, tier_observed_at_ms, reasoning_effort,
-      flags, work_directory_id, tokens_in_uncached, tokens_in_cache_read,
-      tokens_in_cache_write, tokens_out_text, tokens_out_reasoning,
-      tokens_out_combined, total_input_context)
-      SELECT source_id, ?, ?, randomblob(32), session_id, account_scope_id,
-        model_id, tier_id, surface_id, quota_observation_id, tier_observed_at_ms,
-        reasoning_effort, 0, work_directory_id, tokens_in_uncached,
-        tokens_in_cache_read, tokens_in_cache_write, tokens_out_text,
-        tokens_out_reasoning, tokens_out_combined, total_input_context
-      FROM usage_event WHERE source_id = ?
-      ORDER BY source_offset DESC LIMIT 1`)
-      .run(offset, observedAtMs, source.id);
-    database.prepare(
-      "UPDATE store_state SET calculation_revision = calculation_revision + 1 WHERE id = 1",
-    ).run();
-  } finally {
-    database.close();
-  }
-}
 
 test("normal appends stop triggering a full accounting rebuild", async t => {
   const workspace = createWorkspace({
@@ -94,13 +65,14 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
       return true;
     },
   };
+  const quotaRefreshIntervalMs = 15 * 60_000;
   const runner = createLocalCollectorRefreshRunner({
     codexHome: workspace.codexHome,
     stateFile,
     unifiedIndexFile: indexFile,
     unifiedIndexSecretFile: workspace.secretFile,
     clock: () => nowMs,
-    accountingQuotaRefreshIntervalMs: 15 * 60_000,
+    accountingQuotaRefreshIntervalMs: quotaRefreshIntervalMs,
     accountingCalibrationIntervalHours: 6,
     getUnknownSpeedPolicy: () => policy,
     createCalculationReuse: () => fakeReuse,
@@ -146,10 +118,13 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
     "a full rebuild records the window state it consumed",
   );
 
+  let quotaAsOfMs = Date.parse(stored.cache.freshness?.quota?.asOf);
+  const quotaStatuses = [];
   for (let pass = 0; pass < 3; pass++) {
-    insertUsage(indexFile, nowMs - 3 * 86_400_000 + (pass + 1) * 3_600_000);
-    insertUsage(indexFile, nowMs + 5 * 60_000);
+    insertSyntheticUsageAt(indexFile, nowMs - 3 * 86_400_000 + (pass + 1) * 3_600_000);
+    insertSyntheticUsageAt(indexFile, nowMs + 5 * 60_000);
     nowMs += 10 * 60_000;
+    const expectRetained = nowMs - quotaAsOfMs < quotaRefreshIntervalMs;
     const result = await runner();
     assert.equal(result.accounting.refreshStatus, "fast_path");
     assert.equal(rebuilds, 1, "normal appends never replay the full history");
@@ -160,11 +135,19 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
       "retained",
       "low-frequency calibration is retained with an explicit asOf",
     );
+    const quota = latest.cache.freshness?.quota;
     assert.equal(
-      latest.cache.freshness?.quota?.status,
-      pass === 0 ? "retained" : pass === 1 ? "exact" : "retained",
-      "the capped quota series follows its bounded refresh interval",
+      quota?.status,
+      expectRetained ? "retained" : "exact",
+      "the capped quota series follows its elapsed-time refresh boundary",
     );
+    assert.equal(
+      Date.parse(quota?.asOf),
+      expectRetained ? quotaAsOfMs : nowMs,
+      "a retained series keeps its asOf; an exact one advances to this pass",
+    );
+    quotaAsOfMs = Date.parse(quota?.asOf);
+    quotaStatuses.push(quota?.status);
     assert.equal(
       latest.cache.coveredAt.endAt,
       new Date(nowMs).toISOString(),
@@ -178,14 +161,14 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
   // Six hours after the last real refit the default policy is due. The next
   // append must run a real rebuild instead of retaining calibration forever.
   nowMs = Date.parse("2026-09-01T00:00:00.000Z") + 7 * 3_600_000;
-  insertUsage(indexFile, nowMs + 5 * 60_000);
+  insertSyntheticUsageAt(indexFile, nowMs + 5 * 60_000);
   const due = await runner();
   assert.equal(due.accounting.refreshStatus, "rebuilt");
   assert.equal(due.accounting.fastPathFallbackCode, "calibration_due");
   assert.equal(rebuilds, 2, "a due calibration forces one real refit");
 
   nowMs += 10 * 60_000;
-  insertUsage(indexFile, nowMs + 5 * 60_000);
+  insertSyntheticUsageAt(indexFile, nowMs + 5 * 60_000);
   const afterRefit = await runner();
   assert.equal(afterRefit.accounting.refreshStatus, "fast_path");
   assert.equal(rebuilds, 2, "the refit restarts the fast-path interval");
@@ -196,14 +179,14 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
   // new basis so the following append can fast-path again.
   policy = { mode: "fast", customFastRatioBps: null };
   nowMs += 10 * 60_000;
-  insertUsage(indexFile, nowMs + 5 * 60_000);
+  insertSyntheticUsageAt(indexFile, nowMs + 5 * 60_000);
   const basisChanged = await runner();
   assert.equal(basisChanged.accounting.refreshStatus, "rebuilt");
   assert.equal(basisChanged.accounting.fastPathFallbackCode, "basis_changed");
   assert.equal(rebuilds, 3, "a basis change forces exactly one rebuild");
 
   nowMs += 10 * 60_000;
-  insertUsage(indexFile, nowMs + 5 * 60_000);
+  insertSyntheticUsageAt(indexFile, nowMs + 5 * 60_000);
   const afterBasis = await runner();
   assert.equal(afterBasis.accounting.refreshStatus, "fast_path");
   assert.equal(rebuilds, 3, "the post-rebuild seed restores the fast path");
@@ -212,7 +195,7 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
   // also starts a bounded retry pause instead of blanking the page or
   // hammering the rebuild on every tick.
   nowMs += 7 * 3_600_000;
-  insertUsage(indexFile, nowMs + 5 * 60_000);
+  insertSyntheticUsageAt(indexFile, nowMs + 5 * 60_000);
   failNextRebuild = true;
   const failedRefit = await runner();
   assert.equal(failedRefit.accounting.status, "replay_safe");
@@ -220,14 +203,14 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
   assert.equal(rebuilds, 4, "the due attempt ran once");
 
   nowMs += 60_000;
-  insertUsage(indexFile, nowMs + 5 * 60_000);
+  insertSyntheticUsageAt(indexFile, nowMs + 5 * 60_000);
   const backoffPass = await runner();
   assert.equal(backoffPass.accounting.status, "replay_safe");
   assert.equal(backoffPass.accounting.refreshStatus, "deferred");
   assert.equal(rebuilds, 4, "the short retry pause does not re-attempt");
 
   nowMs += 6 * 60_000;
-  insertUsage(indexFile, nowMs + 5 * 60_000);
+  insertSyntheticUsageAt(indexFile, nowMs + 5 * 60_000);
   const recovered = await runner();
   assert.equal(recovered.accounting.refreshStatus, "rebuilt");
   assert.equal(rebuilds, 5, "the retry pauses then refits");

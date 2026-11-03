@@ -125,6 +125,42 @@ export function v2Facts(file, { workDirectories = false } = {}) {
  * source was first given, while a cold build re-ranks the current set, so the
  * two legitimately differ; ordinals are carried identity metadata, not facts.
  */
+
+/**
+ * Insert one synthetic usage row by duplicating the newest source row, then
+ * advance the calculation revision exactly as a committed append would.
+ * Test-only: the row stays inside the workspace's synthetic corpus.
+ */
+export function insertSyntheticUsageAt(indexFile, observedAtMs) {
+  const database = new DatabaseSync(indexFile);
+  try {
+    const source = database.prepare(`SELECT s.id, s.scanned_bytes,
+      (SELECT MIN(u.source_offset) FROM usage_event u WHERE u.source_id = s.id) AS first_offset
+      FROM source s ORDER BY s.scanned_bytes DESC, s.id LIMIT 1`).get();
+    const offset = Number(source.first_offset) - 1;
+    assert.ok(offset >= 0 && offset <= Number(source.scanned_bytes));
+    database.prepare(`INSERT INTO usage_event(source_id, source_offset,
+      observed_at_ms, event_key, session_id, account_scope_id, model_id, tier_id,
+      surface_id, quota_observation_id, tier_observed_at_ms, reasoning_effort,
+      flags, work_directory_id, tokens_in_uncached, tokens_in_cache_read,
+      tokens_in_cache_write, tokens_out_text, tokens_out_reasoning,
+      tokens_out_combined, total_input_context)
+      SELECT source_id, ?, ?, randomblob(32), session_id, account_scope_id,
+        model_id, tier_id, surface_id, quota_observation_id, tier_observed_at_ms,
+        reasoning_effort, 0, work_directory_id, tokens_in_uncached,
+        tokens_in_cache_read, tokens_in_cache_write, tokens_out_text,
+        tokens_out_reasoning, tokens_out_combined, total_input_context
+      FROM usage_event WHERE source_id = ?
+      ORDER BY source_offset DESC LIMIT 1`)
+      .run(offset, observedAtMs, source.id);
+    database.prepare(
+      "UPDATE store_state SET calculation_revision = calculation_revision + 1 WHERE id = 1",
+    ).run();
+  } finally {
+    database.close();
+  }
+}
+
 export function withoutOrdinals(facts) {
   const blank = (text, index) => {
     const values = JSON.parse(text);

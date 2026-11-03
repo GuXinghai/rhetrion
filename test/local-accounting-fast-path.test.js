@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { createWorkspace } from "./helpers/local-index-facts.js";
+import { createWorkspace, insertSyntheticUsageAt } from "./helpers/local-index-facts.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import {
   createLocalIndexAccountingScan,
@@ -42,35 +42,6 @@ const PROVENANCE = {
   policyIdentity: "p".repeat(64),
 };
 
-function insertUsageAt(indexFile, observedAtMs) {
-  const database = new DatabaseSync(indexFile);
-  try {
-    const source = database.prepare(`SELECT s.id, s.scanned_bytes,
-      (SELECT MIN(u.source_offset) FROM usage_event u WHERE u.source_id = s.id) AS first_offset
-      FROM source s ORDER BY s.scanned_bytes DESC, s.id LIMIT 1`).get();
-    const offset = Number(source.first_offset) - 1;
-    assert.ok(offset >= 0 && offset <= Number(source.scanned_bytes));
-    database.prepare(`INSERT INTO usage_event(source_id, source_offset,
-      observed_at_ms, event_key, session_id, account_scope_id, model_id, tier_id,
-      surface_id, quota_observation_id, tier_observed_at_ms, reasoning_effort,
-      flags, work_directory_id, tokens_in_uncached, tokens_in_cache_read,
-      tokens_in_cache_write, tokens_out_text, tokens_out_reasoning,
-      tokens_out_combined, total_input_context)
-      SELECT source_id, ?, ?, randomblob(32), session_id, account_scope_id,
-        model_id, tier_id, surface_id, quota_observation_id, tier_observed_at_ms,
-        reasoning_effort, 0, work_directory_id, tokens_in_uncached,
-        tokens_in_cache_read, tokens_in_cache_write, tokens_out_text,
-        tokens_out_reasoning, tokens_out_combined, total_input_context
-      FROM usage_event WHERE source_id = ?
-      ORDER BY source_offset DESC LIMIT 1`)
-      .run(offset, observedAtMs, source.id);
-    database.prepare(
-      "UPDATE store_state SET calculation_revision = calculation_revision + 1 WHERE id = 1",
-    ).run();
-  } finally {
-    database.close();
-  }
-}
 
 async function buildFull({ workspace, indexFile, atMs }) {
   const generation = (await readLocalIndexCompanionProjection({
@@ -131,8 +102,8 @@ test("fast path composes exact windows and timeline after a late fact", async t 
 
   // One late fact inside an older day and one fact in the new tail. The late
   // fact is what forces a real dirty-day rescan rather than a tail append.
-  insertUsageAt(indexFile, T0 - 3 * 86_400_000 + 3_600_000);
-  insertUsageAt(indexFile, T0 + 5 * 60_000);
+  insertSyntheticUsageAt(indexFile, T0 - 3 * 86_400_000 + 3_600_000);
+  insertSyntheticUsageAt(indexFile, T0 + 5 * 60_000);
 
   const receiptUpdate = await updateAccountingWindowReceipts({
     previous: receipts0, indexFile, hmacKey: KEY,
