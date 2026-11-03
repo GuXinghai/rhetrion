@@ -3311,6 +3311,7 @@ test("default calibration view renders a stat row and keeps the example as prose
     "calibration-range",
     "calibration-example",
     "calibration-explanation",
+    "calibration-freshness",
   ]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
@@ -3324,6 +3325,8 @@ test("default calibration view renders a stat row and keeps the example as prose
   assert.match(html, /<span>Plausible 80% range · per point<\/span>/u);
   assert.match(styles, /\.calibration-stats strong \{[^\n}]*font-family: var\(--serif\)/u);
   assert.match(appSource, /function renderCalibrationRate/);
+  assert.match(appSource, /function renderCalibrationFreshness/);
+  assert.match(appSource, /"dashboard\.calibration\.asOf"/u);
   assert.doesNotMatch(appSource, /dashboard\.calibration\.perPoint|dashboard\.calibration\.range"/u);
   assert.match(appSource, /setLocalizedText\(example, "dashboard\.calibration\.example"/u);
   assert.match(appSource, /"dashboard\.calibration\.rangeUnavailable"/u);

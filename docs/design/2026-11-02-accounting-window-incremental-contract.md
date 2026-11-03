@@ -164,10 +164,11 @@ The fast path is a composition, not a second accounting implementation.
    projects only `status` and canonical `asOf` for the moving components and
    shows `数据截至 X` when a window, timeline, or quota series is
    retained. Digests, provenance, and diagnostics never cross the browser
-   boundary. Calibration and plan clocks stay internal until their own surfaces
-   are designed. The closed calibration interval is still enforced: when the
-   last real refit is due, the pass records `calibration_due` and runs a full
-   rebuild instead of retaining the model indefinitely.
+   boundary. The calibration card keeps its own refit time visible; the
+   plan-scope clock stays internal until its surface is designed. The closed
+   calibration interval is still enforced: when the last real refit is due, the
+   pass records `calibration_due` and runs a full rebuild instead of retaining
+   the model indefinitely.
 5. **A full rebuild seeds the markers.** The rebuild's fused history read hands
    over the day accumulators; after the shadow pass writes the window cache, the
    runner republishes the cache with the consumed window digest and the

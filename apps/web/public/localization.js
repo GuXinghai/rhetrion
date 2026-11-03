@@ -663,6 +663,7 @@ export const WEB_MESSAGES = Object.freeze({
   // "range" values left with the table presentation (owner-directed,
   // 2026-08-10). The example translation is a full sentence rendered as prose
   // under the stat row.
+  "dashboard.calibration.asOf": ["Calibrated {time}", "校准于 {time}", "Calibrado {time}"],
   "dashboard.calibration.rangeUnavailable": ["Range unavailable", "区间不可用", "Intervalo no disponible"],
   // Composition-aware per-model detail behind the blended headline (owner
   // decision 2026-08-10: blended "$X per point" leads; per-model on expand).

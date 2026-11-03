@@ -121,6 +121,7 @@ it is implemented but not used for the equality proof. The dashboard now
 projects the cache's `freshness` as status plus `asOf` only, and shows
 `数据截至 X` when a window, timeline, or quota series is retained;
 digests, provenance, and diagnostics stay out of the browser payload. The
+calibration card keeps its last refit time visible, and the
 default 24-hour calibration due check is wired into the fast path; the Settings
 UI, persisted interval/change-time selection, and manual **重新计算**
 escalation are not implemented, and the

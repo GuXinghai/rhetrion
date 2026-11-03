@@ -2223,6 +2223,7 @@ function renderComparison(data) {
     capacityByModel,
     modelCostShares,
   });
+  renderCalibrationFreshness(data);
   if (!pair || pair.observed === null || pair.expected === null) {
     // A new population must not retain the previous plan's visible bars.
     for (const row of $("#comparison-visual").querySelectorAll(".comparison-row")) {
@@ -2271,6 +2272,24 @@ function renderComparison(data) {
 // compact stat row. Each tile holds the bare figure; its unit lives in the
 // fixed label beneath it, and the sentence-length "example translation" moved
 // into the prose below the stats — it is a sentence, not a datum.
+// Calibration is a low-frequency model. Keep its own refit time visible even
+// when the moving totals are exact, so a retained model is never mistaken for
+// a fresh fit.
+function renderCalibrationFreshness(data) {
+  const element = $("#calibration-freshness");
+  if (!element) return;
+  const calibration = data?.freshness?.accountingFreshness?.calibration;
+  if (!calibration || typeof calibration.asOf !== "string") {
+    element.hidden = true;
+    setRawText(element, "");
+    return;
+  }
+  element.hidden = false;
+  setLocalizedText(element, "dashboard.calibration.asOf", {
+    time: formatLocal(calibration.asOf),
+  });
+}
+
 function renderCalibrationRate({
   capacity,
   lower,
