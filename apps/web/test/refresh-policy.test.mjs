@@ -1285,7 +1285,7 @@ test("real client normalization keeps newly published quota freshness separate f
   assert.equal(harness.context.$("#data-source").textContent, quotaAt);
   assert.equal(harness.context.$("#accounting-freshness").hidden, false);
   assert.match(harness.context.$("#accounting-freshness").textContent,
-    /Partial data/u);
+    /Data as of/u);
   assert.equal(harness.context.lastQuotaPresentation.quotaWindows[0].status, "live");
 
   overview.quotaFreshness = { ...overview.quotaFreshness,

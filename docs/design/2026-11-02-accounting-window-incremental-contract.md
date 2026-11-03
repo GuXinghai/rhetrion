@@ -16,7 +16,7 @@ generation, including a forced three-day rescan. Normal appends compose the
 shipping cache without a full replay; the first pass after an upgrade still
 needs a full rebuild to seed the provenance and window markers. Low-frequency
 calibration and capped quota series are retained with explicit `asOf` markers;
-the dashboard surfaces retained moving components as `部分数据 · 截至 X` and
+the dashboard surfaces retained moving components as `数据截至 X` and
 never sends the digest, provenance, or diagnostics across the browser boundary.
 The calibration and plan-scope clocks remain internal. No schema, migration,
 installed-app, or release claim is made. It
@@ -162,7 +162,7 @@ The fast path is a composition, not a second accounting implementation.
    and `freshness.quota` records with `status` and `asOf`/`coveredTo`. The cache
    validator rejects a shape that loses the exactness markers. The dashboard
    projects only `status` and canonical `asOf` for the moving components and
-   shows `部分数据 · 截至 X` when a window, timeline, or quota series is
+   shows `数据截至 X` when a window, timeline, or quota series is
    retained. Digests, provenance, and diagnostics never cross the browser
    boundary. Calibration and plan clocks stay internal until their own surfaces
    are designed.

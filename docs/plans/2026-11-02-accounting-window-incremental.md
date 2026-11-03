@@ -116,7 +116,7 @@ The exact path currently prices individual events; a faster rollup-bucket path
 moved a few hundred declared-speed provenance events across a baseline edge, so
 it is implemented but not used for the equality proof. The dashboard now
 projects the cache's `freshness` as status plus `asOf` only, and shows
-`部分数据 · 截至 X` when a window, timeline, or quota series is retained;
+`数据截至 X` when a window, timeline, or quota series is retained;
 digests, provenance, and diagnostics stay out of the browser payload. The
 settings UI and manual **重新计算** escalation are not implemented, and the
 capped quota selection is refreshed on a low-frequency interval rather than
@@ -336,7 +336,7 @@ The implementation is not accepted unless all of these hold:
   audit requires atomic coupling with index facts, a forward-only local-index
   schema decision is needed; no downgrade or dual writer is allowed.
 - **Partial reader behavior**: 1A is approved; implementation must keep the
-  `截至 X 时间` / `部分数据` label visible and must not drop the value silently.
+  `数据截至 X` label visible and must not drop the value silently.
 - **Repair UX**: automatic repair is local and bounded; the manual entry
   escalates in order. It must not become a hidden scheduler retry or skip the
   full-rebuild confirmation.
@@ -346,7 +346,7 @@ The implementation is not accepted unless all of these hold:
 # Owner decisions (2026-11-02)
 
 1. **Unavailable window display: 1A.** Keep the last-good value with an explicit
-   `截至 X 时间` / `部分数据` label. Do not hide the value or the module.
+   `数据截至 X` label. Do not hide the value or the module.
 2. **Calibration interval: fixed options.** Use 6 hours, 12 hours, 24 hours
    (default), 3 days, and 7 days. A change starts timing from the change and
    does not trigger an immediate refit. Price/plan/policy changes still
@@ -386,7 +386,7 @@ wants an immediate update.
 | Field label | 校准间隔 | Calibration interval |
 | Options | 每 6 小时 / 每 12 小时 / 每 24 小时（默认） / 每 3 天 / 每 7 天 | Every 6 hours / Every 12 hours / Every 24 hours (default) / Every 3 days / Every 7 days |
 | Status | 上次校准 {time} · 下次 {time} | Last calibrated {time} · Next {time} |
-| Stale label | 部分数据 · 截至 {time} | Partial · as of {time} |
+| Stale label | 数据截至 {time} | Data as of {time} |
 | Stale explanation | 暂无法验证，显示上次正确结果。 | Can't verify this period; showing the last correct result. |
 | Repair button | 重新计算 | Recalculate |
 | Repair progress | 正在重算 {date}… / 正在重算相关范围… | Recalculating {date}… / Recalculating related range… |

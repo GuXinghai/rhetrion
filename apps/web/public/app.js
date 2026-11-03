@@ -1434,7 +1434,7 @@ function renderLiveObservationPresentation(data, recency = observationRecency(da
       accountingFreshnessNode.hidden = false;
       setLocalizedText(
         accountingFreshnessNode,
-        "dashboard.freshness.partial",
+        "dashboard.freshness.accountingAsOf",
         { time: formatLocal(retainedAccounting[0].asOf) },
       );
     }
