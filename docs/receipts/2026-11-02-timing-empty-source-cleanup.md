@@ -3,7 +3,7 @@ title: Empty timing-source cleanup
 date: 2026-11-02
 type: receipt
 status: verified
-source_commit: c73af175
+source_commit: b9eee274
 ---
 
 # Result and boundary

@@ -164,11 +164,24 @@ async function fold(cache, {
   return cache;
 }
 
-function buildDaysFromAccumulators({ receipts, dayAccumulators, hmacKey }) {
+function buildDaysFromAccumulators({
+  receipts, dayAccumulators, hmacKey, dayAccumulatorsRevision,
+}) {
+  if (!Number.isSafeInteger(dayAccumulatorsRevision)
+      || dayAccumulatorsRevision !== receipts.calculationRevision) {
+    throw fixedError("accounting_window_cache_day_revision_mismatch");
+  }
   return receipts.windows.map(window => {
-    const accumulator = dayAccumulators.get(window.lowerMs)
-      ?? createAccountingPeriodAccumulator("window", "UTC day");
-    const period = finalizeAccountingPeriodAccumulator(accumulator);
+    const accumulator = dayAccumulators.get(window.lowerMs);
+    if (accumulator === undefined && window.factCount > 0) {
+      // An absent day is only legitimately empty when the receipt also proves
+      // it has no facts. Otherwise the seed belongs to a different revision
+      // and must never be published as an empty day.
+      throw fixedError("accounting_window_cache_day_missing");
+    }
+    const period = finalizeAccountingPeriodAccumulator(
+      accumulator ?? createAccountingPeriodAccumulator("window", "UTC day"),
+    );
     return {
       key: window.key,
       lowerMs: window.lowerMs,
@@ -215,6 +228,7 @@ export async function createAccountingWindowCache({
   hmacKey,
   declaredSpeedBaselines = [],
   dayAccumulators = null,
+  dayAccumulatorsRevision = null,
   endMs = null,
   signal = null,
   now = () => Date.now(),
@@ -222,14 +236,24 @@ export async function createAccountingWindowCache({
   if (dayAccumulators !== null && !(dayAccumulators instanceof Map)) {
     throw new TypeError("accounting window cache dayAccumulators must be a Map or null");
   }
+  if (dayAccumulatorsRevision !== null
+      && (!Number.isSafeInteger(dayAccumulatorsRevision)
+        || dayAccumulatorsRevision < 0)) {
+    throw new TypeError(
+      "accounting window cache dayAccumulatorsRevision must be a non-negative safe integer or null",
+    );
+  }
   assertAccountingWindowReceipts(receipts, { hmacKey });
   assertReceiptBaselines(receipts, declaredSpeedBaselines);
   const identity = readLocalIndexGenerationIdentity({ indexFile });
   if (identity === null || identity.calculationRevision !== receipts.calculationRevision) {
     throw fixedError("accounting_window_cache_generation_changed");
   }
-  const days = dayAccumulators !== null && dayAccumulators.size > 0
-    ? buildDaysFromAccumulators({ receipts, dayAccumulators, hmacKey })
+  const seeded = dayAccumulators !== null && dayAccumulators.size > 0;
+  const days = seeded
+    ? buildDaysFromAccumulators({
+      receipts, dayAccumulators, hmacKey, dayAccumulatorsRevision,
+    })
     : await buildDays({
       indexFile, keys: receipts.windows.map(window => window.key),
       hmacKey, declaredSpeedBaselines, signal,
@@ -279,6 +303,8 @@ export async function updateAccountingWindowCache({
   receipts,
   hmacKey,
   declaredSpeedBaselines = [],
+  dayAccumulators = null,
+  dayAccumulatorsRevision = null,
   endMs = null,
   signal = null,
   now = () => Date.now(),
@@ -286,11 +312,15 @@ export async function updateAccountingWindowCache({
   validateCache(previous);
   assertAccountingWindowReceipts(receipts, { hmacKey });
   assertReceiptBaselines(receipts, declaredSpeedBaselines);
+  if (dayAccumulators !== null && !(dayAccumulators instanceof Map)) {
+    throw new TypeError("accounting window cache dayAccumulators must be a Map or null");
+  }
   const comparison = compareAccountingWindowReceipts(previous.receipts, receipts, { hmacKey });
   if (comparison.basisChanged) {
     return {
       cache: await createAccountingWindowCache({
-        indexFile, receipts, hmacKey, declaredSpeedBaselines, endMs, signal, now,
+        indexFile, receipts, hmacKey, declaredSpeedBaselines,
+        dayAccumulators, dayAccumulatorsRevision, endMs, signal, now,
       }),
       basisChanged: true,
       rebuiltKeys: receipts.windows.map(window => window.key),

@@ -16,10 +16,12 @@ generation, including a forced three-day rescan. Normal appends compose the
 shipping cache without a full replay; the first pass after an upgrade still
 needs a full rebuild to seed the provenance and window markers. Low-frequency
 calibration and capped quota series are retained with explicit `asOf` markers;
-the dashboard surfaces retained moving components as `数据截至 X` and
-never sends the digest, provenance, or diagnostics across the browser boundary.
-The calibration and plan-scope clocks remain internal. No schema, migration,
-installed-app, or release claim is made. It
+the dashboard surfaces retained moving components as `数据截至 X`; window
+digests and provenance digests never cross the browser boundary, while the
+pre-existing bounded replay diagnostics and generation fingerprints remain a
+separate public projection. The calibration card shows its last refit time; the
+plan-scope status/asOf is projected but has no dedicated surface yet. No schema,
+migration, installed-app, or release claim is made. It
 follows the
 [v11 impact-manifest plan](../plans/2026-11-01-local-index-impact-and-work-projections.md)
 and the [local index schema](../reference/local-index-schema.md); the
@@ -159,16 +161,21 @@ The fast path is a composition, not a second accounting implementation.
 4. **Low-frequency artifacts are labelled, never silently fresh.** Calibration,
    weekly API intervals, plan-scope receipts, and retained quota series carry
    `freshness.calibration`, `freshness.weeklyApiIntervals`, `freshness.planScope`,
-   and `freshness.quota` records with `status` and `asOf`/`coveredTo`. The cache
-   validator rejects a shape that loses the exactness markers. The dashboard
-   projects only `status` and canonical `asOf` for the moving components and
-   shows `数据截至 X` when a window, timeline, or quota series is
-   retained. Digests, provenance, and diagnostics never cross the browser
-   boundary. The calibration card keeps its own refit time visible; the
-   plan-scope clock stays internal until its surface is designed. The closed
-   calibration interval is still enforced: when the last real refit is due, the
-   pass records `calibration_due` and runs a full rebuild instead of retaining
-   the model indefinitely.
+   and `freshness.quota` records with `status` and `asOf`/`coveredTo`. Once the
+   envelope is present, the cache validator requires every component and the
+   window proof; a cache with a partial or malformed envelope is rejected, while
+   a legacy cache with no envelope stays readable and is not fast-path eligible.
+   The dashboard projects only `status` and canonical `asOf` for the moving
+   components and shows `数据截至 X` when a window, timeline, or quota series
+   is retained. Window digests and provenance digests never cross the browser
+   boundary; the pre-existing bounded replay diagnostics and generation
+   fingerprints are a separate projection. The calibration card keeps its own
+   refit time visible; the plan-scope status/asOf is projected but has no
+   dedicated surface. The closed calibration interval is enforced on the
+   fast-path eligibility path: when the last real refit is due, the pass records
+   `calibration_due` and runs a full rebuild instead of retaining the model
+   indefinitely. Hoisting the same due check outside the fast-path gate remains
+   part of the settings/scheduler work.
 5. **A full rebuild seeds the markers.** The rebuild's fused history read hands
    over the day accumulators; after the shadow pass writes the window cache, the
    runner republishes the cache with the consumed window digest and the
@@ -182,8 +189,11 @@ The fast path is a composition, not a second accounting implementation.
 The measured result on the protected 251-day copy is exact parity for periods,
 history, timeline, Spark timeline, both quota timelines, and the weekly
 forecast. Retaining the capped quota series made a five-minute advance take about
-13 seconds; refreshing it took about 37 seconds. Quota candidate projection
-remains the largest fast-path cost and is the next optimization target.
+13 seconds; a separate pass refreshing it took about 37 seconds. These are
+separate measurements, not additive. Quota candidate projection remains the
+largest fast-path cost and is the next optimization target. Price-card
+provenance is bounded at 256 distinct cards per period; a period that exceeds
+the bound makes the cache invalid rather than silently truncating history.
 
 The receipt never contains raw facts. The input digest includes the stable
 occurrence key and only the fields that participate in accounting derivation.
@@ -300,6 +310,12 @@ The enum is closed. `inputs_revision_changed`, `inputs_baselines_changed`,
 `inputs_origins_changed`, and `inputs_changed` are not full-rebuild reasons;
 they identify dirty windows. Adding a full-rebuild reason requires a contract
 change, tests, and an owner decision.
+
+Implementation state: the automatic bounded repair, the manual **Recalculate**
+escalation, and the persisted closed full-rebuild reason enum in this section
+and the preceding proof-failure section are contract requirements, not shipped
+behavior. The current source records a bounded fallback reason and falls back to
+the existing reuse/rebuild path; the repair workflow and enum are open work.
 
 A full rebuild is idempotent and receipt-backed. It must publish a new manifest
 only after preflight passes. Existing last-good state remains untouched on

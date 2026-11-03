@@ -215,6 +215,34 @@ test("a basis change defers a full shadow rebuild when it is not allowed", async
   assert.deepEqual(after.cache, before.cache);
 });
 
+test("a maintenance pass recreates the cache under a new basis", async t => {
+  const { workspace, indexFile, stateFile } = await setup(t);
+  const full = await fullCache(indexFile, workspace.codexHome);
+  await refreshAccountingWindowShadow({
+    indexFile, stateFile, hmacKey: KEY, endMs: END_MS,
+    expectedPeriods: full.periods, expectedHistory: full.history.period,
+    now: () => END_MS,
+  });
+  const before = await readLocalCollectorAccountingWindowCache({ stateFile });
+  const database = new DatabaseSync(indexFile);
+  try {
+    database.prepare("UPDATE meta SET value = 'synthetic-basis' WHERE key = 'rollup_basis'").run();
+  } finally {
+    database.close();
+  }
+  const result = await refreshAccountingWindowShadow({
+    indexFile, stateFile, hmacKey: KEY, endMs: END_MS,
+    allowCreate: false, allowFullRebuild: true, allowUnaudited: true,
+    now: () => END_MS,
+  });
+  assert.equal(result.status, "updated");
+  const after = await readLocalCollectorAccountingWindowCache({ stateFile });
+  assert.notEqual(after.cache.basisFingerprint, before.cache.basisFingerprint);
+  assert.deepEqual(after.cache.audit, {
+    status: "source", comparedAtMs: END_MS, periods: 4, history: true,
+  });
+});
+
 test("tampered receipts mark the shadow cache invalid without deleting it", async t => {
   const { workspace, indexFile, stateFile } = await setup(t);
   const full = await fullCache(indexFile, workspace.codexHome);

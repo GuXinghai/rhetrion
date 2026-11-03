@@ -31,7 +31,8 @@ These source facts decide the plan:
   keys. Stable occurrence identities already exist for content-free receipts.
 - `impact_partition` already records `accounting_window` partitions with
   `lower_ms`, `upper_ms`, session, basis kind, and status. The index refresh
-  records them; the accounting cache does not consume them yet.
+  records them; the receipt planner consumes bounded ranges incrementally and
+  falls back to a full scan when the manifest cannot prove a dirty range.
 - `projectReplaySafeAccountingTime` already refreshes moving windows,
   timelines, and forecasts without rebuilding historical calibration or
   ledgers. It currently requires the cache generation to equal the new
@@ -73,13 +74,15 @@ all 251 day output digests verified took about 0.6 seconds. After treating absen
 days inside the receipt range as known empty, a new-anchor fold over the 251
 stored days took about 1.1 seconds and 4 scans instead of rebuilding every
 missing interior day; the end-to-end five-minute advance was about 2.2 seconds
-including receipt verification and day-digest checks. A declared-baseline
-extension forced a full receipt scan but rebuilt only the one affected day and
-still matched the shipping periods. The refresh runner maintains an existing
+including receipt verification and day-digest checks. An extension of an
+existing declared-speed baseline now recomputes only the receipt days its
+coverage reaches; a new or removed declaration, or a changed first-seen/mode,
+still takes the full receipt scan. The refresh runner maintains an existing
 shadow cache on rebuilt and reuse/time-projection cycles, and creates the first
 cache only when the full rebuild hands over its day accumulators. A global
-basis change is deferred (`allowFullRebuild: false`) to a maintenance pass
-rather than adding a full shadow rebuild to the foreground refresh.
+basis change defers the foreground shadow; the next real rebuild runs the
+maintenance pass with `allowFullRebuild: true` and reseeds the window cache
+from that rebuild's day accumulators.
 
 Implementation status (2026-11-03): the shipping fast path is wired. A normal
 refresh composes the published cache from the exact window-cache
@@ -101,26 +104,33 @@ when the last real refit is due (default 24 hours), the pass forces a full
 rebuild and records `calibration_due` instead of retaining the model
 indefinitely. Any doubt runs the existing reuse or full-rebuild path. A full
 rebuild records its provenance and the digest of the window state it consumed,
-so the next normal append can fast-path. The closed reason is recorded as
-`fastPathFallbackCode` on the result.
+so the next normal append can fast-path. The bounded reason is recorded as
+`fastPathFallbackCode`, with a lifetime `fastPathFallbackCount`, on the public
+refresh result. A freshness envelope is validated once present; a legacy cache
+without one stays readable but is not fast-path eligible. Price-card provenance
+is bounded at 256 distinct cards per period and rejects the next card rather
+than truncating history.
 
 A protected-copy rehearsal on 2026-11-03 (same 251-day, 1.04M-fact index)
 composed a five-minute advance with a forced three-day timeline rescan. The
 24h/7d/30d/all periods, history, timeline, Spark timeline, quota timeline, Spark
 quota timeline, and weekly forecast all matched a full rebuild exactly. With
 the quota series retained, the pass took about 13 seconds (25 ms receipts, 8.3
-seconds window verification/fold, 4.8 seconds compose); the same pass with a
-quota refresh took about 37 seconds. The cold full rebuild on the same copy
-took 416 seconds; the earlier warm full rebuild took about 76 seconds. A
-synthetic three-append sequence recorded zero additional full rebuilds after
-the initial one.
+seconds window verification/fold, 4.8 seconds compose); a separate pass with a
+quota refresh took about 37 seconds. These are separate measurements, not
+additive; the quota refresh adds its own candidate projection. The cold full
+rebuild on the same copy took 416 seconds; the earlier warm full rebuild took
+about 76 seconds. A synthetic three-append sequence recorded zero additional
+full rebuilds after the initial one. The protected-copy run is point-in-time
+local evidence; it is not a tracked receipt or an installed-app measurement.
 
 The exact path currently prices individual events; a faster rollup-bucket path
 moved a few hundred declared-speed provenance events across a baseline edge, so
 it is implemented but not used for the equality proof. The dashboard now
 projects the cache's `freshness` as status plus `asOf` only, and shows
-`数据截至 X` when a window, timeline, or quota series is retained;
-digests, provenance, and diagnostics stay out of the browser payload. The
+`数据截至 X` when a window, timeline, or quota series is retained; window
+digests and provenance digests stay out of the browser payload, while the
+pre-existing bounded replay diagnostics remain a separate projection. The
 calibration card keeps its last refit time visible, and the
 default 24-hour calibration due check is wired into the fast path; the Settings
 UI, persisted interval/change-time selection, and manual **重新计算**
@@ -129,8 +139,11 @@ capped quota selection is refreshed on a low-frequency interval rather than
 every tick. The remaining costs are receipt scans after unsafe
 baseline/lineage changes, quota candidate projection (about 28 seconds per
 refresh pass on the protected copy), and the one-time full rebuild that seeds
-the first marker. A 10x reduction in the normal append cost is measured; no
-end-to-end page-speed or installed-app claim is made.
+the first marker. The remaining costs are receipt scans after a new or removed
+baseline declaration, an unbounded lineage change, quota candidate projection
+(about 28 seconds per refresh pass on the protected copy), and the one-time
+full rebuild that seeds the first marker. A 10x reduction in the normal append
+cost is measured; no end-to-end page-speed or installed-app claim is made.
 
 # Decisions
 

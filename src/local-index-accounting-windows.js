@@ -522,6 +522,41 @@ function dayKeysForRange(lowerMs, upperMs, keys) {
   }
 }
 
+function baselineChangePlan(previousValue, nextValue) {
+  const previous = normalizeDeclaredSpeedBaselines(previousValue);
+  const next = normalizeDeclaredSpeedBaselines(nextValue);
+  if (stableJson(previous) === stableJson(next)) {
+    return { mode: "unchanged", keys: [] };
+  }
+  // A new or removed declaration changes which mode covers a range rather
+  // than merely extending an existing declaration. The full scan remains the
+  // conservative path for that rarer shape.
+  if (previous.length !== next.length) return { mode: "full" };
+  const keys = new Set();
+  for (let index = 0; index < previous.length; index += 1) {
+    const before = previous[index];
+    const after = next[index];
+    if (before.firstSeenAt !== after.firstSeenAt || before.mode !== after.mode) {
+      return { mode: "full" };
+    }
+    const beforeEnd = Date.parse(before.lastSeenAt);
+    const afterEnd = Date.parse(after.lastSeenAt);
+    if (beforeEnd === afterEnd) continue;
+    try {
+      dayKeysForRange(
+        Math.min(beforeEnd, afterEnd),
+        Math.max(beforeEnd, afterEnd),
+        keys,
+      );
+    } catch {
+      return { mode: "full" };
+    }
+  }
+  return keys.size === 0
+    ? { mode: "unchanged", keys: [] }
+    : { mode: "delta", keys: [...keys].sort() };
+}
+
 function incrementalPlan(database, previous) {
   const changes = database.prepare(`SELECT change_id, mode FROM source_change
     WHERE change_id > ? ORDER BY change_id`).all(previous.lastChangeId);
@@ -642,19 +677,53 @@ export async function updateAccountingWindowReceipts({
       if (basisFingerprint !== previous.basisFingerprint) {
         return { mode: "full", reason: "basis_changed" };
       }
-      if (stableJson(previous.declaredSpeedBaselines) !== stableJson(baselines)) {
-        // A full receipt pass is needed to reprice every window whose declared
-        // speed coverage changed; the cache updater will still rebuild only
-        // the windows whose digest moved.
+      const baselineChange = baselineChangePlan(
+        previous.declaredSpeedBaselines,
+        baselines,
+      );
+      if (baselineChange.mode === "full") {
         return { mode: "full", reason: "baselines_changed" };
       }
       if (state.lastChangeId < previous.lastChangeId) {
         return { mode: "full", reason: "manifest_rewound" };
       }
+      const rebuildReceipts = async keys => {
+        const rebuilt = await collectWindows(database, {
+          key, windowKeys: keys, signal, yieldEvery, baselines,
+        });
+        const affected = new Set(keys);
+        const windows = previous.windows
+          .filter(window => !affected.has(window.key))
+          .concat(rebuilt)
+          .sort((left, right) => left.key < right.key ? -1 : left.key > right.key ? 1 : 0);
+        const receipts = buildReceipt({
+          windows,
+          commitSeq: state.commitSeq,
+          calculationRevision: state.calculationRevision,
+          lastChangeId: state.lastChangeId,
+          manifestSinceChangeId: state.manifestSinceChangeId,
+          basis,
+          basisFingerprint,
+          declaredSpeedBaselines: baselines,
+          key,
+          now,
+        });
+        assertAccountingWindowReceipts(receipts, { hmacKey });
+        return {
+          mode: "incremental",
+          receipts,
+          rebuiltKeys: [...keys].sort(),
+          ...compareAccountingWindowReceipts(previous, receipts, { hmacKey }),
+        };
+      };
       if (state.commitSeq === previous.commitSeq
           && state.calculationRevision === previous.calculationRevision
           && state.lastChangeId === previous.lastChangeId) {
-        return { mode: "unchanged", receipts: previous };
+        // A declared-speed extension changes only the coverage digests of the
+        // days it reaches; those days can be rebuilt without a full scan.
+        return baselineChange.mode === "delta"
+          ? rebuildReceipts(baselineChange.keys)
+          : { mode: "unchanged", receipts: previous };
       }
       if (state.lastChangeId === previous.lastChangeId) {
         // Facts advanced without a durable change row. Only a full scan can
@@ -675,34 +744,8 @@ export async function updateAccountingWindowReceipts({
         }
         throw error;
       }
-      const rebuilt = await collectWindows(database, {
-        key, windowKeys: plan.dayKeys, signal, yieldEvery, baselines,
-      });
-      const affected = new Set(plan.dayKeys);
-      const windows = previous.windows
-        .filter(window => !affected.has(window.key))
-        .concat(rebuilt)
-        .sort((left, right) => left.key < right.key ? -1 : left.key > right.key ? 1 : 0);
-      const receipts = buildReceipt({
-        windows,
-        commitSeq: state.commitSeq,
-        calculationRevision: state.calculationRevision,
-        lastChangeId: state.lastChangeId,
-        manifestSinceChangeId: state.manifestSinceChangeId,
-        basis,
-        basisFingerprint,
-        declaredSpeedBaselines: baselines,
-        key,
-        now,
-      });
-      assertAccountingWindowReceipts(receipts, { hmacKey });
-      const comparison = compareAccountingWindowReceipts(previous, receipts, { hmacKey });
-      return {
-        mode: "incremental",
-        receipts,
-        rebuiltKeys: plan.dayKeys,
-        ...comparison,
-      };
+      const keys = new Set([...plan.dayKeys, ...baselineChange.keys]);
+      return rebuildReceipts(keys);
     });
   } catch (error) {
     if (error?.name === "AbortError" || error instanceof TypeError) throw error;

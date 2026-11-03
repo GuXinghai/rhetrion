@@ -13,6 +13,7 @@ import { selectProductionAccountObservationSecret } from "./account-observation-
 import { runCollectorOnce } from "./passive-collector.js";
 import { createLocalIndexAccountingReuse } from "./local-index-accounting-reuse.js";
 import { createLocalIndexAccountingScan, projectLocalIndexAccountingTime } from "./local-index-accounting-cache.js";
+import { readLocalIndexGenerationIdentity } from "./local-index-companion-source.js";
 import { refreshAccountingWindowShadow } from "./local-accounting-window-refresh.js";
 import {
   LOCAL_ACCOUNTING_FRESHNESS_VERSION,
@@ -20,6 +21,7 @@ import {
   accountingProvenanceFromProof,
   composeLocalAccountingFastPath,
   completeAccountingFreshness,
+  normalizeAccountingFastPathFallbackCode,
 } from "./local-accounting-fast-path.js";
 import { writeLocalCollectorAccountingCache } from "./local-collector-state.js";
 import {
@@ -55,6 +57,11 @@ const EARLY_HEADLINE_BUFFERED_LINE_BYTES = 1024 * 1024;
 // the surface stays populated instead of flip-flopping; a successful rebuild
 // clears the backoff immediately.
 const ACCOUNTING_REBUILD_BUDGET_BACKOFF_MS = 30 * 60 * 1_000;
+// A due calibration refit or a basis change is a real rebuild, but a transient
+// failure must not be retried on every scheduler tick. A due refit keeps the
+// last-good cache visible; a basis change stays unavailable until a successful
+// rebuild.
+const ACCOUNTING_REBUILD_FAILURE_BACKOFF_MS = 5 * 60 * 1_000;
 // Standing owner rule (2026-08-08, after five rounds of cap-shuffling): NEVER
 // introduce or retain small data-window caps — a history limit is either
 // absent or extreme (365+ days), never convenience-sized. 31 and 93 were both
@@ -891,6 +898,10 @@ export function createLocalCollectorRefreshRunner({
   // distinguish one soft miss from a rebuild that is never landing (the
   // 2026-08-19 livelock ran for hours behind a bare unavailable estimate).
   let accountingRebuildDeferredStreak = 0;
+  // Cross-pass fast-path observability: the count is lifetime for this runner;
+  // the code is the last bounded reason a pass could not compose.
+  let accountingFastPathFallbackCount = 0;
+  let accountingFastPathFallbackCode = null;
   let hasReadQuota = false;
   // Raw provider credit IDs never enter the collector store. The classifier's
   // bounded keyed-fingerprint checkpoint is committed with the existing
@@ -1113,11 +1124,17 @@ export function createLocalCollectorRefreshRunner({
     let accountingRetainedGeneration = false;
     let accountingRebuildDeferred = null;
     let capturedDayAccumulators = null;
+    let capturedDayAccumulatorsRevision = null;
     let pendingReuseProof = null;
     let reuseProofPersisted = false;
     let fastPathUsed = false;
     let fastPathReason = null;
     let calibrationDue = false;
+    // A basis change makes the retained window state unusable. The fast-path
+    // shadow cannot rebuild it in the foreground, so the next step must be a
+    // real accounting rebuild; the post-rebuild shadow then reseeds the window
+    // cache from that rebuild's day accumulators.
+    let accountingRequiresRebuild = false;
     let calculationProof = null;
     let accountingUnavailableCode = accountingMayRun
         && !unifiedAccountingReady
@@ -1126,10 +1143,51 @@ export function createLocalCollectorRefreshRunner({
         : "accounting_unified_coverage_incomplete"
       : null;
     refreshStep = "accounting";
+    const withinRebuildBackoff = clock() < accountingRebuildDeferUntilMs;
+    // Read the last good cache under the same policy checks everywhere a
+    // failed or deferred pass needs to keep the surface usable.
+    const readLastGoodAccounting = async ({
+      includeStaleGeneration = false,
+      requireWeeklyIntervals = false,
+    } = {}) => {
+      try {
+        const existing = await timing.measure("cache_read", () => readAccountingCache({
+          ...(stateFile === null ? {} : { stateFile }),
+          now: clock,
+          sourceMode: "unified",
+          contextBehavior: "source_native",
+          expectedGeneration: unifiedIndex.generation,
+          ...(includeStaleGeneration ? { includeStaleGeneration: true } : {}),
+        }));
+        const retained = includeStaleGeneration
+            && existing?.staleCache?.reason === "cache_generation_mismatch"
+          ? existing.staleCache.cache : null;
+        const selected = ["available", "stale"].includes(existing?.status)
+          ? existing.cache : retained;
+        if (signal?.aborted === true
+            || selected?.schemaVersion
+              !== REPLAY_SAFE_ACCOUNTING_SCHEMA_VERSION
+            || !cachePolicyMatches(selected)
+            || (requireWeeklyIntervals
+              && selected?.weeklyApiIntervals?.status !== "available")
+            || !unifiedAccountingCacheHasZeroFallback(selected)) {
+          return null;
+        }
+        return {
+          cache: selected,
+          retained: retained !== null,
+          status: existing?.status,
+        };
+      } catch {
+        // A failed cache read is never authoritative.
+        return null;
+      }
+    };
     if (refreshAccounting !== null
         && accountingMayRun
         && unifiedAccountingReady) {
       if (accountingFastPath
+          && !withinRebuildBackoff
           && unifiedIndexFile !== null
           && stateFile !== null
           && unifiedIndexSecretFile !== null
@@ -1239,6 +1297,9 @@ export function createLocalCollectorRefreshRunner({
               accountingRebuildDeferredStreak = 0;
             } else {
               fastPathReason = shadow.reason ?? shadow.status;
+              if (shadow.status === "deferred" && shadow.reason === "basis_changed") {
+                accountingRequiresRebuild = true;
+              }
             }
           } else {
             fastPathReason = "retained_marker_absent";
@@ -1255,7 +1316,7 @@ export function createLocalCollectorRefreshRunner({
       let timeProjectionFailed = false;
       if (!fastPathUsed) {
       try {
-        if (signal?.aborted !== true && !calibrationDue) {
+        if (signal?.aborted !== true && !calibrationDue && !accountingRequiresRebuild) {
           if (calculationProof === null) {
             calculationProof = await timing.measure("reuse_proof_before", () => calculationReuse.readProof({
               generation: unifiedIndex.generation, declaredSpeedBaselines, unknownSpeedPolicy, nowMs: clock(), signal, onTiming, monotonicClock, onReuseDiagnostic, onOriginDiagnostic,
@@ -1305,48 +1366,30 @@ export function createLocalCollectorRefreshRunner({
       // A recent rebuild that missed its memory budget backs the FULL rebuild
       // off: within this window we serve the retained cache rather than re-run
       // the doomed pass on every scheduler tick and blank the surface again.
-      const withinRebuildBackoff = clock() < accountingRebuildDeferUntilMs;
       const existingCalculationProven = !timeProjectionFailed && (unifiedIndexFile === null || stateFile === null
         || calculationReuse.matches(calculationProof));
       if (accounting === null
           && (collectorWroteNoRolloutUsage || withinRebuildBackoff)
           && (withinRebuildBackoff || existingCalculationProven)
           && (!calibrationDue || withinRebuildBackoff)
+          && (!accountingRequiresRebuild || withinRebuildBackoff)
           && signal?.aborted !== true) {
-        try {
-          const existing = await timing.measure("cache_read", () => readAccountingCache({
-            ...(stateFile === null ? {} : { stateFile }),
-            now: clock,
-            sourceMode: "unified",
-            contextBehavior: "source_native",
-            expectedGeneration: unifiedIndex.generation,
-            ...(withinRebuildBackoff ? { includeStaleGeneration: true } : {}),
-          }));
-          const retained = withinRebuildBackoff
-            && existing?.staleCache?.reason === "cache_generation_mismatch"
-            ? existing.staleCache.cache : null;
-          const selected = ["available", "stale"].includes(existing?.status)
-            ? existing.cache : retained;
-          if (signal?.aborted !== true
-              && (existing?.status === "available" || withinRebuildBackoff)
-              && selected?.schemaVersion
-                === REPLAY_SAFE_ACCOUNTING_SCHEMA_VERSION
-              && cachePolicyMatches(selected)
-              && (withinRebuildBackoff || selected?.weeklyApiIntervals?.status === "available")
-              && unifiedAccountingCacheHasZeroFallback(selected)) {
-            accounting = selected;
-            accountingRetainedGeneration = retained !== null;
-            // Zero new collector rows do not prove age, origin or speed
-            // inputs. A backoff result remains deferred unless it also
-            // satisfies every ordinary reuse gate.
-            accountingRefreshStatus = collectorWroteNoRolloutUsage
-                && existingCalculationProven && existing?.status === "available"
-                && selected?.weeklyApiIntervals?.status === "available"
-              ? "reused"
-              : "deferred";
-          }
-        } catch {
-          // A failed cache read is never authoritative. Rebuild below.
+        const lastGood = await readLastGoodAccounting({
+          includeStaleGeneration: withinRebuildBackoff,
+          requireWeeklyIntervals: !withinRebuildBackoff,
+        });
+        if (lastGood !== null
+            && (lastGood.status === "available" || withinRebuildBackoff)) {
+          accounting = lastGood.cache;
+          accountingRetainedGeneration = lastGood.retained;
+          // Zero new collector rows do not prove age, origin or speed inputs.
+          // A backoff result remains deferred unless it also satisfies every
+          // ordinary reuse gate.
+          accountingRefreshStatus = collectorWroteNoRolloutUsage
+              && existingCalculationProven && lastGood.status === "available"
+              && lastGood.cache?.weeklyApiIntervals?.status === "available"
+            ? "reused"
+            : "deferred";
         }
       }
       if (accounting === null && !withinRebuildBackoff) {
@@ -1364,6 +1407,13 @@ export function createLocalCollectorRefreshRunner({
           });
         }
         let rebuilt = null;
+        // Bind the handoff to the revision the rebuild is about to read. A
+        // commit after this point makes the shadow receipts newer than the
+        // map, and the cache write fails closed instead of seeding stale days.
+        const rebuildRevision = unifiedIndexFile === null
+          ? null
+          : readLocalIndexGenerationIdentity({ indexFile: unifiedIndexFile })
+            ?.calculationRevision ?? null;
         try {
           rebuilt = await timing.measure("accounting_rebuild", () => refreshAccounting({
             codexHome,
@@ -1380,7 +1430,10 @@ export function createLocalCollectorRefreshRunner({
             declaredSpeedBaselines,
             unknownSpeedPolicy,
             onDayAccumulators: (map) => {
-              if (map instanceof Map && map.size > 0) capturedDayAccumulators = map;
+              if (map instanceof Map && map.size > 0) {
+                capturedDayAccumulators = map;
+                capturedDayAccumulatorsRevision = rebuildRevision;
+              }
             },
             signal,
             onTiming,
@@ -1402,6 +1455,26 @@ export function createLocalCollectorRefreshRunner({
           accountingUnavailableCode = safeAccountingUnavailableCode(
             error?.code,
           );
+          if (calibrationDue || accountingRequiresRebuild) {
+            accountingRebuildDeferUntilMs = clock()
+              + ACCOUNTING_REBUILD_FAILURE_BACKOFF_MS;
+            // A due refit does not make the existing cache invalid. Serve its
+            // last-good values now; the retry after the pause re-attempts the
+            // refit. A basis change is different: the old cache is not
+            // authoritative under the new basis, so leave it unavailable.
+            if (calibrationDue && !accountingRequiresRebuild) {
+              const lastGood = await readLastGoodAccounting({
+                includeStaleGeneration: true,
+                requireWeeklyIntervals: true,
+              });
+              if (lastGood !== null) {
+                accounting = lastGood.cache;
+                accountingRetainedGeneration = lastGood.retained;
+                accountingRefreshStatus = "deferred";
+                accountingUnavailableCode = null;
+              }
+            }
+          }
         }
         if (rebuilt?.status === "accounting_rebuild_deferred") {
           // Memory-budget miss soft-failed inside the rebuild: the prior
@@ -1512,13 +1585,18 @@ export function createLocalCollectorRefreshRunner({
             // longer needs a second 251-day scan. Without that handoff only an
             // existing cache is maintained.
             dayAccumulators: capturedDayAccumulators,
+            dayAccumulatorsRevision: capturedDayAccumulatorsRevision,
             allowCreate: capturedDayAccumulators !== null,
-            allowFullRebuild: false,
+            // This pass follows a real accounting rebuild, so it is the
+            // maintenance point that may recreate the window cache under a
+            // new basis. The foreground fast path still passes false.
+            allowFullRebuild: true,
             onCache: cache => { shadowCache = cache; },
             signal,
             now: clock,
           }));
         capturedDayAccumulators = null;
+        capturedDayAccumulatorsRevision = null;
         if (onAccountingWindowShadow !== null) {
           try {
             await onAccountingWindowShadow(shadow);
@@ -1585,6 +1663,11 @@ export function createLocalCollectorRefreshRunner({
     if (collectorResourceLimitDeferred && !unifiedCollectorPauseSoftened) {
       throwCollectorResourceLimit();
     }
+    if (!fastPathUsed && fastPathReason !== null) {
+      accountingFastPathFallbackCount += 1;
+      accountingFastPathFallbackCode =
+        normalizeAccountingFastPathFallbackCode(fastPathReason);
+    }
     return {
       rolloutRecordsWritten: Number.isSafeInteger(result?.rolloutRecordsWritten)
         ? result.rolloutRecordsWritten
@@ -1604,9 +1687,12 @@ export function createLocalCollectorRefreshRunner({
             status: "replay_safe",
             sourceMode: "unified",
             refreshStatus: accountingRefreshStatus,
-            ...(fastPathReason === null
+            ...(accountingFastPathFallbackCode === null
               ? {}
-              : { fastPathFallbackCode: fastPathReason }),
+              : { fastPathFallbackCode: accountingFastPathFallbackCode }),
+            ...(accountingFastPathFallbackCount > 0
+              ? { fastPathFallbackCount: accountingFastPathFallbackCount }
+              : {}),
             readerVersion: accounting.sourceDescriptor?.readerVersion ?? null,
             compatibilityBehavior:
               accounting.sourceDescriptor?.contextBehavior ?? null,
@@ -1710,7 +1796,10 @@ function publicUnifiedIndexResult(value) {
   };
 }
 
-function publicRefreshResult(result, now = Date.now()) {
+export function publicRefreshResult(result, now = Date.now()) {
+  const fastPathFallbackCount = safeCount(
+    result?.accounting?.fastPathFallbackCount,
+  );
   const projected = {
     rolloutRecordsWritten: Number.isSafeInteger(result?.rolloutRecordsWritten)
       ? result.rolloutRecordsWritten
@@ -1757,6 +1846,14 @@ function publicRefreshResult(result, now = Date.now()) {
       ...(ACCOUNTING_REFRESH_STATUSES.has(result.accounting.refreshStatus)
         ? { refreshStatus: result.accounting.refreshStatus }
         : {}),
+      ...(typeof result.accounting.fastPathFallbackCode === "string"
+        ? {
+          fastPathFallbackCode: normalizeAccountingFastPathFallbackCode(
+            result.accounting.fastPathFallbackCode,
+          ),
+        }
+        : {}),
+      ...(fastPathFallbackCount > 0 ? { fastPathFallbackCount } : {}),
       readerVersion: safeGenerationToken(result.accounting.readerVersion),
       compatibilityBehavior:
         result.accounting.compatibilityBehavior === "source_native"

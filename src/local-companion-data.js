@@ -53,7 +53,7 @@ import {
 } from "./replay-safe-accounting-cache.js";
 import {
   LOCAL_ACCOUNTING_FRESHNESS_VERSION,
-} from "./local-accounting-fast-path.js";
+} from "./local-accounting-freshness.js";
 import {
   defaultLocalCollectorStatePath,
   forEachLocalCollectorRecord,

@@ -96,6 +96,7 @@ export async function refreshAccountingWindowShadow({
   // is read-only: mutating it would corrupt the value the caller persists.
   onCache = null,
   dayAccumulators = null,
+  dayAccumulatorsRevision = null,
   signal = null,
   now = () => Date.now(),
   readCache = readLocalCollectorAccountingWindowCache,
@@ -124,6 +125,13 @@ export async function refreshAccountingWindowShadow({
   }
   if (dayAccumulators !== null && !(dayAccumulators instanceof Map)) {
     throw new TypeError("accounting window shadow dayAccumulators must be a Map or null");
+  }
+  if (dayAccumulatorsRevision !== null
+      && (!Number.isSafeInteger(dayAccumulatorsRevision)
+        || dayAccumulatorsRevision < 0)) {
+    throw new TypeError(
+      "accounting window shadow dayAccumulatorsRevision must be a non-negative safe integer or null",
+    );
   }
   if (!Array.isArray(declaredSpeedBaselines)) {
     throw new TypeError("accounting window shadow baselines are invalid");
@@ -230,16 +238,20 @@ export async function refreshAccountingWindowShadow({
         receipts,
         hmacKey: key,
         declaredSpeedBaselines,
+        dayAccumulators,
+        dayAccumulatorsRevision,
         endMs,
         signal,
         now,
       });
     } catch (error) {
-      if (error?.code === "accounting_window_cache_day_digest_mismatch") {
+      if (["accounting_window_cache_day_digest_mismatch",
+        "accounting_window_cache_day_revision_mismatch",
+        "accounting_window_cache_day_missing"].includes(error?.code)) {
         return summary({
           status: "invalid",
           receiptMode,
-          reason: "day_digest_mismatch",
+          reason: error.code.slice("accounting_window_cache_".length),
         });
       }
       throw error;
@@ -255,6 +267,7 @@ export async function refreshAccountingWindowShadow({
       hmacKey: key,
       declaredSpeedBaselines,
       dayAccumulators,
+      dayAccumulatorsRevision,
       endMs,
       signal,
       now,

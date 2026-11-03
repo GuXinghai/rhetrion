@@ -153,6 +153,13 @@ likewise require explicit conversion from v5. The selected unknown-speed policy
 and active custom ratio are part of cache calculation identity. Missing or empty token observations
 are unavailable, while explicitly observed zero remains zero. Valid `Date`
 timestamps and their canonical ISO strings select the same event-time prices.
+The accounting cache may carry a `local-accounting-freshness-v1` envelope with
+`windows`, `timeline`, `quota`, `calibration`, `weeklyApiIntervals`, and
+`planScope` components; once present, every component and the window digest
+proof are validated. The incremental window cache is a collector-state
+`accounting_window_cache` meta row (envelope v1, cache v3), never a separate
+file. Price-card provenance is bounded at 256 distinct cards per period; a
+larger period is invalid rather than truncated.
 
 
 ## Local model performance

@@ -70,6 +70,8 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
   });
   let nowMs = Date.parse("2026-09-01T00:00:00.000Z");
   let rebuilds = 0;
+  let failNextRebuild = false;
+  let policy = { mode: "standard", customFastRatioBps: null };
   const proof = {
     id: 1,
     fingerprint: "f".repeat(64),
@@ -98,8 +100,9 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
     unifiedIndexFile: indexFile,
     unifiedIndexSecretFile: workspace.secretFile,
     clock: () => nowMs,
-    accountingQuotaRefreshIntervalMs: 60 * 60_000,
+    accountingQuotaRefreshIntervalMs: 15 * 60_000,
     accountingCalibrationIntervalHours: 6,
+    getUnknownSpeedPolicy: () => policy,
     createCalculationReuse: () => fakeReuse,
     selectAccountObservationSecret: () => ({
       loadAccountObservationSecret: null,
@@ -118,6 +121,12 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
     }),
     refreshAccounting: async options => {
       rebuilds += 1;
+      if (failNextRebuild) {
+        failNextRebuild = false;
+        const failure = new Error("synthetic accounting failure");
+        failure.code = "accounting_unified_source_unavailable";
+        throw failure;
+      }
       return refreshLocalIndexAccountingCache({
         ...options,
         indexFile,
@@ -153,8 +162,8 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
     );
     assert.equal(
       latest.cache.freshness?.quota?.status,
-      "retained",
-      "the capped quota series is retained between low-frequency refreshes",
+      pass === 0 ? "retained" : pass === 1 ? "exact" : "retained",
+      "the capped quota series follows its bounded refresh interval",
     );
     assert.equal(
       latest.cache.coveredAt.endAt,
@@ -180,4 +189,46 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
   const afterRefit = await runner();
   assert.equal(afterRefit.accounting.refreshStatus, "fast_path");
   assert.equal(rebuilds, 2, "the refit restarts the fast-path interval");
+
+  // A basis change (the unknown-speed policy here) makes the retained window
+  // state unusable. The foreground shadow defers, the runner performs one real
+  // rebuild, and the post-rebuild shadow reseeds the window cache under the
+  // new basis so the following append can fast-path again.
+  policy = { mode: "fast", customFastRatioBps: null };
+  nowMs += 10 * 60_000;
+  insertUsage(indexFile, nowMs + 5 * 60_000);
+  const basisChanged = await runner();
+  assert.equal(basisChanged.accounting.refreshStatus, "rebuilt");
+  assert.equal(basisChanged.accounting.fastPathFallbackCode, "basis_changed");
+  assert.equal(rebuilds, 3, "a basis change forces exactly one rebuild");
+
+  nowMs += 10 * 60_000;
+  insertUsage(indexFile, nowMs + 5 * 60_000);
+  const afterBasis = await runner();
+  assert.equal(afterBasis.accounting.refreshStatus, "fast_path");
+  assert.equal(rebuilds, 3, "the post-rebuild seed restores the fast path");
+
+  // A due refit that fails must keep the last-good cache visible. The failure
+  // also starts a bounded retry pause instead of blanking the page or
+  // hammering the rebuild on every tick.
+  nowMs += 7 * 3_600_000;
+  insertUsage(indexFile, nowMs + 5 * 60_000);
+  failNextRebuild = true;
+  const failedRefit = await runner();
+  assert.equal(failedRefit.accounting.status, "replay_safe");
+  assert.equal(failedRefit.accounting.refreshStatus, "deferred");
+  assert.equal(rebuilds, 4, "the due attempt ran once");
+
+  nowMs += 60_000;
+  insertUsage(indexFile, nowMs + 5 * 60_000);
+  const backoffPass = await runner();
+  assert.equal(backoffPass.accounting.status, "replay_safe");
+  assert.equal(backoffPass.accounting.refreshStatus, "deferred");
+  assert.equal(rebuilds, 4, "the short retry pause does not re-attempt");
+
+  nowMs += 6 * 60_000;
+  insertUsage(indexFile, nowMs + 5 * 60_000);
+  const recovered = await runner();
+  assert.equal(recovered.accounting.refreshStatus, "rebuilt");
+  assert.equal(rebuilds, 5, "the retry pauses then refits");
 });

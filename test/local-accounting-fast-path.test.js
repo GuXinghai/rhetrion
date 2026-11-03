@@ -10,6 +10,7 @@ import {
 } from "../src/local-index-accounting-cache.js";
 import {
   buildReplaySafeAccountingCache,
+  assertReplaySafeAccountingCache,
 } from "../src/replay-safe-accounting-cache.js";
 import { readLocalIndexCompanionProjection } from "../src/local-index-companion-source.js";
 import {
@@ -106,6 +107,7 @@ test("fast path composes exact windows and timeline after a late fact", async t 
   const windowCache0 = await createAccountingWindowCache({
     indexFile, receipts: receipts0, hmacKey: KEY, endMs: T0,
     declaredSpeedBaselines: BASELINES, dayAccumulators: base.dayAccumulators,
+    dayAccumulatorsRevision: receipts0.calculationRevision,
     now: () => T0,
   });
   assert.deepEqual(windowCache0.periods, base.cache.periods);
@@ -167,6 +169,11 @@ test("fast path composes exact windows and timeline after a late fact", async t 
     composed.cache.sparkQuotaTimeline, expected.cache.sparkQuotaTimeline,
   );
   assert.deepEqual(composed.cache.weekly, expected.cache.weekly);
+  assert.deepEqual(
+    composed.cache.diagnostics,
+    base.cache.diagnostics,
+    "the fast path retains the last full-rebuild diagnostics instead of zeroing them",
+  );
   assert.equal(composed.cache.freshness.windows.digest,
     accountingWindowCacheDigest(updated.cache));
   assert.equal(composed.cache.freshness.calibration.status, "retained");
@@ -197,6 +204,60 @@ test("fast path composes exact windows and timeline after a late fact", async t 
   assert.equal(retainedQuota.cache.freshness.quota.status, "retained");
   assert.equal(retainedQuota.cache.freshness.quota.asOf,
     base.cache.freshness.quota.asOf);
+});
+
+test("a freshness envelope is validated once it exists", async t => {
+  const workspace = createWorkspace({
+    files: 2, events: 200, days: 20, fillerBytesPerEvent: 0,
+  });
+  t.after(() => workspace.cleanup());
+  const indexFile = join(workspace.state, "index.sqlite");
+  await refreshLocalIndex({
+    codexHome: workspace.codexHome, indexFile,
+    secretFile: workspace.secretFile, workerCount: 1,
+  });
+  const base = await buildFull({ workspace, indexFile, atMs: T0 });
+  const receipts = await createAccountingWindowReceipts({
+    indexFile, hmacKey: KEY, declaredSpeedBaselines: BASELINES, now: () => T0,
+  });
+  const windowCache = await createAccountingWindowCache({
+    indexFile, receipts, hmacKey: KEY, endMs: T0,
+    declaredSpeedBaselines: BASELINES, dayAccumulators: base.dayAccumulators,
+    dayAccumulatorsRevision: receipts.calculationRevision,
+    now: () => T0,
+  });
+  completeAccountingFreshness({
+    cache: base.cache,
+    provenance: PROVENANCE,
+    windowDigest: accountingWindowCacheDigest(windowCache),
+    windowCache,
+  });
+  assert.doesNotThrow(() => assertReplaySafeAccountingCache(base.cache));
+
+  for (const mutate of [
+    cache => { delete cache.freshness.quota; },
+    cache => { cache.freshness.calibration.asOf = "not-an-instant"; },
+    cache => { cache.freshness.windows.digest = "not-a-digest"; },
+    cache => { delete cache.freshness.schemaVersion; },
+  ]) {
+    const copy = structuredClone(base.cache);
+    mutate(copy);
+    assert.throws(
+      () => assertReplaySafeAccountingCache(copy),
+      error => error.code === "cache_invalid",
+    );
+  }
+
+  const legacy = structuredClone(base.cache);
+  delete legacy.freshness;
+  assert.doesNotThrow(() => assertReplaySafeAccountingCache(legacy));
+
+  const withoutDigest = structuredClone(legacy);
+  completeAccountingFreshness({
+    cache: withoutDigest,
+    provenance: PROVENANCE,
+  });
+  assert.equal(withoutDigest.freshness, undefined);
 });
 
 test("fast path provenance requires stable origins and policy", () => {
@@ -231,6 +292,7 @@ test("fast path refuses a window state the retained cache did not consume", asyn
   const windowCache = await createAccountingWindowCache({
     indexFile, receipts, hmacKey: KEY, endMs: T0,
     declaredSpeedBaselines: BASELINES, dayAccumulators: base.dayAccumulators,
+    dayAccumulatorsRevision: receipts.calculationRevision,
     now: () => T0,
   });
   completeAccountingFreshness({

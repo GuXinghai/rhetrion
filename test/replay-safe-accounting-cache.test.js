@@ -1146,6 +1146,49 @@ test("replay-safe cache rejects price-card event and exact-cost reconciliation d
   });
 });
 
+test("price-card provenance accepts a wide bounded history and rejects the next card", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "usage-monitor-price-card-bound-"));
+  const stateFile = syntheticCacheStateFile(directory, "local-collector-state-v1.sqlite");
+  const cache = await refreshReplaySafeAccountingCache({
+    cacheFile: stateFile,
+    now: () => NOW,
+    scan: scanner([usageEvent({
+      timestamp: "2026-07-27T11:55:00.000Z",
+      model: "gpt-5.6-terra",
+      components: { input_uncached_tokens: 1 },
+    })]),
+  });
+
+  const withCards = count => {
+    const copy = structuredClone(cache);
+    const target = period(copy, "all");
+    target.events = 0;
+    target.totalTokens = 0;
+    target.apiPriceEquivalentUsd = 0;
+    target.apiPriceEquivalentUsdExact = "0";
+    target.pricingCoverage = {
+      fullyPricedEvents: 0,
+      partiallyPricedEvents: 0,
+      unpricedEvents: 0,
+    };
+    target.priceCardIds = Array.from(
+      { length: count },
+      (_, index) => `synthetic-card-${String(index).padStart(3, "0")}`,
+    );
+    target.priceCardBreakdown = target.priceCardIds.map(priceCardId => ({
+      priceCardId, events: 0, costUsd: "0",
+    }));
+    return copy;
+  };
+
+  assert.doesNotThrow(() =>
+    assertReplaySafeAccountingCache(withCards(256)));
+  assert.throws(
+    () => assertReplaySafeAccountingCache(withCards(257)),
+    error => error.code === "cache_invalid",
+  );
+});
+
 test("exact decimal totals survive a floating-point half-boundary round trip", async () => {
   const directory = await mkdtemp(join(tmpdir(), "usage-monitor-exact-money-rounding-"));
   const stateFile = syntheticCacheStateFile(directory, "local-collector-state-v1.sqlite");

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { declaredSpeedModeAt } from "./codex-speed-baseline.js";
+import { validAccountingFreshness } from "./local-accounting-freshness.js";
 import { buildWeeklyApiIntervals, validWeeklyApiIntervals, unavailableWeeklyApiIntervals } from "./weekly-api-intervals.js";
 import {
   CODEX_TRANSITION_DERIVATION_CEILINGS,
@@ -226,6 +227,10 @@ const PACE_STATUSES = new Set([
 const ACCOUNT_SCOPE_ID_PATTERN = /^openai-account:v1:[A-Za-z0-9_-]{43}$/u;
 const ACCOUNT_TRACK_ID_PATTERN = /^account-track:v1:[a-f0-9]{64}$/u;
 const MAX_RETAINED_TRANSITION_BYTES = 320 * 1024 * 1024;
+// A period accumulates one provenance row per reviewed price card. This is a
+// cache-size guard, not a model limit; the former 32 was low enough that a
+// long-lived "all" period could invalidate the whole cache as cards accrued.
+const MAX_PRICE_CARD_PROVENANCE = 256;
 // ---------------------------------------------------------------------------
 // The accounting rebuild's memory policy. Two numbers, set by hand:
 //
@@ -5396,12 +5401,12 @@ function validWeeklyPaceContainer(value) {
 
 function validPriceCardProvenance(row) {
   if (!Array.isArray(row?.priceCardIds)
-      || row.priceCardIds.length > 32
+      || row.priceCardIds.length > MAX_PRICE_CARD_PROVENANCE
       || !row.priceCardIds.every((id) => (
         typeof id === "string" && id.length > 0 && id.length <= 128
       ))
       || !Array.isArray(row?.priceCardBreakdown)
-      || row.priceCardBreakdown.length > 32) return false;
+      || row.priceCardBreakdown.length > MAX_PRICE_CARD_PROVENANCE) return false;
   if (typeof row.apiPriceEquivalentUsdExact !== "string"
       || !/^\d+(?:\.\d+)?$/u.test(row.apiPriceEquivalentUsdExact)) {
     return false;
@@ -6060,6 +6065,11 @@ function validCache(value) {
       || value.priceRegistryObservedAt !== APP_PRICE_REGISTRY_MANIFEST.observedAt
       || unknownSpeedCalculationIdentity(value.unknownSpeedPolicy) !== unknownSpeedCalculationIdentity(value.allowanceCapacityByScenario?.unknownSpeedPolicy)
       || !validSourceDescriptor(value.sourceDescriptor)
+      // A legacy cache written before the freshness envelope existed remains
+      // readable but is not fast-path eligible. Once the envelope is present,
+      // every component and proof must be complete.
+      || (value.freshness !== undefined
+        && !validAccountingFreshness(value.freshness))
       || !validHistory(value.history)
       || value.history.generation !== value.sourceDescriptor.generation
       || value.history.generationFingerprint

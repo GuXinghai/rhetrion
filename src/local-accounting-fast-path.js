@@ -7,18 +7,62 @@ import {
 import {
   accountingWindowCacheDigest,
 } from "./local-index-accounting-window-cache.js";
+import {
+  LOCAL_ACCOUNTING_FRESHNESS_VERSION,
+} from "./local-accounting-freshness.js";
+
+export { LOCAL_ACCOUNTING_FRESHNESS_VERSION } from "./local-accounting-freshness.js";
 
 const {
   MAX_CACHE_BYTES,
   fixedError,
-  publicDiagnostics,
   throwIfAborted,
 } = REPLAY_SAFE_CALIBRATION_INTERNALS;
 
 export const LOCAL_ACCOUNTING_FAST_PATH_VERSION =
   "local-accounting-fast-path-v1";
-export const LOCAL_ACCOUNTING_FRESHNESS_VERSION =
-  "local-accounting-freshness-v1";
+
+// Every fallback is content-free and bounded: the runner and the public
+// refresh projection may only surface a member of this closed set.
+export const ACCOUNTING_FAST_PATH_FALLBACK_CODES = Object.freeze([
+  "absent",
+  "baselines_changed",
+  "basis_changed",
+  "cache_days_invalid",
+  "cache_invalid",
+  "calibration_due",
+  "day_digest_mismatch",
+  "day_missing",
+  "day_revision_mismatch",
+  "deferred",
+  "fast_path_failed",
+  "history_mismatch",
+  "initial_build",
+  "invalid",
+  "manifest_incomplete",
+  "manifest_pruned",
+  "manifest_rewound",
+  "manifest_too_wide",
+  "manifest_unsafe_mode",
+  "manifest_unsafe_partition",
+  "mismatch",
+  "parity_required",
+  "period_mismatch",
+  "receipts_invalid",
+  "retained_marker_absent",
+  "revision_without_change",
+  "source_unavailable",
+  "unaudited",
+]);
+const ACCOUNTING_FAST_PATH_FALLBACK_CODE_SET =
+  new Set(ACCOUNTING_FAST_PATH_FALLBACK_CODES);
+
+export function normalizeAccountingFastPathFallbackCode(value) {
+  return typeof value === "string"
+      && ACCOUNTING_FAST_PATH_FALLBACK_CODE_SET.has(value)
+    ? value
+    : "fast_path_failed";
+}
 
 const DAY_MS = 86_400_000;
 const DEFAULT_WINDOW_DAYS = 365;
@@ -241,9 +285,10 @@ export async function composeLocalAccountingFastPath({
     fiveHourAllowanceCalibration:
       previousCache.fiveHourAllowanceCalibration,
     weeklyCalibrationInput: previousCache.weeklyCalibrationInput,
-    diagnostics: provenance?.diagnostics
-      ? publicDiagnostics(provenance.diagnostics)
-      : previousCache.diagnostics,
+    // The fast path does not rescan the full corpus, so replay-exclusion
+    // counts from the last full rebuild remain the only true evidence. Never
+    // replace them with zeros derived from the reuse proof's diagnostic map.
+    diagnostics: previousCache.diagnostics ?? {},
     freshness: {
       schemaVersion: LOCAL_ACCOUNTING_FRESHNESS_VERSION,
       windows: {
@@ -345,15 +390,16 @@ export function completeAccountingFreshness({
   windowCache,
 }) {
   if (cache === null || cache === undefined) return cache;
-  const windows = windowDigest === null || windowDigest === undefined
-    ? null
-    : {
-      status: "exact",
-      asOf: new Date(Date.parse(cache.coveredAt.endAt)).toISOString(),
-      digest: windowDigest,
-      basisFingerprint: windowCache?.basisFingerprint ?? null,
-      calculationRevision: windowCache?.calculationRevision ?? null,
-    };
+  // A full rebuild without a consumed window state has no complete envelope
+  // to publish. Leaving it absent keeps the cache readable and ineligible.
+  if (windowDigest === null || windowDigest === undefined) return cache;
+  const windows = {
+    status: "exact",
+    asOf: new Date(Date.parse(cache.coveredAt.endAt)).toISOString(),
+    digest: windowDigest,
+    basisFingerprint: windowCache?.basisFingerprint ?? null,
+    calculationRevision: windowCache?.calculationRevision ?? null,
+  };
   const prior = cache.freshness?.schemaVersion
     === LOCAL_ACCOUNTING_FRESHNESS_VERSION
     ? cache.freshness
@@ -382,7 +428,7 @@ export function completeAccountingFreshness({
       status: "exact",
       asOf: cache.coveredAt.endAt,
     },
-    ...(windows === null ? {} : { windows }),
+    windows,
   };
   return cache;
 }

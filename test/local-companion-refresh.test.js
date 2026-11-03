@@ -18,6 +18,7 @@ import {
   LOCAL_COMPANION_REFRESH_CANCEL_SETTLEMENT_MS,
   LOCAL_COMPANION_REFRESH_TIMEOUT_MAX_MS,
   LocalCompanionRefreshController,
+  publicRefreshResult,
 } from "../src/local-companion-refresh.js";
 import {
   localCompanionStatePaths,
@@ -4709,7 +4710,7 @@ test("a rebuilt accounting result maintains the shadow window cache once", async
   assert.equal(shadowArgs.stateFile, "/private/collector.sqlite");
   assert.equal(shadowArgs.secretFile, "/private/device-salt");
   assert.equal(shadowArgs.allowCreate, false);
-  assert.equal(shadowArgs.allowFullRebuild, false);
+  assert.equal(shadowArgs.allowFullRebuild, true);
   assert.equal(shadowArgs.endMs, Date.parse("2026-07-23T12:00:00.000Z"));
   assert.equal(shadowArgs.expectedHistory.events, 2);
 });
@@ -4763,6 +4764,7 @@ test("a rebuilt accounting pass hands its day accumulators to the shadow cache",
   const result = await runner();
   assert.equal(result.accounting.refreshStatus, "rebuilt");
   assert.equal(shadowArgs.allowCreate, true);
+  assert.equal(shadowArgs.allowFullRebuild, true);
   assert.equal(shadowArgs.dayAccumulators, dayAccumulators);
 });
 
@@ -4809,4 +4811,38 @@ test("a cancelled shadow pass does not fail a published accounting rebuild", asy
   const result = await runner();
   assert.equal(result.accounting.status, "replay_safe");
   assert.equal(result.accounting.refreshStatus, "rebuilt");
+});
+
+test("public refresh projection bounds and counts fast-path fallbacks", () => {
+  const accounting = {
+    status: "replay_safe",
+    generatedAt: "2026-09-01T00:00:00.000Z",
+    sourceMode: "unified",
+    fallbackCount: 0,
+    refreshStatus: "rebuilt",
+    readerVersion: "local-index-accounting-source-v1",
+    compatibilityBehavior: "source_native",
+    coverageStatus: "complete",
+    generation: "3",
+    generationFingerprint: "f".repeat(64),
+    generationMatched: true,
+    diagnosticsAvailable: true,
+    events: 1,
+    forkReplayEventsExcluded: 0,
+    fastPathFallbackCode: "basis_changed",
+    fastPathFallbackCount: 2,
+  };
+  const projected = publicRefreshResult({ accounting }, Date.parse(
+    "2026-09-01T00:00:00.000Z",
+  ));
+  assert.equal(projected.accounting.fastPathFallbackCode, "basis_changed");
+  assert.equal(projected.accounting.fastPathFallbackCount, 2);
+
+  const bounded = publicRefreshResult({
+    accounting: {
+      ...accounting,
+      fastPathFallbackCode: "private/free-form-code",
+    },
+  }, Date.parse("2026-09-01T00:00:00.000Z"));
+  assert.equal(bounded.accounting.fastPathFallbackCode, "fast_path_failed");
 });

@@ -228,6 +228,36 @@ test("the incremental plan never exceeds its bounded window count", async t => {
   assert.equal(updated.reason, "manifest_too_wide");
 });
 
+test("a declared speed baseline extension rebuilds only its covered days", async t => {
+  const { indexFile } = await setup(t);
+  const before = await receipts(indexFile);
+  const last = before.windows.at(-1);
+  const firstSeenAt = new Date(last.lowerMs).toISOString();
+  const baselineA = [{
+    mode: "standard",
+    firstSeenAt,
+    lastSeenAt: new Date(last.lowerMs + 3_600_000).toISOString(),
+  }];
+  const baselineB = [{
+    mode: "standard",
+    firstSeenAt,
+    lastSeenAt: new Date(last.lowerMs + 2 * 3_600_000).toISOString(),
+  }];
+  const prior = await createAccountingWindowReceipts({
+    indexFile, hmacKey: KEY, declaredSpeedBaselines: baselineA, now: () => NOW,
+  });
+  const updated = await updateAccountingWindowReceipts({
+    previous: prior, indexFile, hmacKey: KEY,
+    declaredSpeedBaselines: baselineB, now: () => NOW,
+  });
+  assert.equal(updated.mode, "incremental");
+  assert.ok(updated.rebuiltKeys.includes(last.key));
+  const full = await createAccountingWindowReceipts({
+    indexFile, hmacKey: KEY, declaredSpeedBaselines: baselineB, now: () => NOW,
+  });
+  assert.deepEqual(updated.receipts, full);
+});
+
 test("a declared speed baseline change dirties only the windows it covers", async t => {
   const { indexFile } = await setup(t);
   const before = await receipts(indexFile);
