@@ -87,6 +87,10 @@ const INDEXING_PHASES = new Set([
 ]);
 const LOCAL_REFRESH_MODES = new Set(["quick", "detailed", "overview"]);
 const ACCOUNTING_REFRESH_STATUSES = new Set(["reused", "rebuilt", "deferred", "fast_path"]);
+const ACCOUNTING_REBUILD_CAUSES = new Set([
+  "calibration_due",
+  "basis_changed",
+]);
 const GENERATION_TOKEN_PATTERN = /^[A-Za-z0-9._:-]{1,256}$/u;
 // Accounting reader failures are deliberately closed over a fixed vocabulary.
 // A caller-controlled `accounting_*` string must never become a public
@@ -1695,6 +1699,9 @@ export function createLocalCollectorRefreshRunner({
             status: "replay_safe",
             sourceMode: "unified",
             refreshStatus: accountingRefreshStatus,
+            ...(ACCOUNTING_REBUILD_CAUSES.has(rebuildCause)
+              ? { rebuildCause }
+              : {}),
             ...(accountingFastPathFallbackCode === null
               ? {}
               : { fastPathFallbackCode: accountingFastPathFallbackCode }),
@@ -1732,6 +1739,9 @@ export function createLocalCollectorRefreshRunner({
               errorCode: safeAccountingUnavailableCode(
                 accountingUnavailableCode,
               ),
+              ...(ACCOUNTING_REBUILD_CAUSES.has(rebuildCause)
+                ? { rebuildCause }
+                : {}),
               compatibilityBehavior: "source_native",
               coverageStatus: unifiedIndex?.generation?.status ?? "unavailable",
               generation: unifiedIndex?.generation?.id ?? null,
@@ -1853,6 +1863,9 @@ export function publicRefreshResult(result, now = Date.now()) {
       sourceMode: "unified",
       ...(ACCOUNTING_REFRESH_STATUSES.has(result.accounting.refreshStatus)
         ? { refreshStatus: result.accounting.refreshStatus }
+        : {}),
+      ...(ACCOUNTING_REBUILD_CAUSES.has(result.accounting.rebuildCause)
+        ? { rebuildCause: result.accounting.rebuildCause }
         : {}),
       ...(typeof result.accounting.fastPathFallbackCode === "string"
         ? {

@@ -32,6 +32,7 @@ import applicationIdentity from "../../config/application-identity.cjs";
 const { APPLICATION_IDENTITY, APPLICATION_PROFILES } = applicationIdentity;
 const SEMANTIC_OPEN_TARGET_PLACEHOLDER = APPLICATION_IDENTITY.semanticOpenTargetPlaceholder;
 import {
+  accountingFastPathEnabled,
   configuredSemanticOpenTarget,
   createCachedLocalUnifiedProjectionReader,
   createLocalCompanionServer,
@@ -246,6 +247,26 @@ test("semantic open target is stable by default and accepts only reviewed identi
         USAGE_MONITOR_APP_OPEN_URL: value,
       }),
       /must match a reviewed product identity/u,
+    );
+  }
+});
+
+test("the accounting fast path is on unless the exact kill switch value is set", () => {
+  assert.equal(accountingFastPathEnabled({}), true);
+  assert.equal(
+    accountingFastPathEnabled({ USAGE_MONITOR_ACCOUNTING_FAST_PATH: "1" }),
+    true,
+  );
+  assert.equal(
+    accountingFastPathEnabled({ USAGE_MONITOR_ACCOUNTING_FAST_PATH: "0" }),
+    false,
+  );
+  for (const value of ["", "false", "off", " 0 "]) {
+    assert.equal(
+      accountingFastPathEnabled({
+        USAGE_MONITOR_ACCOUNTING_FAST_PATH: value,
+      }),
+      true,
     );
   }
 });

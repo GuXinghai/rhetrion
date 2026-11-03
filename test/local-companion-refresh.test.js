@@ -4883,18 +4883,22 @@ test("public refresh projection bounds and counts fast-path fallbacks", () => {
     forkReplayEventsExcluded: 0,
     fastPathFallbackCode: "basis_changed",
     fastPathFallbackCount: 2,
+    rebuildCause: "basis_changed",
   };
   const projected = publicRefreshResult({ accounting }, Date.parse(
     "2026-09-01T00:00:00.000Z",
   ));
   assert.equal(projected.accounting.fastPathFallbackCode, "basis_changed");
   assert.equal(projected.accounting.fastPathFallbackCount, 2);
+  assert.equal(projected.accounting.rebuildCause, "basis_changed");
 
   const bounded = publicRefreshResult({
     accounting: {
       ...accounting,
       fastPathFallbackCode: "private/free-form-code",
+      rebuildCause: "private/free-form-code",
     },
   }, Date.parse("2026-09-01T00:00:00.000Z"));
   assert.equal(bounded.accounting.fastPathFallbackCode, "fast_path_failed");
+  assert.equal(Object.hasOwn(bounded.accounting, "rebuildCause"), false);
 });

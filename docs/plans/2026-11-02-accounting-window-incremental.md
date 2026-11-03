@@ -106,7 +106,10 @@ indefinitely. Any doubt runs the existing reuse or full-rebuild path. A full
 rebuild records its provenance and the digest of the window state it consumed,
 so the next normal append can fast-path. The bounded reason is recorded as
 `fastPathFallbackCode`, with a lifetime `fastPathFallbackCount`, on the public
-refresh result. A freshness envelope is validated once present; a legacy cache
+refresh result. A rebuild that was forced by policy names its bounded cause
+(`calibration_due` or `basis_changed`) in `rebuildCause`; ordinary passes omit
+it. `USAGE_MONITOR_ACCOUNTING_FAST_PATH=0` disables the fast path in the
+companion process without changing stored state. A freshness envelope is validated once present; a legacy cache
 without one stays readable but is not fast-path eligible. Price-card provenance
 is bounded at 256 distinct cards per period; construction fails with
 `accounting_price_card_provenance_limit` rather than publishing an invalid

@@ -271,6 +271,13 @@ USAGE_MONITOR_PORT=8791 \
 node ./apps/local/server.js
 ```
 
+The incremental accounting fast path is on by default. Set
+`USAGE_MONITOR_ACCOUNTING_FAST_PATH=0` on the companion process to disable it;
+the next refresh then uses the ordinary reuse/full-rebuild path. Only the exact
+value `0` disables it, so an unset or malformed variable keeps the default.
+A rebuild reports its bounded cause (`calibration_due` or `basis_changed`) in
+the refresh result; ordinary passes omit the field.
+
 Mutable installed state is confined to the owner-only per-user application data
 directory of the signed-in Windows account. The neutral machine identity is
 intentional and remains stable across display-name changes. Installed application

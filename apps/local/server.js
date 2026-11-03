@@ -765,6 +765,12 @@ const ALLOWED_SEMANTIC_OPEN_TARGETS = new Set([
   APPLICATION_PROFILES.preview.appOpenURL,
 ]);
 
+export function accountingFastPathEnabled(environment = process.env) {
+  // Only the exact kill-switch value disables the fast path. An unset or
+  // malformed variable keeps the reviewed default on.
+  return environment?.USAGE_MONITOR_ACCOUNTING_FAST_PATH !== "0";
+}
+
 export function configuredSemanticOpenTarget(environment = process.env) {
   const value = environment?.USAGE_MONITOR_APP_OPEN_URL
     ?? APPLICATION_IDENTITY.appOpenURL;
@@ -1088,6 +1094,9 @@ function createPreparedLocalCompanionServer({
   workUsageEnrich = (query) => enrichWorkUsageRows({ ...query, codexHome }),
   refreshRunner = createLocalCollectorRefreshRunner({
     getUnknownSpeedPolicy: unknownSpeedPolicyConfiguration.get,
+    // Production kill switch. Only the exact value "0" disables the shipping
+    // fast path; every unset or malformed value keeps the proven default on.
+    accountingFastPath: accountingFastPathEnabled(environment),
     codexHome,
     stateFile: statePaths.collectorStateFile,
     accountObservationOperationLockFile:

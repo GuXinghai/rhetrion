@@ -165,6 +165,7 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
   const due = await runner();
   assert.equal(due.accounting.refreshStatus, "rebuilt");
   assert.equal(due.accounting.fastPathFallbackCode, "calibration_due");
+  assert.equal(due.accounting.rebuildCause, "calibration_due");
   assert.equal(rebuilds, 2, "a due calibration forces one real refit");
 
   nowMs += 10 * 60_000;
@@ -183,12 +184,14 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
   const basisChanged = await runner();
   assert.equal(basisChanged.accounting.refreshStatus, "rebuilt");
   assert.equal(basisChanged.accounting.fastPathFallbackCode, "basis_changed");
+  assert.equal(basisChanged.accounting.rebuildCause, "basis_changed");
   assert.equal(rebuilds, 3, "a basis change forces exactly one rebuild");
 
   nowMs += 10 * 60_000;
   insertSyntheticUsageAt(indexFile, nowMs + 5 * 60_000);
   const afterBasis = await runner();
   assert.equal(afterBasis.accounting.refreshStatus, "fast_path");
+  assert.equal(Object.hasOwn(afterBasis.accounting, "rebuildCause"), false);
   assert.equal(rebuilds, 3, "the post-rebuild seed restores the fast path");
 
   // A due refit that fails must keep the last-good cache visible. The failure
