@@ -35,6 +35,14 @@ export function validSettingsRefreshSeconds(value) {
     && value % 60 === 0 && Number.isSafeInteger(value * 1000));
 }
 
+export const SETTINGS_CALIBRATION_INTERVAL_HOURS = Object.freeze([
+  6, 12, 24, 72, 168,
+]);
+
+export function validSettingsCalibrationInterval(value) {
+  return SETTINGS_CALIBRATION_INTERVAL_HOURS.includes(value);
+}
+
 export function parseSettingsFastPercent(value) {
   if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,2})?$/.test(value)) return null;
   const [whole, fraction = ""] = value.split(".");
@@ -804,6 +812,73 @@ function renderSettingsState(
   revealLocalData.disabled = !bridgeAvailable;
 }
 
+const CALIBRATION_SETTINGS_ENDPOINT = "/api/local/settings/calibration";
+
+function calibrationState(value) {
+  const intervalHours = value?.calibration?.intervalHours;
+  if (!validSettingsCalibrationInterval(intervalHours)) return null;
+  return Object.freeze({
+    intervalHours,
+    changedAtMs: Number.isSafeInteger(value?.calibration?.changedAtMs)
+      && value.calibration.changedAtMs >= 0
+      ? value.calibration.changedAtMs
+      : null,
+  });
+}
+
+async function readCalibrationSettings(fetchImpl) {
+  try {
+    const response = await fetchImpl(CALIBRATION_SETTINGS_ENDPOINT, {
+      cache: "no-store",
+      headers: { "X-Usage-Monitor-Local": "1" },
+    });
+    if (!response || response.ok !== true) return null;
+    return calibrationState(await response.json());
+  } catch {
+    return null;
+  }
+}
+
+async function writeCalibrationInterval(fetchImpl, intervalHours) {
+  try {
+    const response = await fetchImpl(CALIBRATION_SETTINGS_ENDPOINT, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Usage-Monitor-Local": "1",
+      },
+      body: JSON.stringify({ intervalHours }),
+    });
+    if (!response || response.ok !== true) return null;
+    return calibrationState(await response.json());
+  } catch {
+    return null;
+  }
+}
+
+function renderCalibrationSettings(documentRef, calibration, localizer) {
+  const card = documentRef.querySelector?.("#settings-calibration-card");
+  const select = documentRef.querySelector?.("#settings-calibration-interval");
+  const status = documentRef.querySelector?.("#settings-calibration-status");
+  const error = documentRef.querySelector?.("#settings-calibration-error");
+  if (!card || !select) return;
+  card.hidden = calibration === null;
+  if (calibration === null) return;
+  select.value = String(calibration.intervalHours);
+  select.disabled = false;
+  if (error) error.hidden = true;
+  if (status) {
+    status.textContent = calibration.changedAtMs === null
+      ? ""
+      : translateSettingsMessage(
+        localizer,
+        "electron.settings.calibration.changed",
+        { time: new Date(calibration.changedAtMs).toLocaleString() },
+      );
+  }
+}
+
 function setTab(documentRef, tabName, { focus = false } = {}) {
   const tabs = [...documentRef.querySelectorAll("[data-settings-tab]")];
   const panels = [...documentRef.querySelectorAll("[data-settings-panel]")];
@@ -892,6 +967,16 @@ async function mountSettingsPageOnce({
   let unsubscribeDesktopCommands = () => {};
   const listeners = [];
   let disposed = false;
+  let calibration = null;
+  const calibrationFetch = typeof windowRef?.fetch === "function"
+    ? windowRef.fetch.bind(windowRef)
+    : null;
+  const refreshCalibration = async () => {
+    if (calibrationFetch === null) return;
+    calibration = await readCalibrationSettings(calibrationFetch);
+    if (disposed) return;
+    renderCalibrationSettings(documentRef, calibration, pageLocalizer);
+  };
   const listen = (element, type, handler) => {
     element.addEventListener(type, handler);
     listeners.push(() => element.removeEventListener?.(type, handler));
@@ -1181,11 +1266,42 @@ async function mountSettingsPageOnce({
     event.target.setAttribute("aria-invalid", String(!valid));
     if (valid) void invoke("setRefreshInterval", seconds);
   });
+  const calibrationSelect = documentRef.querySelector?.("#settings-calibration-interval");
+  if (calibrationSelect) {
+    listen(calibrationSelect, "change", async (event) => {
+      const intervalHours = Number(event.target.value);
+      const valid = validSettingsCalibrationInterval(intervalHours);
+      const error = documentRef.querySelector?.("#settings-calibration-error");
+      if (error) error.hidden = valid;
+      event.target.setAttribute("aria-invalid", String(!valid));
+      if (!valid || calibrationFetch === null) return;
+      event.target.disabled = true;
+      const saved = await writeCalibrationInterval(
+        calibrationFetch,
+        intervalHours,
+      );
+      event.target.disabled = false;
+      if (saved === null) {
+        if (error) error.hidden = false;
+        renderCalibrationSettings(documentRef, calibration, pageLocalizer);
+        return;
+      }
+      calibration = saved;
+      renderCalibrationSettings(documentRef, calibration, pageLocalizer);
+      setOperationStatus(
+        documentRef,
+        translateSettingsMessage(pageLocalizer, "electron.settings.calibration.saved"),
+      );
+    });
+  }
   listen(queryRequired(documentRef, "#settings-start-at-login"), "change", (event) => {
     void invoke("setStartAtLogin", event.target.checked);
   });
   if (typeof windowRef?.addEventListener === "function") {
-    listen(windowRef, "focus", () => { void refresh(); });
+    listen(windowRef, "focus", () => {
+      void refresh();
+      void refreshCalibration();
+    });
   }
   listen(queryRequired(documentRef, "#settings-notification-threshold"), "change", (event) => {
     if (!currentState.notifications.canSet) return;
@@ -1238,6 +1354,7 @@ async function mountSettingsPageOnce({
   }
 
   setTab(documentRef, initialTab(windowRef));
+  void refreshCalibration();
   await refresh();
 
   return Object.freeze({

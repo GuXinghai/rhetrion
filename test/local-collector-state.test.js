@@ -22,8 +22,11 @@ import {
   readLocalCollectorRecordSummary,
   readLocalCollectorRolloutStalenessSummary,
   readLocalCollectorState,
+  ACCOUNTING_CALIBRATION_SETTINGS_SCHEMA_VERSION,
+  readLocalCollectorAccountingCalibrationSettings,
   serializeLocalCollectorAccountingCache,
   writeLocalCollectorAccountingCache,
+  writeLocalCollectorAccountingCalibrationSettings,
 } from "../src/local-collector-state.js";
 import { stableJson } from "../src/storage.js";
 
@@ -766,4 +769,37 @@ test("SQLite collector lock rejects a second live owner and releases cleanly", a
   } finally {
     await rm(value.root, { recursive: true, force: true });
   }
+});
+
+test("calibration settings persist as closed owner control state", async () => {
+  const value = await fixture();
+  assert.deepEqual(
+    await readLocalCollectorAccountingCalibrationSettings({
+      stateFile: value.stateFile,
+    }),
+    { status: "missing", settings: null },
+  );
+  const settings = {
+    schemaVersion: ACCOUNTING_CALIBRATION_SETTINGS_SCHEMA_VERSION,
+    intervalHours: 6,
+    changedAtMs: 1_788_220_800_000,
+  };
+  await writeLocalCollectorAccountingCalibrationSettings({
+    stateFile: value.stateFile,
+    settings,
+  });
+  assert.deepEqual(
+    await readLocalCollectorAccountingCalibrationSettings({
+      stateFile: value.stateFile,
+    }),
+    { status: "available", settings },
+  );
+  await assert.rejects(
+    writeLocalCollectorAccountingCalibrationSettings({
+      stateFile: value.stateFile,
+      settings: { ...settings, intervalHours: 5 },
+    }),
+    /calibration settings are invalid/u,
+  );
+  await rm(value.root, { recursive: true, force: true });
 });

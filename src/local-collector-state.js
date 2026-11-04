@@ -24,6 +24,9 @@ import {
 } from "./platform/index.js";
 import { validAbortSignal } from "./valid-abort-signal.js";
 import { PRESERVED_ACCOUNTING_HISTORY_META_KEY, projectPreservedAccountingHistorySummary } from "./local-accounting-preserved-history.js";
+import {
+  ACCOUNTING_CALIBRATION_INTERVAL_HOURS,
+} from "./local-accounting-calibration-policy.js";
 
 // This database is deliberately the one durable owner-controlled store for
 // local collector facts, cursors, quota observations and derived accounting.
@@ -680,6 +683,14 @@ export function serializeLocalCollectorAccountingCache(cache) {
 const ACCOUNTING_REUSE_META_KEY = "accounting_reuse_proof";
 const ACCOUNTING_WINDOW_CACHE_META_KEY = "accounting_window_cache";
 const ACCOUNTING_WINDOW_CACHE_ENVELOPE_SCHEMA = "local-accounting-window-cache-v1";
+export const ACCOUNTING_CALIBRATION_SETTINGS_SCHEMA_VERSION =
+  "local-accounting-calibration-settings-v1";
+const ACCOUNTING_CALIBRATION_SETTINGS_META_KEY = "accounting_calibration_settings";
+const ACCOUNTING_CALIBRATION_SETTINGS_KEYS = Object.freeze([
+  "changedAtMs",
+  "intervalHours",
+  "schemaVersion",
+]);
 // 4096 cached days at the measured ~34 KiB/day fit below this ceiling.
 const MAX_ACCOUNTING_WINDOW_CACHE_BYTES = 192 * 1024 * 1024;
 
@@ -710,6 +721,18 @@ function validAccountingWindowCacheEnvelope(value) {
     && Object.keys(value).sort().join() === "cache,schemaVersion"
     && value.schemaVersion === ACCOUNTING_WINDOW_CACHE_ENVELOPE_SCHEMA
     && validAccountingWindowCache(value.cache);
+}
+
+function validAccountingCalibrationSettings(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)
+      || Object.keys(value).sort().join() !== ACCOUNTING_CALIBRATION_SETTINGS_KEYS.join()
+      || value.schemaVersion !== ACCOUNTING_CALIBRATION_SETTINGS_SCHEMA_VERSION
+      || !ACCOUNTING_CALIBRATION_INTERVAL_HOURS.includes(value.intervalHours)
+      || !(value.changedAtMs === null
+        || (Number.isSafeInteger(value.changedAtMs) && value.changedAtMs >= 0))) {
+    return false;
+  }
+  return true;
 }
 
 function validAccountingReuseProof(value) {
@@ -1791,6 +1814,67 @@ export async function readLocalCollectorAccountingWindowCache({
     }
     throw error;
   }
+}
+
+// The calibration interval is owner control state, not derived accounting.
+// A missing row means the reviewed default; an invalid row is reported as
+// invalid and never silently upgraded over.
+export async function readLocalCollectorAccountingCalibrationSettings({
+  stateFile = defaultLocalCollectorStatePath(),
+} = {}) {
+  if (typeof stateFile !== "string" || stateFile.length < 1) {
+    throw new TypeError(
+      "Local collector accounting calibration settings request is invalid",
+    );
+  }
+  if (await assertSafeStateFile(stateFile, { allowMissing: true }) === null) {
+    return { status: "missing", settings: null };
+  }
+  try {
+    return await withProtectedSqliteReadSnapshot({ path: stateFile, read(database) {
+      validateDatabase(database);
+      const value = readMeta(database, ACCOUNTING_CALIBRATION_SETTINGS_META_KEY);
+      if (value === null) return { status: "missing", settings: null };
+      if (!validAccountingCalibrationSettings(value)) {
+        return { status: "invalid", settings: null };
+      }
+      return { status: "available", settings: value };
+    } });
+  } catch (error) {
+    if (error?.code === "local_collector_state_corrupt"
+        || error?.code === "local_collector_state_unavailable") {
+      return { status: "invalid", settings: null };
+    }
+    throw error;
+  }
+}
+
+export async function writeLocalCollectorAccountingCalibrationSettings({
+  stateFile = defaultLocalCollectorStatePath(),
+  settings,
+  signal = null,
+} = {}) {
+  if (!validAccountingCalibrationSettings(settings) || !validAbortSignal(signal)) {
+    throw new TypeError(
+      "Local collector accounting calibration settings are invalid",
+    );
+  }
+  signal?.throwIfAborted();
+  await ensureDatabase(stateFile);
+  signal?.throwIfAborted();
+  let database;
+  try {
+    database = openDatabase(stateFile, { readOnly: false });
+    signal?.throwIfAborted();
+    transaction(database, () => {
+      writeMeta(database, ACCOUNTING_CALIBRATION_SETTINGS_META_KEY, settings);
+    });
+    database.exec("PRAGMA optimize");
+  } finally {
+    database?.close();
+  }
+  await setLocalCollectorStateOwnerOnlyMode(stateFile);
+  await syncStateFile(stateFile);
 }
 
 // A one-time converter may retain the only surviving historical figures here.

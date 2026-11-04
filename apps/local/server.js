@@ -1,5 +1,6 @@
 import { createLocalProgressEvents } from "./local-progress-events.js";
 import { createUnknownSpeedPolicyConfiguration, attachUnknownSpeedPolicyChannel } from "./unknown-speed-policy-channel.js";
+import { createAccountingCalibrationSettingsConfiguration } from "./accounting-calibration-settings.js";
 import { createWorkUsageService } from "../../src/application/index.js";
 import { createWorkUsageSnapshotStore } from "./work-usage-snapshots.js";
 import {
@@ -350,6 +351,7 @@ const API_ROUTES = new Set([
   "/api/local/quality",
   "/api/local/timeline/window-breakdown",
   "/api/local/model-performance",
+  "/api/local/settings/calibration",
   "/api/local/events",
   "/api/local/refresh",
   "/api/local/refresh/quick",
@@ -366,6 +368,7 @@ const SNAPSHOT_INDEPENDENT_API_ROUTES = new Set([
   "/api/local/desktop-status",
   "/api/local/diagnostics/note",
   "/api/local/model-performance",
+  "/api/local/settings/calibration",
 ]);
 
 
@@ -1012,6 +1015,9 @@ function createPreparedLocalCompanionServer({
     ledgerFile: statePaths.codexSpeedBaselineFile,
     configFile: join(codexHome, "config.toml"),
   }),
+  accountingCalibrationSettings = createAccountingCalibrationSettingsConfiguration({
+    stateFile: statePaths.collectorStateFile,
+  }),
   // The local index. A previous installation's index is read once for
   // continuity of the local identity ordinals; its device salt is the same file.
   localIndexBackend = createLocalIndexBackend({
@@ -1094,6 +1100,7 @@ function createPreparedLocalCompanionServer({
   workUsageEnrich = (query) => enrichWorkUsageRows({ ...query, codexHome }),
   refreshRunner = createLocalCollectorRefreshRunner({
     getUnknownSpeedPolicy: unknownSpeedPolicyConfiguration.get,
+    getAccountingCalibrationSettings: accountingCalibrationSettings.get,
     // Production kill switch. Only the exact value "0" disables the shipping
     // fast path; every unset or malformed value keeps the proven default on.
     accountingFastPath: accountingFastPathEnabled(environment),
@@ -1375,6 +1382,18 @@ function createPreparedLocalCompanionServer({
     overviewScheduler.close();
     progressEvents.close();
     refresh.cancel();
+  };
+  const accountingCalibrationResponse = async () => {
+    const calibration = await accountingCalibrationSettings.get();
+    return {
+      schemaVersion: LOCAL_COMPANION_SCHEMA_VERSION,
+      calibration: {
+        intervalHours: calibration.intervalHours,
+        changedAtMs: calibration.changedAtMs,
+      },
+      options: [...accountingCalibrationSettings.options],
+      defaultIntervalHours: accountingCalibrationSettings.defaultIntervalHours,
+    };
   };
   const server = createServer(async (request, response) => {
     try {
@@ -1709,6 +1728,62 @@ function createPreparedLocalCompanionServer({
         });
         return;
       }
+      if (path === "/api/local/settings/calibration") {
+        if (request.method === "GET") {
+          if (!authorizeSameOriginLocalRead(
+            request,
+            response,
+            "calibration_not_authorized",
+          )) return;
+          try {
+            send(response, 200, await accountingCalibrationResponse());
+          } catch {
+            sendError(response, 503, "accounting_calibration_settings_unavailable");
+          }
+          return;
+        }
+        if (request.method !== "POST") {
+          sendError(response, 405, "method_not_allowed");
+          return;
+        }
+        if (!sameOrigin(request)
+            || request.headers["x-usage-monitor-local"] !== "1") {
+          sendError(response, 403, "calibration_not_authorized");
+          return;
+        }
+        let body;
+        try {
+          body = await readBoundedJsonObject(request);
+        } catch (error) {
+          sendError(
+            response,
+            boundedRequestStatus(error),
+            error?.code ?? "invalid_request",
+          );
+          return;
+        }
+        if (Object.keys(body).length !== 1
+            || !Object.hasOwn(body, "intervalHours")
+            || !accountingCalibrationSettings.options.includes(body.intervalHours)) {
+          sendError(response, 400, "invalid_request");
+          return;
+        }
+        try {
+          await accountingCalibrationSettings.setInterval(body.intervalHours);
+          send(response, 200, await accountingCalibrationResponse());
+        } catch (error) {
+          sendError(
+            response,
+            error?.code === "accounting_calibration_settings_unavailable"
+              ? 503
+              : 400,
+            error?.code === "accounting_calibration_settings_unavailable"
+              ? "accounting_calibration_settings_unavailable"
+              : "invalid_request",
+          );
+        }
+        return;
+      }
       if (path === "/api/local/refresh") {
         if (request.method === "GET") {
           send(response, 200, {
@@ -1867,6 +1942,7 @@ function createPreparedLocalCompanionServer({
     setRefreshIntervalSeconds: (seconds) => overviewScheduler.setIntervalSeconds(seconds),
     setRefreshPaused: (paused) => overviewScheduler.setPaused(paused),
     setUnknownSpeedPolicy: unknownSpeedPolicyConfiguration.set,
+    accountingCalibrationSettings,
     [PARENT_WATCHDOG_PID]: parentWatchdogPid,
     async initialize() {
       await acquireInstanceLock();

@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { mountSettingsPage, normalizeSettingsState, validSettingsRefreshSeconds, validSettingsNotificationThreshold } from "../public/electron-settings.js";
 
-function fixture({ settings = {}, getSettings, permission = "granted" } = {}) {
+function fixture({ settings = {}, getSettings, permission = "granted", windowFetch = null } = {}) {
   const listeners = new Map();
   function element() {
     return { dataset: {}, attributes: new Map(), hidden: false, disabled: false, value: "", textContent: "", classList: { toggle() {} }, listeners: new Map(),
@@ -11,7 +11,7 @@ function fixture({ settings = {}, getSettings, permission = "granted" } = {}) {
       addEventListener(k,v) { this.listeners.set(k,v); }, removeEventListener(k,v) { if (this.listeners.get(k) === v) this.listeners.delete(k); },
       async fire(type, extra = {}) { this.listeners.get(type)?.({ target: this, preventDefault() {}, ...extra }); await new Promise(setImmediate); }, focus() {} };
   }
-  const selectors = ["settings-content", "settings-bridge-status", "settings-language", "settings-appearance", "settings-codex-roots-title", "settings-codex-roots-status", "settings-choose-codex-folder", "settings-refresh-interval", "settings-refresh-error", "settings-start-at-login", "settings-notifications-detail", "settings-notification-threshold", "settings-threshold-error", "settings-notification-status", "settings-open-notification-settings", "settings-test-notification", "settings-notification-test-status", "settings-automatic-updates", "settings-check-for-updates", "settings-download-update", "settings-install-update", "settings-open-dashboard-browser", "settings-show-diagnostics", "settings-reveal-local-data", "settings-version", "settings-build", "settings-updates-status", "settings-operation-status"];
+  const selectors = ["settings-content", "settings-bridge-status", "settings-language", "settings-appearance", "settings-codex-roots-title", "settings-codex-roots-status", "settings-choose-codex-folder", "settings-refresh-interval", "settings-refresh-error", "settings-calibration-card", "settings-calibration-interval", "settings-calibration-status", "settings-calibration-error", "settings-start-at-login", "settings-notifications-detail", "settings-notification-threshold", "settings-threshold-error", "settings-notification-status", "settings-open-notification-settings", "settings-test-notification", "settings-notification-test-status", "settings-automatic-updates", "settings-check-for-updates", "settings-download-update", "settings-install-update", "settings-open-dashboard-browser", "settings-show-diagnostics", "settings-reveal-local-data", "settings-version", "settings-build", "settings-updates-status", "settings-operation-status"];
   const elements = new Map(selectors.map((id) => [`#${id}`, element()]));
   const tabs = ["general", "tray", "notifications", "data", "x", "about"].map((id) => Object.assign(element(), { dataset: { settingsTab: id } }));
   const panels = tabs.map((tab) => Object.assign(element(), { dataset: { settingsPanel: tab.dataset.settingsTab } }));
@@ -32,7 +32,7 @@ function fixture({ settings = {}, getSettings, permission = "granted" } = {}) {
     async sendTestNotification() { calls.push(["test"]); return { status: "requested" }; }, async openSystemSettings(value) { calls.push(["system", value]); },
   };
   const winListeners = new Map();
-  const win = { usageMonitorDesktop: bridge, location: { hash: "#settings/notifications" }, history: { replaceState(_state,_title,hash) { win.location.hash = hash; } }, Notification: { permission, async requestPermission() { calls.push(["permission"]); return "granted"; } }, addEventListener(k,v) { winListeners.set(k,v); }, removeEventListener(k,v) { if (winListeners.get(k) === v) winListeners.delete(k); } };
+  const win = { usageMonitorDesktop: bridge, ...(windowFetch === null ? {} : { fetch: windowFetch }), location: { hash: "#settings/notifications" }, history: { replaceState(_state,_title,hash) { win.location.hash = hash; } }, Notification: { permission, async requestPermission() { calls.push(["permission"]); return "granted"; } }, addEventListener(k,v) { winListeners.set(k,v); }, removeEventListener(k,v) { if (winListeners.get(k) === v) winListeners.delete(k); } };
   const localizer = { t: (key, values = {}) => key === "electron.settings.codexRoots.locationTitle" ? `Codex folder (${values.path})` : key, setLanguagePreference(value) { calls.push(["locale",value]); } };
   return { doc, win, bridge, localizer, calls, elements, tabs, panels, listeners, winListeners, command: (value) => command?.(value) };
 }
@@ -158,4 +158,38 @@ test("notification permission stays main-process authoritative and settings rema
       name === "system" && value === "notifications"), true);
     mounted.teardown();
   }
+});
+
+test("calibration interval loads and saves through the companion route", async () => {
+  const calls = [];
+  const response = value => ({ ok: true, async json() { return value; } });
+  const f = fixture({
+    windowFetch: async (url, options = {}) => {
+      calls.push([url, options]);
+      return response({
+        calibration: options.method === "POST"
+          ? { intervalHours: 6, changedAtMs: 1_788_220_800_000 }
+          : { intervalHours: 24, changedAtMs: null },
+        options: [6, 12, 24, 72, 168],
+        defaultIntervalHours: 24,
+      });
+    },
+  });
+  await mount(f);
+  await new Promise(setImmediate);
+  const card = f.elements.get("#settings-calibration-card");
+  const select = f.elements.get("#settings-calibration-interval");
+  assert.equal(card.hidden, false);
+  assert.equal(select.value, "24");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "/api/local/settings/calibration");
+  assert.equal(calls[0][1].method, undefined);
+
+  select.value = "6";
+  await select.fire("change");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][1].method, "POST");
+  assert.deepEqual(JSON.parse(calls[1][1].body), { intervalHours: 6 });
+  assert.equal(select.value, "6");
+  assert.notEqual(f.elements.get("#settings-calibration-status").textContent, "");
 });

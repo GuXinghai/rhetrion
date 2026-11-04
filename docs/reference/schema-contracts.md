@@ -158,7 +158,12 @@ The accounting cache may carry a `local-accounting-freshness-v1` envelope with
 `planScope` components; once present, every component and the window digest
 proof are validated. The incremental window cache is a collector-state
 `accounting_window_cache` meta row (envelope v1, cache v3), never a separate
-file. Price-card provenance is bounded at 256 distinct cards per period. A
+file. The calibration interval is a closed collector-state
+`accounting_calibration_settings` meta row (`local-accounting-calibration-settings-v1`)
+with exactly `intervalHours` (6, 12, 24, 72, or 168) and `changedAtMs`; a
+missing or invalid row reads as the 24-hour default, and the next accepted
+write replaces it with a validated row. Price-card provenance is bounded at 256
+distinct cards per period. A
 period that exceeds the bound fails construction with
 `accounting_price_card_provenance_limit`; a larger stored period is invalid
 rather than truncated.

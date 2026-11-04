@@ -831,6 +831,63 @@ test("loopback server retains parent-only unknown-speed configuration without st
   }
 });
 
+test("loopback calibration settings persist without starting refresh", async () => {
+  const files = await fixture();
+  let refreshes = 0;
+  const app = await startLocalCompanionServer({
+    ...files,
+    dataStore: fakeStore(),
+    port: 0,
+    environment: {
+      ...process.env,
+      USAGE_MONITOR_REFRESH_INTERVAL_SECONDS: "-1",
+    },
+    refreshRunner: async () => { refreshes++; return {}; },
+  });
+  try {
+    await app.snapshotReady;
+    const base = `http://127.0.0.1:${app.port}`;
+    const read = async () => (await fetch(
+      `${base}/api/local/settings/calibration`,
+      { headers: { "x-usage-monitor-local": "1" } },
+    )).json();
+    assert.deepEqual((await read()).calibration, {
+      intervalHours: 24,
+      changedAtMs: null,
+    });
+    const before = refreshes;
+    const saved = await fetch(`${base}/api/local/settings/calibration`, {
+      method: "POST",
+      headers: {
+        Origin: base,
+        "Content-Type": "application/json",
+        "x-usage-monitor-local": "1",
+      },
+      body: JSON.stringify({ intervalHours: 6 }),
+    });
+    assert.equal(saved.status, 200);
+    const value = await saved.json();
+    assert.equal(value.calibration.intervalHours, 6);
+    assert.equal(Number.isSafeInteger(value.calibration.changedAtMs), true);
+    assert.deepEqual(value.options, [6, 12, 24, 72, 168]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(refreshes, before, "a setting change never starts a refresh");
+    assert.equal((await read()).calibration.intervalHours, 6);
+    assert.equal((await fetch(`${base}/api/local/settings/calibration`, {
+      method: "POST",
+      headers: {
+        Origin: base,
+        "Content-Type": "application/json",
+        "x-usage-monitor-local": "1",
+      },
+      body: JSON.stringify({ intervalHours: 5 }),
+    })).status, 400);
+  } finally {
+    await app.close();
+    await rm(files.root, { recursive: true });
+  }
+});
+
 test("loopback persistent pause blocks startup and every refresh route, then cancels pending work", async () => {
   const files = await fixture(), gate = deferred(); let calls = 0;
   const app = await startLocalCompanionServer({ ...files, dataStore: fakeStore(), port: 0,

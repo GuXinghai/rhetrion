@@ -174,8 +174,10 @@ The fast path is a composition, not a second accounting implementation.
    dedicated surface. The closed calibration interval is enforced before the
    fast-path gate: when the last real refit is due, reuse is skipped and the
    pass records `calibration_due` and runs a full rebuild instead of retaining
-   the model indefinitely. A failed refit keeps the last-good cache visible and
-   retries after a bounded pause.
+   the model indefinitely. The interval is owner-selected from the fixed
+   6/12/24/72/168-hour set and persisted with its change instant; a change only
+   moves the schedule anchor and never starts a refresh. A failed refit keeps
+   the last-good cache visible and retries after a bounded pause.
 5. **A full rebuild seeds the markers.** The rebuild's fused history read hands
    over the day accumulators together with the `calculation_revision` of the
    exact read snapshot that produced them; the runner never re-reads the store

@@ -233,6 +233,7 @@ test("calibration due still forces a refit when the fast path is disabled", asyn
   let nowMs = Date.parse("2026-09-01T00:00:00.000Z");
   let rebuilds = 0;
   let cached = null;
+  let calibration = { intervalHours: 6, changedAtMs: null };
   const proof = {
     id: 1,
     fingerprint: "f".repeat(64),
@@ -264,6 +265,7 @@ test("calibration due still forces a refit when the fast path is disabled", asyn
     clock: () => nowMs,
     accountingFastPath: false,
     accountingCalibrationIntervalHours: 6,
+    getAccountingCalibrationSettings: async () => calibration,
     createCalculationReuse: () => fakeReuse,
     selectAccountObservationSecret: () => ({
       loadAccountObservationSecret: null,
@@ -298,8 +300,18 @@ test("calibration due still forces a refit when the fast path is disabled", asyn
   assert.equal(reused.accounting.refreshStatus, "reused");
   assert.equal(rebuilds, 1, "the ordinary reuse path is active");
 
+  // A wider interval read on the next pass postpones the due refit without
+  // recreating the runner.
+  calibration = { intervalHours: 168, changedAtMs: nowMs };
+  nowMs += 7 * 3_600_000;
+  const postponed = await runner();
+  assert.equal(postponed.accounting.refreshStatus, "reused");
+  assert.equal(rebuilds, 1, "the per-pass interval is authoritative");
+
+  calibration = { intervalHours: 6, changedAtMs: nowMs };
   nowMs += 7 * 3_600_000;
   const due = await runner();
   assert.equal(due.accounting.refreshStatus, "rebuilt");
+  assert.equal(due.accounting.rebuildCause, "calibration_due");
   assert.equal(rebuilds, 2, "due calibration bypasses reuse without the fast path");
 });

@@ -795,6 +795,9 @@ export function createLocalCollectorRefreshRunner({
   // retaining the model indefinitely on fast-path-only profiles.
   accountingCalibrationIntervalHours = ACCOUNTING_CALIBRATION_DEFAULT_HOURS,
   accountingCalibrationChangedAtMs = null,
+  // Optional per-pass settings read. The companion owns the persisted value,
+  // so a change applies on the next pass without recreating the runner.
+  getAccountingCalibrationSettings = null,
   composeAccountingFastPath = composeLocalAccountingFastPath,
   writeAccountingCache = writeLocalCollectorAccountingCache,
   createCalculationReuse = createLocalIndexAccountingReuse,
@@ -851,10 +854,12 @@ export function createLocalCollectorRefreshRunner({
       "accountingCalibrationChangedAtMs must be a non-negative safe integer or null",
     );
   }
-  const calibrationIntervalHours =
-    normalizeAccountingCalibrationIntervalHours(
-      accountingCalibrationIntervalHours,
+  if (getAccountingCalibrationSettings !== null
+      && typeof getAccountingCalibrationSettings !== "function") {
+    throw new TypeError(
+      "getAccountingCalibrationSettings must be a function or null",
     );
+  }
   for (const [name, value] of Object.entries({
     composeAccountingFastPath,
     writeAccountingCache,
@@ -1151,7 +1156,7 @@ export function createLocalCollectorRefreshRunner({
           || accountingCalibrationDue({
             nowMs: clock(),
             intervalHours: calibrationIntervalHours,
-            changedAtMs: accountingCalibrationChangedAtMs,
+            changedAtMs: calibrationChangedAtMs,
             lastRefitAtMs: calibrationAsOfMs,
           });
       } catch {
@@ -1167,6 +1172,26 @@ export function createLocalCollectorRefreshRunner({
         : "accounting_unified_coverage_incomplete"
       : null;
     refreshStep = "accounting";
+    let calibrationSettings = null;
+    if (getAccountingCalibrationSettings !== null) {
+      try {
+        calibrationSettings = await getAccountingCalibrationSettings();
+      } catch {
+        // A settings read failure must not fail the refresh. The static
+        // defaults remain the fail-closed schedule.
+        calibrationSettings = null;
+      }
+    }
+    const calibrationIntervalHours =
+      normalizeAccountingCalibrationIntervalHours(
+        calibrationSettings?.intervalHours ?? accountingCalibrationIntervalHours,
+      );
+    const calibrationChangedAtMs =
+      calibrationSettings?.changedAtMs === null
+        || (Number.isSafeInteger(calibrationSettings?.changedAtMs)
+          && calibrationSettings.changedAtMs >= 0)
+        ? calibrationSettings.changedAtMs
+        : accountingCalibrationChangedAtMs;
     const withinRebuildBackoff = clock() < accountingRebuildDeferUntilMs;
     // Read the retained cache once, before the fast-path gate, so calibration
     // due is evaluated even when the fast path is disabled or unavailable.

@@ -147,8 +147,11 @@ pre-existing bounded replay diagnostics remain a separate projection. The
 calibration card keeps its last refit time visible, and the
 default 24-hour calibration due check is evaluated before reuse and the fast
 path, so a due refit forces a real rebuild even when the fast path is disabled.
-The Settings UI, persisted interval/change-time selection, and manual
-**重新计算** escalation are not implemented, and the capped quota selection is
+The calibration interval is selected in **Settings → Data & diagnostics** from
+the fixed 6/12/24/72/168-hour set and persisted in the owner-only collector
+state. A change stores the change instant as the new schedule anchor and never
+starts a refresh; selecting the active interval is a no-op. The manual
+**重新计算** escalation is not implemented, and the capped quota selection is
 refreshed on a low-frequency interval rather than every tick. The remaining
 costs are receipt scans after a new or removed baseline declaration, an
 unbounded lineage change, quota candidate projection (about 28 seconds per
