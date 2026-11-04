@@ -194,6 +194,24 @@ cost is measured; no end-to-end page-speed or installed-app claim is made.
 
 # Implementation slices
 
+Execution follow-up (2026-11-05): first prove SQL quota-candidate collapse
+against the existing committed-occurrence scan, then measure quota-only and
+whole-refresh costs on the protected copy. Keep the full calibration scan
+unchanged: timeline selection does not authorize dropping calibration evidence.
+Next add aggregate runtime counters before repeated refresh observation, inspect
+the Electron controls with synthetic state, and measure discovery/stat separately
+from snapshot reload/build. Owner-runtime evidence remains a separate open gate;
+copy rehearsals cannot satisfy it. No new optimization or slice completion is
+claimed by this execution order.
+
+The first SQL candidate experiment is complete with a
+[negative performance result](../receipts/2026-11-05-quota-sql-candidate-experiment.md).
+Candidate and published-slice equality held on the protected copy, but the final
+version did not improve runtime consistently. Its production changes were
+removed. The existing quota reader remains in place; quota performance and
+whole-refresh improvement remain open. Quota refresh now checks its own scan
+generation as well as the usage scan before composing a result.
+
 ## 0. Contract and audit harness
 
 Deliverables:
@@ -246,8 +264,10 @@ Acceptance:
 - zero differences on a protected copy of the owner profile;
 - a normal append sequence produces zero full rebuilds;
 - a deliberately corrupted receipt marks only its window unavailable;
-- no `inputs_*` diagnostic invokes a full rebuild; only `basis_changed`,
-  `algorithm_changed`, `explicit_repair`, or `initial_build` may do so.
+- no `inputs_*` diagnostic invokes a full rebuild. The runtime cause vocabulary
+  is `none`, `calibration_due`, `basis_changed`, and `manual`; aggregate counters
+  must preserve the distinction between initial provenance seeding and later
+  normal changes rather than treating `none` as an approved rebuild reason.
 
 Rollback: disable shadow recompute; full cache remains authoritative.
 

@@ -11,6 +11,7 @@ import {
 import {
   buildReplaySafeAccountingCache,
   assertReplaySafeAccountingCache,
+  projectReplaySafeAccountingRetainedSlices,
 } from "../src/replay-safe-accounting-cache.js";
 import { readLocalIndexCompanionProjection } from "../src/local-index-companion-source.js";
 import {
@@ -41,6 +42,29 @@ const PROVENANCE = {
   originFingerprint: "o".repeat(64),
   policyIdentity: "p".repeat(64),
 };
+
+test("quota refresh refuses a generation different from the usage scan", async t => {
+  const workspace = createWorkspace({ files: 2, events: 80, days: 5, fillerBytesPerEvent: 0 });
+  t.after(() => workspace.cleanup());
+  const indexFile = join(workspace.state, "index.sqlite");
+  await refreshLocalIndex({ codexHome: workspace.codexHome, indexFile,
+    secretFile: workspace.secretFile, workerCount: 1 });
+  const base = await buildFull({ workspace, indexFile, atMs: T0 });
+  const scan = createLocalIndexAccountingScan({ indexFile });
+  const options = { cache: base.cache, expectedGeneration: base.generation, endMs: T1 };
+  const expected = await projectReplaySafeAccountingRetainedSlices({ ...options, scan });
+  for (const change of [
+    { generationId: Number(base.generation.id) + 1 },
+    { generationFingerprint: "changed-generation" },
+  ]) {
+    await assert.rejects(projectReplaySafeAccountingRetainedSlices({ ...options,
+      scan: async options => {
+        const result = await scan(options);
+        return options.onRateLimitSnapshot === undefined ? result : { ...result, ...change };
+      } }), error => error.code === "accounting_unified_generation_mismatch");
+  }
+  assert.deepEqual(await projectReplaySafeAccountingRetainedSlices({ ...options, scan }), expected);
+});
 
 
 async function buildFull({ workspace, indexFile, atMs }) {

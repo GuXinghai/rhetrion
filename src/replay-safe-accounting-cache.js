@@ -5064,7 +5064,7 @@ export async function projectReplaySafeAccountingRetainedSlices({
   const sparkQuota = new Map();
   const pace = [];
   if (!retainQuota) {
-    await timing.measure("accounting_fast_path_quota", () => scan({
+    const quotaScanned = await timing.measure("accounting_fast_path_quota", () => scan({
       startAt: new Date(startMs).toISOString(),
       endAt: new Date(endMs).toISOString(),
       usageBoundaryMs: [],
@@ -5094,6 +5094,11 @@ export async function projectReplaySafeAccountingRetainedSlices({
         }
       },
     }));
+    const quotaCoverage = normalizeUnifiedCoverage(quotaScanned, expectedGeneration);
+    if (String(quotaCoverage.generation) !== String(expectedGeneration?.id)
+        || quotaCoverage.generationFingerprint !== expectedGeneration?.fingerprint) {
+      throw fixedError("accounting_unified_generation_mismatch");
+    }
   }
   throwIfAborted(signal);
   checkRuntimeMemory();

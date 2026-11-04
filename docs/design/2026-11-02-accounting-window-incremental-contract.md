@@ -7,6 +7,13 @@ status: proposed
 
 # Status and claim boundary
 
+2026-11-05 follow-up: quota and usage scans must independently prove the same
+expected generation and fingerprint before retained slices can be published.
+The first SQL quota-candidate experiment matched protected-copy outputs but
+failed to establish a consistent speedup after preserving refusal and ordering;
+the shipping occurrence reader remains unchanged. See the
+[negative experiment receipt](../receipts/2026-11-05-quota-sql-candidate-experiment.md).
+
 This is a proposed design contract for the accounting derived cache. The
 input-receipt, derived-row, exact accumulator-merge, rolling-fold, owner-only
 window-cache storage, and shipping fast-path composition slices are implemented
