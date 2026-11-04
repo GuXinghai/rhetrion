@@ -315,6 +315,27 @@ function dirtyFromMsFor(comparison, receipts, previousReceipts) {
   return from;
 }
 
+function repairedKeysFor(receipts, repairFromMs, repairToMs) {
+  if (repairFromMs === null) return [];
+  return receipts.windows
+    .filter(window => window.upperMs > repairFromMs
+      && window.lowerMs <= repairToMs)
+    .map(window => window.key);
+}
+
+function mergeDirtyFrom(comparisonDirtyMs, repairFromMs) {
+  if (repairFromMs === null) return comparisonDirtyMs;
+  return comparisonDirtyMs === null
+    ? repairFromMs
+    : Math.min(comparisonDirtyMs, repairFromMs);
+}
+
+function validRepairRange(fromMs, toMs) {
+  return (fromMs === null && toMs === null)
+    || (Number.isSafeInteger(fromMs) && Number.isSafeInteger(toMs)
+      && fromMs >= 0 && fromMs <= toMs);
+}
+
 /**
  * Update a shadow window cache from new receipts. Only changed/added windows
  * are rebuilt; unchanged day snapshots are preserved and folded again.
@@ -327,6 +348,10 @@ export async function updateAccountingWindowCache({
   declaredSpeedBaselines = [],
   dayAccumulators = null,
   dayAccumulatorsRevision = null,
+  // A manual repair forces every UTC day overlapping this inclusive range to
+  // be rebuilt even when its receipt digest did not move.
+  repairFromMs = null,
+  repairToMs = null,
   endMs = null,
   signal = null,
   now = () => Date.now(),
@@ -337,6 +362,9 @@ export async function updateAccountingWindowCache({
   if (dayAccumulators !== null && !(dayAccumulators instanceof Map)) {
     throw new TypeError("accounting window cache dayAccumulators must be a Map or null");
   }
+  if (!validRepairRange(repairFromMs, repairToMs)) {
+    throw new TypeError("accounting window cache repair range is invalid");
+  }
   const comparison = compareAccountingWindowReceipts(previous.receipts, receipts, { hmacKey });
   if (comparison.basisChanged) {
     return {
@@ -346,13 +374,22 @@ export async function updateAccountingWindowCache({
       }),
       basisChanged: true,
       rebuiltKeys: receipts.windows.map(window => window.key),
+      repaired: [],
       added: comparison.added,
       removed: comparison.removed,
       changed: comparison.changed,
-      dirtyFromMs: dirtyFromMsFor(comparison, receipts, previous.receipts),
+      dirtyFromMs: mergeDirtyFrom(
+        dirtyFromMsFor(comparison, receipts, previous.receipts),
+        repairFromMs,
+      ),
     };
   }
-  const rebuiltKeys = [...new Set([...comparison.changed, ...comparison.added])].sort();
+  const repaired = repairedKeysFor(receipts, repairFromMs, repairToMs);
+  const rebuiltKeys = [...new Set([
+    ...comparison.changed,
+    ...comparison.added,
+    ...repaired,
+  ])].sort();
   const identity = readLocalIndexGenerationIdentity({ indexFile });
   if (identity === null || identity.calculationRevision !== receipts.calculationRevision) {
     throw fixedError("accounting_window_cache_generation_changed");
@@ -379,6 +416,7 @@ export async function updateAccountingWindowCache({
       cache: validateCache(cache),
       basisChanged: false,
       rebuiltKeys: [],
+      repaired: [],
       added: comparison.added,
       removed: comparison.removed,
       changed: comparison.changed,
@@ -421,10 +459,14 @@ export async function updateAccountingWindowCache({
     cache: validateCache(cache),
     basisChanged: false,
     rebuiltKeys,
+    repaired,
     added: comparison.added,
     removed: comparison.removed,
     changed: comparison.changed,
     unchanged: false,
-    dirtyFromMs: dirtyFromMsFor(comparison, receipts, previous.receipts),
+    dirtyFromMs: mergeDirtyFrom(
+      dirtyFromMsFor(comparison, receipts, previous.receipts),
+      repairFromMs,
+    ),
   };
 }

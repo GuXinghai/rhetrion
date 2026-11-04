@@ -4305,6 +4305,20 @@ export class LocalCompanionClient {
     });
   }
 
+  async recalculateAccounting({ scope, fromMs = null, toMs = null } = {}) {
+    const body = scope === "full"
+      ? { scope }
+      : { scope, fromMs, toMs };
+    return fetchJson(this.fetchImpl, `${LOCAL_ROOT}/refresh/recalculate`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Usage-Monitor-Local": "1"
+      },
+      body: JSON.stringify(body)
+    });
+  }
+
   refreshStatus() {
     return fetchJson(this.fetchImpl, `${LOCAL_ROOT}/refresh`);
   }

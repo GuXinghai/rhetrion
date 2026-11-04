@@ -183,6 +183,7 @@ export const WEB_MESSAGES = Object.freeze({
       || key === "dashboard.notice.details"
       || key === "dashboard.freshness.observation"
       || key === "dashboard.freshness.accountingAsOf"
+      || key.startsWith("dashboard.recalculate.")
       || key === "dashboard.pricing.speedNote"
       || key.startsWith("appearance.")
       || key.startsWith("background.")

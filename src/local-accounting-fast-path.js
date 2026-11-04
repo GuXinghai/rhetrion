@@ -51,6 +51,7 @@ export const ACCOUNTING_FAST_PATH_FALLBACK_CODES = Object.freeze([
   "mismatch",
   "period_mismatch",
   "receipts_invalid",
+  "repair_unavailable",
   "retained_marker_absent",
   "revision_without_change",
   "source_unavailable",

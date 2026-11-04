@@ -90,7 +90,14 @@ const ACCOUNTING_REFRESH_STATUSES = new Set(["reused", "rebuilt", "deferred", "f
 const ACCOUNTING_REBUILD_CAUSES = new Set([
   "calibration_due",
   "basis_changed",
+  "manual",
 ]);
+const ACCOUNTING_REPAIR_SCOPES = new Set(["window", "range", "full"]);
+const ACCOUNTING_REPAIR_STATUSES = new Set(["completed", "unavailable"]);
+const ACCOUNTING_REPAIR_MAX_MS = Object.freeze({
+  window: 2 * 86_400_000,
+  range: 31 * 86_400_000,
+});
 const GENERATION_TOKEN_PATTERN = /^[A-Za-z0-9._:-]{1,256}$/u;
 // Accounting reader failures are deliberately closed over a fixed vocabulary.
 // A caller-controlled `accounting_*` string must never become a public
@@ -601,6 +608,53 @@ function hasExactKeys(value, keys) {
 }
 
 /**
+ * A manual repair is a bounded request, never an arbitrary range. `window`
+ * covers at most two UTC days, `range` at most 31 days, and `full` skips the
+ * incremental path entirely.
+ */
+function publicAccountingRepair(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || !ACCOUNTING_REPAIR_SCOPES.has(value.scope)
+      || !ACCOUNTING_REPAIR_STATUSES.has(value.status)) {
+    return null;
+  }
+  return Object.freeze({
+    scope: value.scope,
+    status: value.status,
+    ...(Number.isSafeInteger(value.repairedDays) && value.repairedDays >= 0
+      ? { repairedDays: value.repairedDays }
+      : {}),
+  });
+}
+
+export function normalizeAccountingRepair(value) {
+  if (value === null || value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || !ACCOUNTING_REPAIR_SCOPES.has(value.scope)) {
+    throw new TypeError("accounting repair is invalid");
+  }
+  if (value.scope === "full") {
+    if (!hasExactKeys(value, ["scope"])) {
+      throw new TypeError("accounting repair is invalid");
+    }
+    return Object.freeze({ scope: "full" });
+  }
+  if (!hasExactKeys(value, ["fromMs", "scope", "toMs"])
+      || !Number.isSafeInteger(value.fromMs)
+      || !Number.isSafeInteger(value.toMs)
+      || value.fromMs < 0
+      || value.fromMs > value.toMs
+      || value.toMs - value.fromMs > ACCOUNTING_REPAIR_MAX_MS[value.scope]) {
+    throw new TypeError("accounting repair is invalid");
+  }
+  return Object.freeze({
+    scope: value.scope,
+    fromMs: value.fromMs,
+    toMs: value.toMs,
+  });
+}
+
+/**
  * The loopback response deliberately exposes a closed, minimal notification
  * contract instead of a dashboard/ledger projection.  Anything that is not
  * a just-collected direct provider observation is omitted rather than being
@@ -927,7 +981,9 @@ export function createLocalCollectorRefreshRunner({
     onReuseDiagnostic = null,
     onOriginDiagnostic = null,
     mode = "detailed",
+    repair = null,
   } = {}) {
+    const repairRequest = normalizeAccountingRepair(repair);
     const unknownSpeedPolicy = validateUnknownSpeedPolicy(getUnknownSpeedPolicy());
     const unknownSpeedIdentity = unknownSpeedCalculationIdentity(unknownSpeedPolicy);
     const cachePolicyMatches = cache => {
@@ -1140,8 +1196,12 @@ export function createLocalCollectorRefreshRunner({
     let fastPathReason = null;
     // One explicit reason drives the reuse, retained, and rebuild decisions.
     // Calibration is a low-frequency model and must be checked even when the
-    // fast path is disabled or unavailable.
-    let rebuildCause = "none";
+    // fast path is disabled or unavailable. A manual full rebuild is the
+    // strongest request and pre-empts the other causes.
+    let rebuildCause = repairRequest?.scope === "full" ? "manual" : "none";
+    let repairOutcome = repairRequest === null
+      ? null
+      : { scope: repairRequest.scope, status: "unavailable" };
     const isBasisChangeReason = value => value === "basis_changed"
       || value === "accounting_fast_path_basis_changed";
     const calibrationDueFor = cache => {
@@ -1218,7 +1278,8 @@ export function createLocalCollectorRefreshRunner({
         // reuse/rebuild path below remains authoritative.
       }
     }
-    if (calibrationDueFor(previousAccountingCache)) {
+    if (rebuildCause === "none"
+        && calibrationDueFor(previousAccountingCache)) {
       rebuildCause = "calibration_due";
     }
     // Read the last good cache under the same policy checks everywhere a
@@ -1264,6 +1325,7 @@ export function createLocalCollectorRefreshRunner({
         && accountingMayRun
         && unifiedAccountingReady) {
       if (accountingFastPath
+          && repairRequest?.scope !== "full"
           && !withinRebuildBackoff
           && unifiedIndexFile !== null
           && stateFile !== null
@@ -1297,6 +1359,12 @@ export function createLocalCollectorRefreshRunner({
                 expectedPeriods: null,
                 expectedHistory: null,
                 mode: "foreground",
+                repairFromMs: repairRequest?.scope === "window"
+                    || repairRequest?.scope === "range"
+                  ? repairRequest.fromMs : null,
+                repairToMs: repairRequest?.scope === "window"
+                    || repairRequest?.scope === "range"
+                  ? repairRequest.toMs : null,
                 onCache: cache => { windowCache = cache; },
                 signal,
                 now: clock,
@@ -1344,6 +1412,14 @@ export function createLocalCollectorRefreshRunner({
               fastPathUsed = true;
               accountingRebuildDeferUntilMs = 0;
               accountingRebuildDeferredStreak = 0;
+              if (repairRequest !== null) {
+                repairOutcome = {
+                  scope: repairRequest.scope,
+                  status: "completed",
+                  repairedDays: Number.isSafeInteger(shadow.repairedDays)
+                    ? shadow.repairedDays : 0,
+                };
+              }
             } else {
               fastPathReason = shadow.reason ?? shadow.status;
               if (isBasisChangeReason(fastPathReason)) {
@@ -1360,6 +1436,12 @@ export function createLocalCollectorRefreshRunner({
           if (isBasisChangeReason(fastPathReason)) {
             rebuildCause = "basis_changed";
             fastPathReason = "basis_changed";
+          } else if (repairRequest !== null) {
+            repairOutcome = {
+              scope: repairRequest.scope,
+              status: "unavailable",
+            };
+            fastPathReason = "repair_unavailable";
           }
           reportLocalRefreshReuseDiagnostic(
             onReuseDiagnostic, "lookup", "fast_path_fallback",
@@ -1512,11 +1594,13 @@ export function createLocalCollectorRefreshRunner({
           if (rebuildCause !== "none") {
             accountingRebuildDeferUntilMs = clock()
               + ACCOUNTING_REBUILD_FAILURE_BACKOFF_MS;
-            // A due refit does not make the existing cache invalid. Serve its
-            // last-good values now; the retry after the pause re-attempts the
-            // refit. A basis change is different: the old cache is not
-            // authoritative under the new basis, so leave it unavailable.
-            if (rebuildCause === "calibration_due") {
+            // A due refit or a failed manual repair does not make the existing
+            // cache invalid. Serve its last-good values now; the retry after
+            // the pause re-attempts the rebuild. A basis change is different:
+            // the old cache is not authoritative under the new basis, so leave
+            // it unavailable.
+            if (rebuildCause === "calibration_due"
+                || rebuildCause === "manual") {
               const lastGood = await readLastGoodAccounting({
                 includeStaleGeneration: true,
                 requireWeeklyIntervals: true,
@@ -1571,6 +1655,12 @@ export function createLocalCollectorRefreshRunner({
           }
           if (accounting !== null) {
             accountingRefreshStatus = "rebuilt";
+            if (repairRequest !== null) {
+              repairOutcome = {
+                scope: repairRequest.scope,
+                status: "completed",
+              };
+            }
             try {
               const after = await timing.measure("reuse_proof_after", () => calculationReuse.readProof({
                 generation: unifiedIndex.generation, declaredSpeedBaselines, unknownSpeedPolicy, nowMs: clock(), signal, onTiming, monotonicClock,
@@ -1690,6 +1780,13 @@ export function createLocalCollectorRefreshRunner({
         );
       }
     }
+    if (repairRequest !== null
+        && repairOutcome !== null
+        && repairOutcome.status !== "completed"
+        && accounting !== null
+        && fastPathReason === null) {
+      fastPathReason = "repair_unavailable";
+    }
     const notificationEvidence = publicNotificationEvidence(
       result?.refresh?.notificationEvidence,
       clock(),
@@ -1727,6 +1824,7 @@ export function createLocalCollectorRefreshRunner({
             ...(ACCOUNTING_REBUILD_CAUSES.has(rebuildCause)
               ? { rebuildCause }
               : {}),
+            ...(repairOutcome === null ? {} : { repair: repairOutcome }),
             ...(accountingFastPathFallbackCode === null
               ? {}
               : { fastPathFallbackCode: accountingFastPathFallbackCode }),
@@ -1767,6 +1865,7 @@ export function createLocalCollectorRefreshRunner({
               ...(ACCOUNTING_REBUILD_CAUSES.has(rebuildCause)
                 ? { rebuildCause }
                 : {}),
+              ...(repairOutcome === null ? {} : { repair: repairOutcome }),
               compatibilityBehavior: "source_native",
               coverageStatus: unifiedIndex?.generation?.status ?? "unavailable",
               generation: unifiedIndex?.generation?.id ?? null,
@@ -1883,6 +1982,7 @@ export function publicRefreshResult(result, now = Date.now()) {
     const capabilities = publicAccountingCapabilities(
       result.accounting.capabilities,
     );
+    const repair = publicAccountingRepair(result.accounting.repair);
     projected.accounting = {
       status: "replay_safe",
       sourceMode: "unified",
@@ -1892,6 +1992,7 @@ export function publicRefreshResult(result, now = Date.now()) {
       ...(ACCOUNTING_REBUILD_CAUSES.has(result.accounting.rebuildCause)
         ? { rebuildCause: result.accounting.rebuildCause }
         : {}),
+      ...(repair === null ? {} : { repair }),
       ...(typeof result.accounting.fastPathFallbackCode === "string"
         ? {
           fastPathFallbackCode: normalizeAccountingFastPathFallbackCode(
@@ -1924,6 +2025,7 @@ export function publicRefreshResult(result, now = Date.now()) {
     };
   } else if (result?.accounting?.sourceMode === "unified"
       && ["unavailable", "replay_safe"].includes(result.accounting.status)) {
+    const repair = publicAccountingRepair(result.accounting.repair);
     projected.accounting = {
       status: "unavailable",
       sourceMode: "unified",
@@ -1932,6 +2034,10 @@ export function publicRefreshResult(result, now = Date.now()) {
           ? "accounting_unified_source_unavailable"
           : result.accounting.errorCode,
       ),
+      ...(ACCOUNTING_REBUILD_CAUSES.has(result.accounting.rebuildCause)
+        ? { rebuildCause: result.accounting.rebuildCause }
+        : {}),
+      ...(repair === null ? {} : { repair }),
       compatibilityBehavior: "source_native",
       coverageStatus: ["complete", "partial"].includes(
         result.accounting.coverageStatus,
@@ -2047,6 +2153,7 @@ export class LocalCompanionRefreshController {
   #monotonicClock;
   #pendingRequest = null;
   #reason = null;
+  #repair = null;
   #quota = { status: "skipped", errorCode: null, publishedAt: null };
   #usage = { status: "skipped" };
   #timing = null;
@@ -2171,8 +2278,10 @@ export class LocalCompanionRefreshController {
         .filter((key) => Object.hasOwn(progress, key)).map((key) => [key, progress[key]]),
     );
     const safe = { refreshId: state.refreshId, status: state.status, mode: state.mode,
-      reason: this.#reason, quota: { status: quota.status }, usage: { status: usage.status },
-      progress: safeProgress, pending: this.#pendingRequest === null ? null : { mode: this.#pendingRequest.mode },
+      reason: this.#reason, repair: this.#repair,
+      quota: { status: quota.status }, usage: { status: usage.status },
+      progress: safeProgress, pending: this.#pendingRequest === null ? null : { mode: this.#pendingRequest.mode,
+        repair: this.#pendingRequest.repair },
       quickResultPublished: state.quickResultAt !== null, publication: this.#publication };
     return safe;
   }
@@ -2209,24 +2318,37 @@ export class LocalCompanionRefreshController {
     const capabilities = this.#state.mode === null ? null : refreshCapabilities(this.#state.mode);
     const { quota, usage } = this.#subsystemStatuses();
     return structuredClone({ ...this.#state, timing: this.#timing?.snapshot() ?? null, running: this.#inFlight !== null,
-      capabilities, reason: this.#reason, quota, usage,
+      capabilities, reason: this.#reason, repair: this.#repair, quota, usage,
       pending: this.#pendingRequest === null ? null : { mode: this.#pendingRequest.mode,
+        repair: this.#pendingRequest.repair,
         capabilities: refreshCapabilities(this.#pendingRequest.mode) } });
   }
 
-  request({ mode = "detailed", reason = "manual" } = {}) {
+  request({ mode = "detailed", reason = "manual", repair = null } = {}) {
     if (!LOCAL_REFRESH_MODES.has(mode) || !["manual", "automatic", "startup"].includes(reason)) {
       throw new TypeError("refresh request is invalid");
     }
+    const normalizedRepair = normalizeAccountingRepair(repair);
     if (this.#inFlight === null) {
-      const started = this.start({ mode, reason });
+      const started = this.start({ mode, reason, repair: normalizedRepair });
       return { started, joined: false, pending: false, refresh: this.getStatus() };
     }
     const rank = { quick: 0, overview: 1, detailed: 2 };
-    const needsFollowUp = rank[mode] > rank[this.#state.mode];
+    const repairRank = value => value === null ? 0
+      : value.scope === "full" ? 3
+        : value.scope === "range" ? 2 : 1;
+    const needsFollowUp = rank[mode] > rank[this.#state.mode]
+      || repairRank(normalizedRepair) > repairRank(this.#repair);
     if (needsFollowUp && this.#state.status === "running") {
-      if (this.#pendingRequest === null || rank[mode] > rank[this.#pendingRequest.mode]) {
-        this.#pendingRequest = { mode, reason };
+      if (this.#pendingRequest === null
+          || rank[mode] > rank[this.#pendingRequest.mode]
+          || repairRank(normalizedRepair)
+            > repairRank(this.#pendingRequest.repair)) {
+        this.#pendingRequest = {
+          mode,
+          reason,
+          repair: normalizedRepair,
+        };
         this.#notify();
       }
     }
@@ -2302,11 +2424,12 @@ export class LocalCompanionRefreshController {
     }
   }
 
-  start({ mode = "detailed", reason = "manual" } = {}) {
+  start({ mode = "detailed", reason = "manual", repair = null } = {}) {
     if (!["manual", "automatic", "startup"].includes(reason)) throw new TypeError("refresh reason is invalid");
     if (!LOCAL_REFRESH_MODES.has(mode)) {
       throw new TypeError("mode must be quick or detailed");
     }
+    const normalizedRepair = normalizeAccountingRepair(repair);
     if (this.#inFlight !== null) return false;
     // Overview advances the same real index as a detailed refresh. Its index
     // phase must use the reviewed fresh/incremental budget, rather than an
@@ -2332,6 +2455,7 @@ export class LocalCompanionRefreshController {
     }
     this.#timing = runTiming;
     this.#reason = reason;
+    this.#repair = normalizedRepair;
     this.#quota = { status: "running", errorCode: null, publishedAt: null };
     this.#usage = { status: mode === "quick" ? "skipped" : "pending" };
     this.#cancelRequested = false;
@@ -2437,6 +2561,7 @@ export class LocalCompanionRefreshController {
       .then(() => timer.measure("refresh_runner", () => this.#runner({
         signal: controller.signal,
         mode,
+        repair: normalizedRepair,
         onTiming: runTiming.record,
         onReuseDiagnostic: runTiming.recordReuse,
         onOriginDiagnostic: runTiming.recordOrigin,

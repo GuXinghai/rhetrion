@@ -53,13 +53,17 @@ export function createOverviewRefreshScheduler({ refresh, setTimer = setTimeout,
       .catch(() => report("overview_refresh_settlement_failed"))
       .finally(() => { if(current===generation){pending = null; arm();} });
   }
-  function submit({ mode = "overview", reason = "manual" } = {}) {
+  function submit({ mode = "overview", reason = "manual", repair = null } = {}) {
     if (closed || paused) return { started: false, joined: false, pending: false, refresh: refresh.getStatus?.() };
     started = true;
     errorCode = null; disarm();
     try {
       const receipt = typeof refresh.request === "function"
-        ? refresh.request({ mode, reason })
+        ? refresh.request({
+          mode,
+          reason,
+          ...(repair === null ? {} : { repair }),
+        })
         : { started: refresh.start({ mode }), joined: false, pending: false };
       observe();
       return receipt;

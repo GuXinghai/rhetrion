@@ -244,6 +244,15 @@ const REINDEX_AUTO_CONTINUE_LIMIT = 40;
 const REINDEX_AUTO_CONTINUE_DELAY_MS = 1_500;
 let reindexAutoContinueTimer = null;
 let lastReindexProgressReceipt = null;
+// A manual accounting repair only appears when a moving component has been
+// retained longer than the quota refresh cadence. One click tries the affected
+// window, then the related range, then asks before a full rebuild.
+const ACCOUNTING_REPAIR_STALE_MS = 15 * 60_000;
+const ACCOUNTING_REPAIR_WINDOW_MS = 2 * 86_400_000;
+const ACCOUNTING_REPAIR_RANGE_MS = 31 * 86_400_000;
+let accountingRepairStage = "window";
+let accountingRepairAnchorMs = null;
+let accountingRepairBusy = false;
 let localActionBusy = false;
 // Overlapping primary reads share the original busy owner. Publication uses
 // the same load token as quick reloads and cache-drop links below.
@@ -689,6 +698,13 @@ function updateLocalActionButtons() {
       button.removeAttribute("aria-label");
       button.removeAttribute("title");
     }
+  }
+  const accountingRecalculate = $("#accounting-recalculate");
+  if (accountingRecalculate) {
+    accountingRecalculate.disabled =
+      (typeof accountingRepairBusy === "boolean" && accountingRepairBusy)
+      || localActionBusy || localRefreshInProgress || localRefreshPaused
+      || !allowed;
   }
   const setupCheck = $("#setup-check-again");
   if (setupCheck) setupCheck.disabled = localActionBusy;
@@ -1394,6 +1410,72 @@ function publishRefreshResultNotice(refresh) {
   }
 }
 
+const ACCOUNTING_REPAIR_LABEL_KEYS = Object.freeze({
+  window: "dashboard.recalculate.action",
+  range: "dashboard.recalculate.rangeAction",
+  full: "dashboard.recalculate.fullAction",
+});
+
+function renderAccountingRepairButton(retainedAccounting) {
+  const button = $("#accounting-recalculate");
+  if (!button) return;
+  const nowMs = Date.now();
+  const stale = retainedAccounting.filter(row => (
+    Number.isFinite(Date.parse(row.asOf))
+      && nowMs - Date.parse(row.asOf) >= ACCOUNTING_REPAIR_STALE_MS
+  ));
+  if (stale.length === 0) {
+    accountingRepairStage = "window";
+    accountingRepairAnchorMs = null;
+    button.hidden = true;
+    return;
+  }
+  accountingRepairAnchorMs = Date.parse(stale[0].asOf);
+  button.hidden = false;
+  setLocalizedText(button, ACCOUNTING_REPAIR_LABEL_KEYS[accountingRepairStage]);
+  button.disabled =
+    (typeof accountingRepairBusy === "boolean" && accountingRepairBusy)
+    || localActionBusy || localRefreshInProgress || !localAnalysisAllowed();
+}
+
+async function requestAccountingRepair(repair) {
+  if (accountingRepairBusy) return;
+  accountingRepairBusy = true;
+  const button = $("#accounting-recalculate");
+  if (button) {
+    button.disabled = true;
+    setLocalizedText(button, "dashboard.recalculate.progress");
+  }
+  try {
+    const accepted = await localClient.recalculateAccounting(repair);
+    if (accepted?.request?.started !== true
+        && accepted?.request?.pending !== true) {
+      showConnectionNotice({
+        titleKey: "dashboard.recalculate.busyTitle",
+        copyKey: "dashboard.recalculate.busyCopy",
+        kind: "warning",
+        showCheck: false,
+      });
+      return;
+    }
+    accountingRepairStage = repair.scope === "window" ? "range" : "full";
+    await requestRefresh({
+      observeOnly: true,
+      initialRefresh: accepted?.refresh ?? null,
+    });
+  } catch {
+    showConnectionNotice({
+      titleKey: "dashboard.recalculate.failedTitle",
+      copyKey: "dashboard.recalculate.failedCopy",
+      kind: "error",
+      showCheck: true,
+    });
+  } finally {
+    accountingRepairBusy = false;
+    updateLocalActionButtons();
+  }
+}
+
 function renderLiveObservationPresentation(data, recency = observationRecency(data)) {
   const presentation = dashboardObservationPresentation(data, recency);
   const quotaRecency = quotaObservationRecency(data);
@@ -1438,6 +1520,9 @@ function renderLiveObservationPresentation(data, recency = observationRecency(da
         { time: formatLocal(retainedAccounting[0].asOf) },
       );
     }
+  }
+  if (typeof renderAccountingRepairButton === "function") {
+    renderAccountingRepairButton(retainedAccounting);
   }
 
   if (priorStatus !== presentationStatus) {
@@ -10072,6 +10157,46 @@ async function describeFailure({ surface, error, messages = {}, fallback, workUs
 $("#refresh-button").addEventListener("click", () => {
   if (localRefreshInProgress) void cancelLocalAnalysis();
   else void requestRefresh();
+});
+const accountingRecalculateButton = $("#accounting-recalculate");
+const accountingRecalculateDialog = $("#accounting-recalculate-dialog");
+accountingRecalculateButton?.addEventListener("click", () => {
+  if (accountingRepairBusy || localActionBusy || localRefreshInProgress) return;
+  if (accountingRepairStage === "full") {
+    if (typeof accountingRecalculateDialog?.showModal === "function") {
+      if (accountingRecalculateDialog.open !== true) {
+        accountingRecalculateDialog.showModal();
+      }
+    } else if (globalThis.confirm?.(
+      t("dashboard.recalculate.confirmCopy"),
+    ) === true) {
+      void requestAccountingRepair({ scope: "full" });
+    }
+    return;
+  }
+  const anchorMs = accountingRepairAnchorMs ?? Date.now();
+  const toMs = Math.max(Date.now(), anchorMs);
+  const maxSpanMs = accountingRepairStage === "window"
+    ? ACCOUNTING_REPAIR_WINDOW_MS
+    : ACCOUNTING_REPAIR_RANGE_MS;
+  const fromMs = Math.max(anchorMs - maxSpanMs, toMs - maxSpanMs);
+  void requestAccountingRepair({
+    scope: accountingRepairStage,
+    fromMs,
+    toMs,
+  });
+});
+$("#accounting-recalculate-confirm")?.addEventListener("click", () => {
+  accountingRecalculateDialog?.close?.();
+  void requestAccountingRepair({ scope: "full" });
+});
+$("#accounting-recalculate-cancel")?.addEventListener("click", () => {
+  accountingRecalculateDialog?.close?.();
+});
+accountingRecalculateDialog?.addEventListener?.("click", (event) => {
+  if (event.target === accountingRecalculateDialog) {
+    accountingRecalculateDialog.close?.();
+  }
 });
 $("#setup-refresh").addEventListener("click", () => {
   void requestRefresh({ detailed: true });

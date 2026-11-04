@@ -141,6 +141,7 @@
           <strong id="latest-observation"></strong>
           <small id="data-source"></small>
           <small id="accounting-freshness" class="accounting-freshness" hidden></small>
+          <button id="accounting-recalculate" class="button button-quiet compact accounting-recalculate" type="button" hidden data-i18n="dashboard.recalculate.action">Recalculate</button>
           <small id="automatic-refresh-health" class="automatic-refresh-health" hidden></small>
         </div>
       </div>
@@ -998,6 +999,17 @@
         <button type="button" class="button button-quiet compact" id="overview-details-close" data-i18n="dashboard.overview.close">Close</button>
       </div>
       <div id="overview-details-content"></div>
+    </dialog>
+
+    <dialog id="accounting-recalculate-dialog" class="overview-details-dialog" aria-labelledby="accounting-recalculate-title">
+      <div class="overview-dialog-heading">
+        <h2 id="accounting-recalculate-title" data-i18n="dashboard.recalculate.confirmTitle">Full rebuild</h2>
+        <button type="button" class="button button-quiet compact" id="accounting-recalculate-cancel" data-i18n="dashboard.recalculate.cancel">Cancel</button>
+      </div>
+      <p class="annotation" data-i18n="dashboard.recalculate.confirmCopy">Full rebuild of all accounting data may take several minutes.</p>
+      <div class="notice-actions">
+        <button type="button" class="button" id="accounting-recalculate-confirm" data-i18n="dashboard.recalculate.confirm">Start rebuild</button>
+      </div>
     </dialog>
 
     <noscript>

@@ -48,6 +48,7 @@ import {
   createLocalCollectorRefreshRunner,
   createLocalRefreshTimer,
   createTerminalRefreshFailureRecorder,
+  normalizeAccountingRepair,
 } from "../../src/local-companion-refresh.js";
 import {
   acquireCompanionInstanceLock,
@@ -356,6 +357,7 @@ const API_ROUTES = new Set([
   "/api/local/refresh",
   "/api/local/refresh/quick",
   "/api/local/refresh/overview",
+  "/api/local/refresh/recalculate",
   "/api/local/refresh/cancel",
 ]);
 
@@ -1782,6 +1784,49 @@ function createPreparedLocalCompanionServer({
               : "invalid_request",
           );
         }
+        return;
+      }
+      if (path === "/api/local/refresh/recalculate") {
+        if (request.method !== "POST") {
+          sendError(response, 405, "method_not_allowed");
+          return;
+        }
+        if (!sameOrigin(request)
+            || request.headers["x-usage-monitor-local"] !== "1") {
+          sendError(response, 403, "refresh_recalculate_not_authorized");
+          return;
+        }
+        let body;
+        try {
+          body = await readBoundedJsonObject(request);
+        } catch (error) {
+          sendError(
+            response,
+            boundedRequestStatus(error),
+            error?.code ?? "invalid_request",
+          );
+          return;
+        }
+        let repair;
+        try {
+          repair = normalizeAccountingRepair(body);
+        } catch {
+          repair = null;
+        }
+        if (repair === null) {
+          sendError(response, 400, "invalid_request");
+          return;
+        }
+        const { refresh: actualRefresh, ...receipt } = overviewScheduler.submit({
+          mode: "detailed",
+          reason: "manual",
+          repair,
+        });
+        send(response, receipt.started ? 202 : 200, {
+          schemaVersion: LOCAL_COMPANION_SCHEMA_VERSION,
+          request: receipt,
+          refresh: actualRefresh,
+        });
         return;
       }
       if (path === "/api/local/refresh") {

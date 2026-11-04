@@ -201,6 +201,53 @@ test("refresh controller resolves a fresh-state timeout for each run", async () 
   assert.equal(selections, 2);
 });
 
+test("manual repair requests reach the runner and stronger scopes queue", async () => {
+  const calls = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const controller = new LocalCompanionRefreshController({
+    runner: async options => {
+      calls.push(options);
+      await gate;
+      return {};
+    },
+    dataStore: { async reload() {} },
+    timeoutMs: 60_000,
+  });
+  const firstRepair = { scope: "window", fromMs: 1_000, toMs: 2_000 };
+  const first = controller.request({
+    mode: "detailed",
+    reason: "manual",
+    repair: firstRepair,
+  });
+  assert.equal(first.started, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].repair, firstRepair);
+
+  const second = controller.request({
+    mode: "detailed",
+    reason: "manual",
+    repair: { scope: "full" },
+  });
+  assert.equal(second.pending, true);
+  assert.equal(controller.getStatus().pending.repair.scope, "full");
+  assert.equal(controller.getProgressStatus().pending.repair.scope, "full");
+
+  release();
+  await controller.whenSettled();
+  while (controller.isRunning()) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].repair, { scope: "full" });
+
+  assert.throws(
+    () => controller.request({
+      repair: { scope: "window", fromMs: 2_000, toMs: 1_000 },
+    }),
+    /accounting repair is invalid/u,
+  );
+});
+
 test("quick refresh publishes quota/headline data without deep index, accounting, or archive work", async () => {
   const calls = {
     unified: 0,
@@ -4884,6 +4931,7 @@ test("public refresh projection bounds and counts fast-path fallbacks", () => {
     fastPathFallbackCode: "basis_changed",
     fastPathFallbackCount: 2,
     rebuildCause: "basis_changed",
+    repair: { scope: "window", status: "completed", repairedDays: 3 },
   };
   const projected = publicRefreshResult({ accounting }, Date.parse(
     "2026-09-01T00:00:00.000Z",
@@ -4891,14 +4939,19 @@ test("public refresh projection bounds and counts fast-path fallbacks", () => {
   assert.equal(projected.accounting.fastPathFallbackCode, "basis_changed");
   assert.equal(projected.accounting.fastPathFallbackCount, 2);
   assert.equal(projected.accounting.rebuildCause, "basis_changed");
+  assert.deepEqual(projected.accounting.repair, {
+    scope: "window", status: "completed", repairedDays: 3,
+  });
 
   const bounded = publicRefreshResult({
     accounting: {
       ...accounting,
       fastPathFallbackCode: "private/free-form-code",
       rebuildCause: "private/free-form-code",
+      repair: { scope: "private", status: "completed" },
     },
   }, Date.parse("2026-09-01T00:00:00.000Z"));
   assert.equal(bounded.accounting.fastPathFallbackCode, "fast_path_failed");
   assert.equal(Object.hasOwn(bounded.accounting, "rebuildCause"), false);
+  assert.equal(Object.hasOwn(bounded.accounting, "repair"), false);
 });

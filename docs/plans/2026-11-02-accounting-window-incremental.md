@@ -150,9 +150,12 @@ path, so a due refit forces a real rebuild even when the fast path is disabled.
 The calibration interval is selected in **Settings → Data & diagnostics** from
 the fixed 6/12/24/72/168-hour set and persisted in the owner-only collector
 state. A change stores the change instant as the new schedule anchor and never
-starts a refresh; selecting the active interval is a no-op. The manual
-**重新计算** escalation is not implemented, and the capped quota selection is
-refreshed on a low-frequency interval rather than every tick. The remaining
+starts a refresh; selecting the active interval is a no-op. A stale moving
+component exposes **重新计算**: the first pass repairs at most two UTC days, the
+next widens to at most 31 days, and only the confirmed full rebuild skips the
+incremental path. Each step is bounded and none runs automatically. The capped
+quota selection is refreshed on a low-frequency interval rather than every tick.
+The remaining
 costs are receipt scans after a new or removed baseline declaration, an
 unbounded lineage change, quota candidate projection (about 28 seconds per
 refresh pass on the protected copy), and the one-time full rebuild that seeds

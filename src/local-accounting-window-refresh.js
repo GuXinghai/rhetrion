@@ -49,7 +49,8 @@ function mismatchPaths(left, right, path = [], out = []) {
 }
 
 function summary({
-  status, receiptMode, rebuiltKeys = [], periodsMatched = null,
+  status, receiptMode, rebuiltKeys = [], repairedKeys = [],
+  periodsMatched = null,
   historyMatched = null, unchanged = false, reason = null, mismatchFields = null,
   digest = null, previousDigest = null, dirtyFromMs = null,
 }) {
@@ -57,6 +58,7 @@ function summary({
     status,
     receiptMode,
     rebuiltDays: rebuiltKeys.length,
+    repairedDays: repairedKeys.length,
     periodsMatched,
     historyMatched,
     unchanged,
@@ -94,6 +96,10 @@ export async function refreshAccountingWindowShadow({
   onCache = null,
   dayAccumulators = null,
   dayAccumulatorsRevision = null,
+  // Manual repair of an inclusive UTC-day range. The maintenance pass rebuilds
+  // every overlapping day even when its receipt digest did not move.
+  repairFromMs = null,
+  repairToMs = null,
   signal = null,
   now = () => Date.now(),
   readCache = readLocalCollectorAccountingWindowCache,
@@ -124,6 +130,13 @@ export async function refreshAccountingWindowShadow({
     throw new TypeError(
       "accounting window shadow dayAccumulatorsRevision must be a non-negative safe integer or null",
     );
+  }
+  if (!((repairFromMs === null && repairToMs === null)
+      || (Number.isSafeInteger(repairFromMs)
+        && Number.isSafeInteger(repairToMs)
+        && repairFromMs >= 0
+        && repairFromMs <= repairToMs))) {
+    throw new TypeError("accounting window shadow repair range is invalid");
   }
   if (!Array.isArray(declaredSpeedBaselines)) {
     throw new TypeError("accounting window shadow baselines are invalid");
@@ -219,6 +232,7 @@ export async function refreshAccountingWindowShadow({
   }
   let cache;
   let rebuiltKeys = [];
+  let repairedKeys = [];
   let unchanged = false;
   let dirtyFromMs = null;
   if (previous !== null) {
@@ -232,6 +246,8 @@ export async function refreshAccountingWindowShadow({
         declaredSpeedBaselines,
         dayAccumulators,
         dayAccumulatorsRevision,
+        repairFromMs,
+        repairToMs,
         endMs,
         signal,
         now,
@@ -245,6 +261,7 @@ export async function refreshAccountingWindowShadow({
     }
     cache = updated.cache;
     rebuiltKeys = updated.rebuiltKeys;
+    repairedKeys = updated.repaired ?? [];
     unchanged = updated.unchanged === true;
     dirtyFromMs = updated.dirtyFromMs ?? null;
   } else {
@@ -344,6 +361,7 @@ export async function refreshAccountingWindowShadow({
     status: previous === null ? "created" : "updated",
     receiptMode,
     rebuiltKeys,
+    repairedKeys,
     periodsMatched,
     historyMatched,
     unchanged,

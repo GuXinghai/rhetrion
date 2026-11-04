@@ -189,6 +189,12 @@ The fast path is a composition, not a second accounting implementation.
    freshness envelope and size ceiling) and written through the existing
    collector-state atomic publication. A failed composition leaves the last
    good cache untouched.
+7. **Manual repair is bounded and explicit.** A stale reader-visible component
+   offers **Recalculate**. The first request rebuilds at most two UTC days, the
+   next at most 31 days, and a full rebuild runs only after the owner confirms
+   it. The full rebuild records `rebuildCause: "manual"`; an incremental repair
+   that cannot run returns `repair_unavailable` and leaves the last-good cache
+   visible. No repair step starts automatically.
 
 The measured result on the protected 251-day copy is exact parity for periods,
 history, timeline, Spark timeline, both quota timelines, and the weekly

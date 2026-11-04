@@ -120,6 +120,44 @@ test("one appended day rebuilds only that day and still matches a full scan", as
   assert.deepEqual(updated.cache.history, expected.history);
 });
 
+test("a manual repair range rebuilds overlapping days without a receipt change", async t => {
+  const { indexFile, receipts } = await setup(t);
+  const inputs = await receipts();
+  const endMs = inputs.windows.at(-1).upperMs - 1;
+  const initial = await createAccountingWindowCache({
+    indexFile, receipts: inputs, hmacKey: KEY, endMs, now: () => NOW,
+  });
+  const target = inputs.windows.at(-2) ?? inputs.windows[0];
+  const updated = await updateAccountingWindowCache({
+    previous: initial,
+    indexFile,
+    receipts: inputs,
+    hmacKey: KEY,
+    endMs,
+    repairFromMs: target.lowerMs,
+    repairToMs: target.upperMs - 1,
+    now: () => NOW,
+  });
+  assert.deepEqual(updated.repaired, [target.key]);
+  assert.equal(updated.rebuiltKeys.includes(target.key), true);
+  assert.equal(updated.dirtyFromMs, target.lowerMs);
+  assert.deepEqual(updated.cache.periods, initial.periods);
+  assert.deepEqual(updated.cache.history, initial.history);
+  await assert.rejects(
+    updateAccountingWindowCache({
+      previous: initial,
+      indexFile,
+      receipts: inputs,
+      hmacKey: KEY,
+      endMs,
+      repairFromMs: target.upperMs,
+      repairToMs: target.lowerMs,
+      now: () => NOW,
+    }),
+    /repair range is invalid/u,
+  );
+});
+
 test("a generation change during the build fails closed", async t => {
   const { indexFile, receipts } = await setup(t);
   const input = await receipts();

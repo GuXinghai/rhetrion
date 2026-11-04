@@ -219,6 +219,107 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
   assert.equal(rebuilds, 5, "the retry pauses then refits");
 });
 
+test("manual repair escalates from a window range to a full rebuild", async t => {
+  const workspace = createWorkspace({
+    files: 2, events: 200, days: 20, fillerBytesPerEvent: 0,
+  });
+  t.after(() => workspace.cleanup());
+  const indexFile = join(workspace.state, "index.sqlite");
+  const stateFile = join(workspace.state, "collector.sqlite");
+  await refreshLocalIndex({
+    codexHome: workspace.codexHome, indexFile,
+    secretFile: workspace.secretFile, workerCount: 1,
+  });
+  let nowMs = Date.parse("2026-09-01T00:00:00.000Z");
+  let rebuilds = 0;
+  let cached = null;
+  const proof = {
+    id: 1,
+    fingerprint: "f".repeat(64),
+    components: {
+      file: "file",
+      revision: 1,
+      baselines: "b".repeat(64),
+      origins: "o".repeat(64),
+      policy: "p".repeat(64),
+    },
+    coverage: null,
+    committedAtMs: 0,
+  };
+  const fakeReuse = {
+    readProof: async () => proof,
+    reuse: async () => cached,
+    matches: () => true,
+    persist: async ({ cache, signal }) => {
+      cached = cache;
+      await writeLocalCollectorAccountingCache({ stateFile, cache, signal });
+      return true;
+    },
+  };
+  const runner = createLocalCollectorRefreshRunner({
+    codexHome: workspace.codexHome,
+    stateFile,
+    unifiedIndexFile: indexFile,
+    unifiedIndexSecretFile: workspace.secretFile,
+    clock: () => nowMs,
+    accountingQuotaRefreshIntervalMs: 15 * 60_000,
+    accountingCalibrationIntervalHours: 6,
+    createCalculationReuse: () => fakeReuse,
+    selectAccountObservationSecret: () => ({
+      loadAccountObservationSecret: null,
+    }),
+    runCollector: async () => ({
+      rolloutRecordsWritten: 1,
+      filesDiscovered: 1,
+      refresh: { attempted: true, recordWritten: true, errorCode: null },
+      indexing: COMPLETE_INDEX,
+    }),
+    refreshUnifiedIndex: async () => ({
+      status: "ingested",
+      generation: (await readLocalIndexCompanionProjection({
+        indexFile, nowMs,
+      })).generation,
+    }),
+    refreshAccounting: async options => {
+      rebuilds += 1;
+      return refreshLocalIndexAccountingCache({
+        ...options,
+        indexFile,
+        stateFile,
+      });
+    },
+  });
+
+  const first = await runner();
+  assert.equal(first.accounting.refreshStatus, "rebuilt");
+  assert.equal(rebuilds, 1);
+
+  insertSyntheticUsageAt(indexFile, nowMs + 5 * 60_000);
+  nowMs += 5 * 60_000;
+  const windowRepair = await runner({
+    repair: {
+      scope: "window",
+      fromMs: nowMs - 2 * 86_400_000,
+      toMs: nowMs,
+    },
+  });
+  assert.equal(windowRepair.accounting.refreshStatus, "fast_path");
+  assert.equal(rebuilds, 1, "a window repair stays incremental");
+  assert.equal(windowRepair.accounting.repair.scope, "window");
+  assert.equal(windowRepair.accounting.repair.status, "completed");
+  assert.ok(windowRepair.accounting.repair.repairedDays >= 1);
+
+  nowMs += 5 * 60_000;
+  const fullRepair = await runner({ repair: { scope: "full" } });
+  assert.equal(fullRepair.accounting.refreshStatus, "rebuilt");
+  assert.equal(fullRepair.accounting.rebuildCause, "manual");
+  assert.deepEqual(fullRepair.accounting.repair, {
+    scope: "full",
+    status: "completed",
+  });
+  assert.equal(rebuilds, 2, "the full repair bypasses both reuse and the fast path");
+});
+
 test("calibration due still forces a refit when the fast path is disabled", async t => {
   const workspace = createWorkspace({
     files: 2, events: 200, days: 20, fillerBytesPerEvent: 0,

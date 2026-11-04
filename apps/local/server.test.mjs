@@ -888,6 +888,62 @@ test("loopback calibration settings persist without starting refresh", async () 
   }
 });
 
+test("loopback recalculate route validates and forwards a bounded repair scope", async () => {
+  const files = await fixture();
+  let gate;
+  let calls = 0;
+  const app = await startLocalCompanionServer({
+    ...files,
+    dataStore: fakeStore(),
+    port: 0,
+    environment: {
+      ...process.env,
+      USAGE_MONITOR_REFRESH_INTERVAL_SECONDS: "-1",
+    },
+    refreshRunner: async options => {
+      calls += 1;
+      await new Promise(resolve => { gate = resolve; });
+      return { repair: options.repair };
+    },
+  });
+  try {
+    await app.snapshotReady;
+    const base = `http://127.0.0.1:${app.port}`;
+    const post = body => fetch(`${base}/api/local/refresh/recalculate`, {
+      method: "POST",
+      headers: {
+        Origin: base,
+        "Content-Type": "application/json",
+        "x-usage-monitor-local": "1",
+      },
+      body: JSON.stringify(body),
+    });
+    assert.equal((await post({ scope: "full", extra: true })).status, 400);
+    assert.equal((await post({
+      scope: "window", fromMs: 2_000, toMs: 1_000,
+    })).status, 400);
+    assert.equal((await fetch(`${base}/api/local/refresh/recalculate`)).status, 405);
+
+    const accepted = await post({
+      scope: "window", fromMs: 1_000, toMs: 2_000,
+    });
+    assert.equal(accepted.status, 202);
+    const body = await accepted.json();
+    assert.equal(body.request.started, true);
+    assert.equal(body.refresh.repair.scope, "window");
+    assert.deepEqual(body.refresh.repair, {
+      scope: "window", fromMs: 1_000, toMs: 2_000,
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 1);
+    gate();
+    await app.refresh.whenSettled();
+  } finally {
+    await app.close();
+    await rm(files.root, { recursive: true });
+  }
+});
+
 test("loopback persistent pause blocks startup and every refresh route, then cancels pending work", async () => {
   const files = await fixture(), gate = deferred(); let calls = 0;
   const app = await startLocalCompanionServer({ ...files, dataStore: fakeStore(), port: 0,
