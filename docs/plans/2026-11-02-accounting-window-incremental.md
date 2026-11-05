@@ -178,9 +178,14 @@ the [Electron receipt](../receipts/2026-11-05-accounting-settings-and-repair-ui.
 A read-only inspection of the stable collector on 2026-11-05 found the
 pre-upgrade state: accounting cache schema `local-replay-safe-accounting-v0.26`
 with no `freshness` envelope, no `accounting_window_cache`, and no
-`accounting_calibration_settings`. The installed build therefore still needs its
-first production full rebuild to seed the provenance and window markers. No live
-write was performed, and this inspection is not a repeated-refresh observation.
+`accounting_calibration_settings`. A controlled live seed from `36f9294c` then
+wrote the first freshness envelope and window cache: 252 windows, one full
+rebuild in 521 s, and a 37 s follow-up on `fast_path` with zero counter
+increments. The live index SHA-256 was unchanged by the seed. The old
+`codex-usage` daemon was stopped for the write and was not restarted; no
+application was installed or upgraded. Repeated app-driven observation with the
+new build remains open. The evidence is recorded in the
+[stable-profile seed receipt](../receipts/2026-11-05-stable-profile-accounting-seed.md).
 
 The exact path currently prices individual events; a faster rollup-bucket path
 moved a few hundred declared-speed provenance events across a baseline edge, so
@@ -243,8 +248,9 @@ Execution follow-up (2026-11-05): the first SQL quota-candidate experiment is
 recorded as a negative result; no production change is kept. Aggregate runtime
 counters are now emitted on the refresh result. The retained live timing now
 separates discovery/stat from snapshot reload/build; a fresh whole-refresh
-measurement after this branch lands remains. Next run repeated refresh
-observation and add a server-backed synthetic repair and proof-to-freshness
+measurement after this branch lands remains. The stable collector has its first
+freshness and window markers; next run repeated app-driven observation with the
+new build and add a server-backed synthetic repair and proof-to-freshness
 end-to-end check. Owner-runtime evidence remains a separate open gate; copy
 rehearsals cannot satisfy it. No new optimization or slice completion is
 claimed by this execution order.
