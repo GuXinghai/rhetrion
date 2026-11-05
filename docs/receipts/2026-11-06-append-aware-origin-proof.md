@@ -17,9 +17,10 @@ session, or an out-of-order insert still fails the prefix check and falls back
 to reuse/rebuild.
 
 This receipt records the synthetic proof and the first live pass after the
-change. A live pass containing a genuinely new session is still being observed;
-the append behavior is proven against a real local index in the focused test,
-not yet in Live.
+change. A 20-minute live watch after that pass observed no new session
+(4264 to 4264 indexed sessions), so a live pass containing a genuinely new
+session remains pending. The append behavior is proven against a real local
+index in the focused test, not yet in Live.
 
 # Change
 
