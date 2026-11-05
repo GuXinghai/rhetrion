@@ -390,7 +390,14 @@ The contract is enforced by all of the following, not by convention:
 3. **Property tests** over append, late append, rewrite, shrink, new session,
    source replacement, boundary, restart, and cancellation sequences.
 4. **Runtime counters** for dirty windows, recomputed windows, unavailable
-   windows, receipt mismatches, and full rebuilds by reason.
+   windows, receipt mismatches, and full rebuilds by reason. They are emitted
+   as cumulative `accounting.windowCounters` for the runner's lifetime:
+   `dirtyWindows` counts changed, added, removed, and repaired receipt days;
+   `recomputedWindows` counts rebuilt day rows; `unavailableWindows` counts
+   proof-failed scope days and includes `mismatchWindows`; `fullRebuilds`
+   counts every rebuilt accounting pass, with explicit causes in
+   `fullRebuildsByReason`. A process exposes no counters until its first
+   window-shadow pass, so absence is not a zero claim.
 5. **Release gate**: a full rebuild with a non-whitelisted reason fails the
    test/release gate. A normal-change sequence must produce zero full rebuilds.
 6. **Closed schemas and fail-closed validation** for receipts and cache

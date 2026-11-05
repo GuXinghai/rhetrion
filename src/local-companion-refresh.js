@@ -98,6 +98,12 @@ const ACCOUNTING_REPAIR_MAX_MS = Object.freeze({
   window: 2 * 86_400_000,
   range: 31 * 86_400_000,
 });
+const ACCOUNTING_WINDOW_COUNTERS_SCHEMA = "local-accounting-window-counters-v1";
+const ACCOUNTING_WINDOW_FULL_REBUILD_REASONS = Object.freeze([
+  "calibration_due",
+  "basis_changed",
+  "manual",
+]);
 const GENERATION_TOKEN_PATTERN = /^[A-Za-z0-9._:-]{1,256}$/u;
 // Accounting reader failures are deliberately closed over a fixed vocabulary.
 // A caller-controlled `accounting_*` string must never become a public
@@ -627,6 +633,57 @@ function publicAccountingRepair(value) {
   });
 }
 
+function incrementBounded(value, amount) {
+  if (!Number.isSafeInteger(amount) || amount < 0) return value;
+  return value + amount > Number.MAX_SAFE_INTEGER
+    ? Number.MAX_SAFE_INTEGER
+    : value + amount;
+}
+
+/**
+ * Runtime counters are cumulative for the runner's lifetime. They are counts,
+ * never window identities, and a malformed value is omitted rather than
+ * coerced into a confident zero.
+ */
+export function publicAccountingWindowCounters(value) {
+  if (!hasExactKeys(value, [
+    "dirtyWindows",
+    "fullRebuilds",
+    "fullRebuildsByReason",
+    "mismatchWindows",
+    "recomputedWindows",
+    "schemaVersion",
+    "unavailableWindows",
+  ])
+      || value.schemaVersion !== ACCOUNTING_WINDOW_COUNTERS_SCHEMA
+      || !Number.isSafeInteger(value.dirtyWindows) || value.dirtyWindows < 0
+      || !Number.isSafeInteger(value.recomputedWindows) || value.recomputedWindows < 0
+      || !Number.isSafeInteger(value.unavailableWindows) || value.unavailableWindows < 0
+      || !Number.isSafeInteger(value.mismatchWindows) || value.mismatchWindows < 0
+      || !Number.isSafeInteger(value.fullRebuilds) || value.fullRebuilds < 0
+      || !hasExactKeys(
+        value.fullRebuildsByReason,
+        ACCOUNTING_WINDOW_FULL_REBUILD_REASONS,
+      )) {
+    return null;
+  }
+  const byReason = {};
+  for (const reason of ACCOUNTING_WINDOW_FULL_REBUILD_REASONS) {
+    const count = value.fullRebuildsByReason[reason];
+    if (!Number.isSafeInteger(count) || count < 0) return null;
+    byReason[reason] = count;
+  }
+  return Object.freeze({
+    schemaVersion: ACCOUNTING_WINDOW_COUNTERS_SCHEMA,
+    dirtyWindows: value.dirtyWindows,
+    recomputedWindows: value.recomputedWindows,
+    unavailableWindows: value.unavailableWindows,
+    mismatchWindows: value.mismatchWindows,
+    fullRebuilds: value.fullRebuilds,
+    fullRebuildsByReason: Object.freeze(byReason),
+  });
+}
+
 export function normalizeAccountingRepair(value) {
   if (value === null || value === undefined) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)
@@ -965,6 +1022,75 @@ export function createLocalCollectorRefreshRunner({
   // the code is the last bounded reason a pass could not compose.
   let accountingFastPathFallbackCount = 0;
   let accountingFastPathFallbackCode = null;
+  // Cumulative window-cache counters for this runner. They are diagnostic
+  // evidence only: no reader decision depends on them. `dirtyWindows` is the
+  // receipt change set the planner had to consider, `recomputedWindows` is the
+  // rows actually rebuilt, and `unavailableWindows` includes proof failures and
+  // mismatches. `fullRebuilds` counts every rebuilt accounting pass; the
+  // by-reason map counts only the explicit rebuild causes.
+  const accountingWindowCounters = {
+    dirtyWindows: 0,
+    recomputedWindows: 0,
+    unavailableWindows: 0,
+    mismatchWindows: 0,
+    fullRebuilds: 0,
+    fullRebuildsByReason: {
+      calibration_due: 0,
+      basis_changed: 0,
+      manual: 0,
+    },
+  };
+  let accountingWindowPasses = 0;
+  const recordAccountingWindowShadow = shadow => {
+    if (shadow === null || typeof shadow !== "object") return;
+    accountingWindowPasses += 1;
+    accountingWindowCounters.dirtyWindows = incrementBounded(
+      accountingWindowCounters.dirtyWindows,
+      safeCount(shadow.dirtyDays),
+    );
+    accountingWindowCounters.recomputedWindows = incrementBounded(
+      accountingWindowCounters.recomputedWindows,
+      safeCount(shadow.rebuiltDays),
+    );
+    if (shadow.status === "invalid" || shadow.status === "mismatch") {
+      const scopeDays = safeCount(shadow.scopeDays);
+      accountingWindowCounters.unavailableWindows = incrementBounded(
+        accountingWindowCounters.unavailableWindows,
+        scopeDays,
+      );
+      if (shadow.status === "mismatch") {
+        accountingWindowCounters.mismatchWindows = incrementBounded(
+          accountingWindowCounters.mismatchWindows,
+          scopeDays,
+        );
+      }
+    }
+  };
+  const recordAccountingFullRebuild = cause => {
+    accountingWindowCounters.fullRebuilds = incrementBounded(
+      accountingWindowCounters.fullRebuilds,
+      1,
+    );
+    if (ACCOUNTING_WINDOW_FULL_REBUILD_REASONS.includes(cause)) {
+      accountingWindowCounters.fullRebuildsByReason[cause] = incrementBounded(
+        accountingWindowCounters.fullRebuildsByReason[cause],
+        1,
+      );
+    }
+  };
+  const accountingWindowCountersSnapshot = () => accountingWindowPasses === 0
+    ? null
+    : Object.freeze({
+      schemaVersion: ACCOUNTING_WINDOW_COUNTERS_SCHEMA,
+      dirtyWindows: accountingWindowCounters.dirtyWindows,
+      recomputedWindows: accountingWindowCounters.recomputedWindows,
+      unavailableWindows: accountingWindowCounters.unavailableWindows,
+      mismatchWindows: accountingWindowCounters.mismatchWindows,
+      fullRebuilds: accountingWindowCounters.fullRebuilds,
+      fullRebuildsByReason: Object.freeze({
+        ...accountingWindowCounters.fullRebuildsByReason,
+      }),
+    });
   let hasReadQuota = false;
   // Raw provider credit IDs never enter the collector store. The classifier's
   // bounded keyed-fingerprint checkpoint is committed with the existing
@@ -1370,6 +1496,7 @@ export function createLocalCollectorRefreshRunner({
                 now: clock,
               }),
             );
+            recordAccountingWindowShadow(shadow);
             if (windowCache !== null
                 && ["created", "updated", "unchanged"].includes(shadow.status)
                 && typeof shadow.previousDigest === "string") {
@@ -1655,6 +1782,7 @@ export function createLocalCollectorRefreshRunner({
           }
           if (accounting !== null) {
             accountingRefreshStatus = "rebuilt";
+            recordAccountingFullRebuild(rebuildCause);
             if (repairRequest !== null) {
               repairOutcome = {
                 scope: repairRequest.scope,
@@ -1722,6 +1850,7 @@ export function createLocalCollectorRefreshRunner({
             signal,
             now: clock,
           }));
+        recordAccountingWindowShadow(shadow);
         capturedDayAccumulators = null;
         capturedDayAccumulatorsRevision = null;
         if (onAccountingWindowShadow !== null) {
@@ -1802,6 +1931,7 @@ export function createLocalCollectorRefreshRunner({
       accountingFastPathFallbackCode =
         normalizeAccountingFastPathFallbackCode(fastPathReason);
     }
+    const windowCounters = accountingWindowCountersSnapshot();
     return {
       rolloutRecordsWritten: Number.isSafeInteger(result?.rolloutRecordsWritten)
         ? result.rolloutRecordsWritten
@@ -1825,6 +1955,7 @@ export function createLocalCollectorRefreshRunner({
               ? { rebuildCause }
               : {}),
             ...(repairOutcome === null ? {} : { repair: repairOutcome }),
+            ...(windowCounters === null ? {} : { windowCounters }),
             ...(accountingFastPathFallbackCode === null
               ? {}
               : { fastPathFallbackCode: accountingFastPathFallbackCode }),
@@ -1866,6 +1997,7 @@ export function createLocalCollectorRefreshRunner({
                 ? { rebuildCause }
                 : {}),
               ...(repairOutcome === null ? {} : { repair: repairOutcome }),
+              ...(windowCounters === null ? {} : { windowCounters }),
               compatibilityBehavior: "source_native",
               coverageStatus: unifiedIndex?.generation?.status ?? "unavailable",
               generation: unifiedIndex?.generation?.id ?? null,
@@ -1983,6 +2115,9 @@ export function publicRefreshResult(result, now = Date.now()) {
       result.accounting.capabilities,
     );
     const repair = publicAccountingRepair(result.accounting.repair);
+    const windowCounters = publicAccountingWindowCounters(
+      result.accounting.windowCounters,
+    );
     projected.accounting = {
       status: "replay_safe",
       sourceMode: "unified",
@@ -1993,6 +2128,7 @@ export function publicRefreshResult(result, now = Date.now()) {
         ? { rebuildCause: result.accounting.rebuildCause }
         : {}),
       ...(repair === null ? {} : { repair }),
+      ...(windowCounters === null ? {} : { windowCounters }),
       ...(typeof result.accounting.fastPathFallbackCode === "string"
         ? {
           fastPathFallbackCode: normalizeAccountingFastPathFallbackCode(
@@ -2026,6 +2162,9 @@ export function publicRefreshResult(result, now = Date.now()) {
   } else if (result?.accounting?.sourceMode === "unified"
       && ["unavailable", "replay_safe"].includes(result.accounting.status)) {
     const repair = publicAccountingRepair(result.accounting.repair);
+    const windowCounters = publicAccountingWindowCounters(
+      result.accounting.windowCounters,
+    );
     projected.accounting = {
       status: "unavailable",
       sourceMode: "unified",
@@ -2038,6 +2177,7 @@ export function publicRefreshResult(result, now = Date.now()) {
         ? { rebuildCause: result.accounting.rebuildCause }
         : {}),
       ...(repair === null ? {} : { repair }),
+      ...(windowCounters === null ? {} : { windowCounters }),
       compatibilityBehavior: "source_native",
       coverageStatus: ["complete", "partial"].includes(
         result.accounting.coverageStatus,

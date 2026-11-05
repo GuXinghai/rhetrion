@@ -18,6 +18,7 @@ import {
   LOCAL_COMPANION_REFRESH_CANCEL_SETTLEMENT_MS,
   LOCAL_COMPANION_REFRESH_TIMEOUT_MAX_MS,
   LocalCompanionRefreshController,
+  publicAccountingWindowCounters,
   publicRefreshResult,
 } from "../src/local-companion-refresh.js";
 import {
@@ -4910,6 +4911,7 @@ test("a cancelled shadow pass does not fail a published accounting rebuild", asy
   const result = await runner();
   assert.equal(result.accounting.status, "replay_safe");
   assert.equal(result.accounting.refreshStatus, "rebuilt");
+  assert.equal(Object.hasOwn(result.accounting, "windowCounters"), false);
 });
 
 test("public refresh projection bounds and counts fast-path fallbacks", () => {
@@ -4932,6 +4934,19 @@ test("public refresh projection bounds and counts fast-path fallbacks", () => {
     fastPathFallbackCount: 2,
     rebuildCause: "basis_changed",
     repair: { scope: "window", status: "completed", repairedDays: 3 },
+    windowCounters: {
+      schemaVersion: "local-accounting-window-counters-v1",
+      dirtyWindows: 4,
+      recomputedWindows: 5,
+      unavailableWindows: 1,
+      mismatchWindows: 0,
+      fullRebuilds: 2,
+      fullRebuildsByReason: {
+        calibration_due: 1,
+        basis_changed: 1,
+        manual: 0,
+      },
+    },
   };
   const projected = publicRefreshResult({ accounting }, Date.parse(
     "2026-09-01T00:00:00.000Z",
@@ -4942,6 +4957,7 @@ test("public refresh projection bounds and counts fast-path fallbacks", () => {
   assert.deepEqual(projected.accounting.repair, {
     scope: "window", status: "completed", repairedDays: 3,
   });
+  assert.deepEqual(projected.accounting.windowCounters, accounting.windowCounters);
 
   const bounded = publicRefreshResult({
     accounting: {
@@ -4949,9 +4965,44 @@ test("public refresh projection bounds and counts fast-path fallbacks", () => {
       fastPathFallbackCode: "private/free-form-code",
       rebuildCause: "private/free-form-code",
       repair: { scope: "private", status: "completed" },
+      windowCounters: {
+        ...accounting.windowCounters,
+        dirtyWindows: -1,
+      },
     },
   }, Date.parse("2026-09-01T00:00:00.000Z"));
   assert.equal(bounded.accounting.fastPathFallbackCode, "fast_path_failed");
   assert.equal(Object.hasOwn(bounded.accounting, "rebuildCause"), false);
   assert.equal(Object.hasOwn(bounded.accounting, "repair"), false);
+  assert.equal(Object.hasOwn(bounded.accounting, "windowCounters"), false);
+});
+
+test("window counters are closed and bounded", () => {
+  const valid = {
+    schemaVersion: "local-accounting-window-counters-v1",
+    dirtyWindows: 1,
+    recomputedWindows: 2,
+    unavailableWindows: 3,
+    mismatchWindows: 4,
+    fullRebuilds: 5,
+    fullRebuildsByReason: {
+      calibration_due: 1,
+      basis_changed: 2,
+      manual: 3,
+    },
+  };
+  assert.deepEqual(publicAccountingWindowCounters(valid), valid);
+  assert.equal(publicAccountingWindowCounters({
+    ...valid,
+    extra: true,
+  }), null);
+  assert.equal(publicAccountingWindowCounters({
+    ...valid,
+    fullRebuildsByReason: { calibration_due: 1 },
+  }), null);
+  assert.equal(publicAccountingWindowCounters({
+    ...valid,
+    recomputedWindows: Number.NaN,
+  }), null);
+  assert.equal(publicAccountingWindowCounters(null), null);
 });

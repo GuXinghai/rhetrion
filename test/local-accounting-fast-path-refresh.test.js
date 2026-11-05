@@ -293,6 +293,15 @@ test("manual repair escalates from a window range to a full rebuild", async t =>
   const first = await runner();
   assert.equal(first.accounting.refreshStatus, "rebuilt");
   assert.equal(rebuilds, 1);
+  assert.equal(first.accounting.windowCounters.fullRebuilds, 1);
+  assert.deepEqual(first.accounting.windowCounters.fullRebuildsByReason, {
+    calibration_due: 0,
+    basis_changed: 0,
+    manual: 0,
+  });
+  assert.ok(first.accounting.windowCounters.recomputedWindows >= 1);
+  assert.equal(first.accounting.windowCounters.unavailableWindows, 0);
+  assert.equal(first.accounting.windowCounters.mismatchWindows, 0);
 
   insertSyntheticUsageAt(indexFile, nowMs + 5 * 60_000);
   nowMs += 5 * 60_000;
@@ -308,6 +317,16 @@ test("manual repair escalates from a window range to a full rebuild", async t =>
   assert.equal(windowRepair.accounting.repair.scope, "window");
   assert.equal(windowRepair.accounting.repair.status, "completed");
   assert.ok(windowRepair.accounting.repair.repairedDays >= 1);
+  assert.equal(windowRepair.accounting.windowCounters.fullRebuilds, 1,
+    "an incremental repair does not count as a full rebuild");
+  assert.ok(
+    windowRepair.accounting.windowCounters.dirtyWindows
+      >= windowRepair.accounting.repair.repairedDays,
+  );
+  assert.ok(
+    windowRepair.accounting.windowCounters.recomputedWindows
+      >= windowRepair.accounting.repair.repairedDays,
+  );
 
   nowMs += 5 * 60_000;
   const fullRepair = await runner({ repair: { scope: "full" } });
@@ -318,6 +337,11 @@ test("manual repair escalates from a window range to a full rebuild", async t =>
     status: "completed",
   });
   assert.equal(rebuilds, 2, "the full repair bypasses both reuse and the fast path");
+  assert.equal(fullRepair.accounting.windowCounters.fullRebuilds, 2);
+  assert.equal(
+    fullRepair.accounting.windowCounters.fullRebuildsByReason.manual,
+    1,
+  );
 });
 
 test("calibration due still forces a refit when the fast path is disabled", async t => {

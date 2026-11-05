@@ -375,6 +375,7 @@ export async function updateAccountingWindowCache({
       basisChanged: true,
       rebuiltKeys: receipts.windows.map(window => window.key),
       repaired: [],
+      dirtyDays: receipts.windows.length,
       added: comparison.added,
       removed: comparison.removed,
       changed: comparison.changed,
@@ -390,6 +391,12 @@ export async function updateAccountingWindowCache({
     ...comparison.added,
     ...repaired,
   ])].sort();
+  const dirtyDays = new Set([
+    ...comparison.changed,
+    ...comparison.added,
+    ...comparison.removed,
+    ...repaired,
+  ]).size;
   const identity = readLocalIndexGenerationIdentity({ indexFile });
   if (identity === null || identity.calculationRevision !== receipts.calculationRevision) {
     throw fixedError("accounting_window_cache_generation_changed");
@@ -417,6 +424,7 @@ export async function updateAccountingWindowCache({
       basisChanged: false,
       rebuiltKeys: [],
       repaired: [],
+      dirtyDays: 0,
       added: comparison.added,
       removed: comparison.removed,
       changed: comparison.changed,
@@ -460,6 +468,7 @@ export async function updateAccountingWindowCache({
     basisChanged: false,
     rebuiltKeys,
     repaired,
+    dirtyDays,
     added: comparison.added,
     removed: comparison.removed,
     changed: comparison.changed,

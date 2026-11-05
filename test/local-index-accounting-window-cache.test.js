@@ -115,6 +115,7 @@ test("one appended day rebuilds only that day and still matches a full scan", as
   });
   assert.equal(updated.basisChanged, false);
   assert.deepEqual(updated.rebuiltKeys, [target.key]);
+  assert.equal(updated.dirtyDays, 1);
   const expected = await fullPeriods(indexFile);
   assert.deepEqual(updated.cache.periods, expected.periods);
   assert.deepEqual(updated.cache.history, expected.history);
@@ -140,6 +141,7 @@ test("a manual repair range rebuilds overlapping days without a receipt change",
   });
   assert.deepEqual(updated.repaired, [target.key]);
   assert.equal(updated.rebuiltKeys.includes(target.key), true);
+  assert.equal(updated.dirtyDays, 1);
   assert.equal(updated.dirtyFromMs, target.lowerMs);
   assert.deepEqual(updated.cache.periods, initial.periods);
   assert.deepEqual(updated.cache.history, initial.history);

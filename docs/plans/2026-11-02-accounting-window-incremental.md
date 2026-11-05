@@ -137,6 +137,14 @@ counter recorded the initial `retained_marker_absent`. This exercises the
 builder-to-window revision handoff end to end, not only the direct composer
 path.
 
+The runner now emits cumulative `accounting.windowCounters` for its lifetime:
+dirty, recomputed, unavailable, and mismatched window-days, plus every rebuilt
+pass and the explicit rebuild causes. The counters are content-free and are
+omitted until the first window-shadow pass, so a process that never exercised
+the window cache cannot claim a zero. They distinguish an initial provenance
+seeding rebuild from later normal refreshes; no reader decision depends on
+them.
+
 The exact path currently prices individual events; a faster rollup-bucket path
 moved a few hundred declared-speed provenance events across a baseline edge, so
 it is implemented but not used for the equality proof. The dashboard now
@@ -194,15 +202,13 @@ cost is measured; no end-to-end page-speed or installed-app claim is made.
 
 # Implementation slices
 
-Execution follow-up (2026-11-05): first prove SQL quota-candidate collapse
-against the existing committed-occurrence scan, then measure quota-only and
-whole-refresh costs on the protected copy. Keep the full calibration scan
-unchanged: timeline selection does not authorize dropping calibration evidence.
-Next add aggregate runtime counters before repeated refresh observation, inspect
-the Electron controls with synthetic state, and measure discovery/stat separately
-from snapshot reload/build. Owner-runtime evidence remains a separate open gate;
-copy rehearsals cannot satisfy it. No new optimization or slice completion is
-claimed by this execution order.
+Execution follow-up (2026-11-05): the first SQL quota-candidate experiment is
+recorded as a negative result; no production change is kept. Aggregate runtime
+counters are now emitted on the refresh result. Next run repeated refresh
+observation, inspect the Electron controls with synthetic state, and measure
+discovery/stat separately from snapshot reload/build. Owner-runtime evidence
+remains a separate open gate; copy rehearsals cannot satisfy it. No new
+optimization or slice completion is claimed by this execution order.
 
 The first SQL candidate experiment is complete with a
 [negative performance result](../receipts/2026-11-05-quota-sql-candidate-experiment.md).

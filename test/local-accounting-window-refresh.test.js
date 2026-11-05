@@ -77,6 +77,8 @@ test("a shadow refresh writes a matched cache and reuses it without a scan", asy
   assert.equal(unchanged.status, "unchanged");
   assert.equal(unchanged.receiptMode, "unchanged");
   assert.equal(unchanged.rebuiltDays, 0);
+  assert.equal(unchanged.dirtyDays, 0);
+  assert.ok(unchanged.scopeDays >= 1);
 });
 
 test("a new append updates only dirty days and still matches the shipping cache", async t => {
@@ -102,6 +104,7 @@ test("a new append updates only dirty days and still matches the shipping cache"
   assert.equal(updated.status, "updated");
   assert.equal(updated.receiptMode, "incremental");
   assert.ok(updated.rebuiltDays >= 1);
+  assert.ok(updated.dirtyDays >= updated.rebuiltDays);
   assert.equal(updated.periodsMatched, true);
   assert.equal(updated.historyMatched, true);
   const stored = await readLocalCollectorAccountingWindowCache({ stateFile });

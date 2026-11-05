@@ -50,6 +50,7 @@ function mismatchPaths(left, right, path = [], out = []) {
 
 function summary({
   status, receiptMode, rebuiltKeys = [], repairedKeys = [],
+  dirtyDays = 0, scopeDays = 0,
   periodsMatched = null,
   historyMatched = null, unchanged = false, reason = null, mismatchFields = null,
   digest = null, previousDigest = null, dirtyFromMs = null,
@@ -59,6 +60,8 @@ function summary({
     receiptMode,
     rebuiltDays: rebuiltKeys.length,
     repairedDays: repairedKeys.length,
+    dirtyDays,
+    scopeDays,
     periodsMatched,
     historyMatched,
     unchanged,
@@ -183,11 +186,15 @@ export async function refreshAccountingWindowShadow({
   const previousDigest = previous === null
     ? null
     : accountingWindowCacheDigest(previous);
+  // The number of window-days this pass covers. Public counters use it to
+  // bound an unavailable or mismatched scope without exposing day identities.
+  let scopeDays = previous?.receipts?.windows?.length ?? 0;
   if (previous === null && foreground) {
     return summary({
       status: invalidReason === null ? "absent" : "invalid",
       receiptMode: null,
       reason: invalidReason,
+      scopeDays,
     });
   }
   let receipts;
@@ -221,6 +228,7 @@ export async function refreshAccountingWindowShadow({
     });
     receiptMode = "full";
   }
+  scopeDays = receipts.windows.length;
   if (previous !== null
       && receipts.basisFingerprint !== previous.basisFingerprint
       && foreground) {
@@ -228,11 +236,13 @@ export async function refreshAccountingWindowShadow({
       status: "deferred",
       receiptMode,
       reason: "basis_changed",
+      scopeDays,
     });
   }
   let cache;
   let rebuiltKeys = [];
   let repairedKeys = [];
+  let dirtyDays = 0;
   let unchanged = false;
   let dirtyFromMs = null;
   if (previous !== null) {
@@ -255,13 +265,14 @@ export async function refreshAccountingWindowShadow({
     } catch (error) {
       const reason = accountingWindowCacheErrorReason(error);
       if (reason !== null) {
-        return summary({ status: "invalid", receiptMode, reason });
+        return summary({ status: "invalid", receiptMode, reason, scopeDays });
       }
       throw error;
     }
     cache = updated.cache;
     rebuiltKeys = updated.rebuiltKeys;
     repairedKeys = updated.repaired ?? [];
+    dirtyDays = updated.dirtyDays ?? 0;
     unchanged = updated.unchanged === true;
     dirtyFromMs = updated.dirtyFromMs ?? null;
   } else {
@@ -280,11 +291,12 @@ export async function refreshAccountingWindowShadow({
     } catch (error) {
       const reason = accountingWindowCacheErrorReason(error);
       if (reason !== null) {
-        return summary({ status: "invalid", receiptMode, reason });
+        return summary({ status: "invalid", receiptMode, reason, scopeDays });
       }
       throw error;
     }
     rebuiltKeys = receipts.windows.map(window => window.key);
+    dirtyDays = receipts.windows.length;
     dirtyFromMs = receipts.windows.length === 0
       ? null
       : Math.min(...receipts.windows.map(window => window.lowerMs));
@@ -317,6 +329,8 @@ export async function refreshAccountingWindowShadow({
         status: "mismatch",
         receiptMode,
         rebuiltKeys,
+        dirtyDays,
+        scopeDays,
         periodsMatched,
         historyMatched,
         unchanged,
@@ -337,7 +351,8 @@ export async function refreshAccountingWindowShadow({
   if (!factsChanged && !auditAdded) {
     expose();
     return summary({
-      status: "unchanged", receiptMode, rebuiltKeys, periodsMatched,
+      status: "unchanged", receiptMode, rebuiltKeys, dirtyDays, scopeDays,
+      periodsMatched,
       historyMatched, unchanged: true, digest, previousDigest,
     });
   }
@@ -362,6 +377,8 @@ export async function refreshAccountingWindowShadow({
     receiptMode,
     rebuiltKeys,
     repairedKeys,
+    dirtyDays,
+    scopeDays,
     periodsMatched,
     historyMatched,
     unchanged,
