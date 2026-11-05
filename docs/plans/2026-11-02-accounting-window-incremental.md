@@ -145,6 +145,15 @@ the window cache cannot claim a zero. They distinguish an initial provenance
 seeding rebuild from later normal refreshes; no reader decision depends on
 them.
 
+A packaged development candidate from `94cc48ab` rendered the calibration card
+and the manual-repair surface in the real Electron window with an isolated
+synthetic profile. The five fixed intervals, change-time status, `数据截至`
+label, window -> related-range escalation, and the full-rebuild confirmation
+dialog were present. The retained component was a renderer-only fixture because
+the synthetic corpus lacks Codex origin metadata; a server-backed repair and a
+real proof-to-freshness transition remain open. The inspection is recorded in
+the [Electron receipt](../receipts/2026-11-05-accounting-settings-and-repair-ui.md).
+
 A read-only inspection of the stable collector on 2026-11-05 found the
 pre-upgrade state: accounting cache schema `local-replay-safe-accounting-v0.26`
 with no `freshness` envelope, no `accounting_window_cache`, and no
@@ -212,10 +221,11 @@ cost is measured; no end-to-end page-speed or installed-app claim is made.
 Execution follow-up (2026-11-05): the first SQL quota-candidate experiment is
 recorded as a negative result; no production change is kept. Aggregate runtime
 counters are now emitted on the refresh result. Next run repeated refresh
-observation, inspect the Electron controls with synthetic state, and measure
-discovery/stat separately from snapshot reload/build. Owner-runtime evidence
-remains a separate open gate; copy rehearsals cannot satisfy it. No new
-optimization or slice completion is claimed by this execution order.
+observation, measure discovery/stat separately from snapshot reload/build, and
+add a server-backed synthetic repair and proof-to-freshness end-to-end check.
+Owner-runtime evidence remains a separate open gate; copy rehearsals cannot
+satisfy it. No new optimization or slice completion is claimed by this
+execution order.
 
 The first SQL candidate experiment is complete with a
 [negative performance result](../receipts/2026-11-05-quota-sql-candidate-experiment.md).
