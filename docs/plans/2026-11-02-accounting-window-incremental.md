@@ -137,6 +137,18 @@ counter recorded the initial `retained_marker_absent`. This exercises the
 builder-to-window revision handoff end to end, not only the direct composer
 path.
 
+On 2026-11-05 the same protected copy was rerun with timing enabled after
+clearing the collector caches. The cold pass took 385 s: accounting rebuild
+268 s, window shadow 69 s, accounting scan 45 s, and the two reuse-proof reads
+27 s and 12 s. It rebuilt 251 windows, recorded zero unavailable or mismatched
+windows, seeded a 64-hex window digest with all six provenance components, and
+counted one full rebuild. The next pass five minutes later took 49 s and
+composed through `fast_path`; its cumulative counters remained at 251 dirty and
+251 recomputed windows with one full rebuild, so that pass added zero rebuilt
+windows and zero full rebuilds. Reuse proof (19.7 s), index refresh (10.1 s),
+and the window shadow (9.7 s) dominate the warm pass. Discovery/stat and
+snapshot reload/build were stubbed by this harness and remain unmeasured.
+
 The runner now emits cumulative `accounting.windowCounters` for its lifetime:
 dirty, recomputed, unavailable, and mismatched window-days, plus every rebuilt
 pass and the explicit rebuild causes. The counters are content-free and are
