@@ -187,6 +187,16 @@ application was installed or upgraded. Repeated app-driven observation with the
 new build remains open. The evidence is recorded in the
 [stable-profile seed receipt](../receipts/2026-11-05-stable-profile-accounting-seed.md).
 
+A stable-metadata unsigned candidate from `5e089621` was launched directly from
+`win-unpacked` against the live profile on 2026-11-05. The first app-driven pass
+after the launch reached `fast_path` in about 99 s with zero full rebuilds and
+the dashboard updated automatically. A later pass with a new index generation
+and a 54-source rescan exceeded the ten-minute budget at the snapshot stage; the
+following pass completed a full rebuild in 11 min 14 s at generation `24921`.
+The launch is recorded in the
+[live-launch receipt](../receipts/2026-11-05-stable-candidate-live-launch.md).
+No application was installed or signed.
+
 The exact path currently prices individual events; a faster rollup-bucket path
 moved a few hundred declared-speed provenance events across a baseline edge, so
 it is implemented but not used for the equality proof. The dashboard now
@@ -258,11 +268,13 @@ recorded as a negative result; no production change is kept. Aggregate runtime
 counters are now emitted on the refresh result. The retained live timing now
 separates discovery/stat from snapshot reload/build; a fresh whole-refresh
 measurement after this branch lands remains. The stable collector has its first
-freshness and window markers; next run repeated app-driven observation with the
-new build and add a server-backed synthetic repair and proof-to-freshness
-end-to-end check. Owner-runtime evidence remains a separate open gate; copy
-rehearsals cannot satisfy it. No new optimization or slice completion is
-claimed by this execution order.
+freshness and window markers. The live launch observed one app-driven
+`fast_path` pass and one full rebuild after a new generation and 54-source
+rescan; the latter took over ten minutes. Next run sustained app-driven
+observation, optimize the rescan/snapshot path, and add a server-backed
+synthetic repair and proof-to-freshness end-to-end check. Owner-runtime evidence
+remains a separate open gate; copy rehearsals cannot satisfy it. No new
+optimization or slice completion is claimed by this execution order.
 
 The first SQL candidate experiment is complete with a
 [negative performance result](../receipts/2026-11-05-quota-sql-candidate-experiment.md).
