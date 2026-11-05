@@ -207,14 +207,18 @@ pre-existing bounded replay diagnostics remain a separate projection. The
 calibration card keeps its last refit time visible, and the
 default 24-hour calibration due check is evaluated before reuse and the fast
 path, so a due refit forces a real rebuild even when the fast path is disabled.
-Two limits matter for live observation. The reuse proof covers the full indexed
-session set: a newly indexed session changes `originFingerprint` and forces the
-reuse/rebuild path instead of `fast_path`, so the zero-rebuild claim applies
-only while the session set is unchanged. `fullRebuilds` counts every rebuilt
-pass, while `fullRebuildsByReason` counts only the explicit causes;
-`unavailableWindows` and `mismatchWindows` are cumulative scope-weighted counts
-that reset with the process. A successful fast path clears the previous fallback
-code but keeps the lifetime fallback count.
+The origin proof is now append-aware. `freshness.provenance` records
+`originSessionCount`, and the next proof digests that exact session prefix. A
+new session appended to the durable id order leaves the prefix unchanged, so the
+pass stays on `fast_path`; its facts dirty only the UTC days they touch. A
+removal, reclassification, or out-of-order insert changes the prefix and still
+falls through to reuse/rebuild. The pre-fix live launch on 2026-11-05 observed
+the older behavior, where any new session forced a full rebuild. A live rerun of
+this source remains open. `fullRebuilds` counts every rebuilt pass, while
+`fullRebuildsByReason` counts only the explicit causes; `unavailableWindows` and
+`mismatchWindows` are cumulative scope-weighted counts that reset with the
+process. A successful fast path clears the previous fallback code but keeps the
+lifetime fallback count.
 The calibration interval is selected in **Settings → Data & diagnostics** from
 the fixed 6/12/24/72/168-hour set and persisted in the owner-only collector
 state. A change stores the change instant as the new schedule anchor and never
@@ -270,11 +274,14 @@ separates discovery/stat from snapshot reload/build; a fresh whole-refresh
 measurement after this branch lands remains. The stable collector has its first
 freshness and window markers. The live launch observed one app-driven
 `fast_path` pass and one full rebuild after a new generation and 54-source
-rescan; the latter took over ten minutes. Next run sustained app-driven
-observation, optimize the rescan/snapshot path, and add a server-backed
-synthetic repair and proof-to-freshness end-to-end check. Owner-runtime evidence
-remains a separate open gate; copy rehearsals cannot satisfy it. No new
-optimization or slice completion is claimed by this execution order.
+rescan; the latter took over ten minutes. After that launch, the origin proof
+was made append-aware, and a synthetic runner check now keeps a newly indexed
+session on `fast_path`; a live rerun of that path remains open. Next run
+sustained app-driven observation, optimize the rescan/snapshot path, and add a
+server-backed synthetic repair and proof-to-freshness end-to-end check.
+Owner-runtime evidence remains a separate open gate; copy rehearsals cannot
+satisfy it. No new optimization or slice completion is claimed by this
+execution order.
 
 The first SQL candidate experiment is complete with a
 [negative performance result](../receipts/2026-11-05-quota-sql-candidate-experiment.md).

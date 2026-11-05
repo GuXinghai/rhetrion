@@ -44,7 +44,11 @@ export function createLocalIndexAccountingReuse({
   let retained = null;
 
   async function readProof({ generation, nowMs = Date.now(), declaredSpeedBaselines = [], unknownSpeedPolicy = DEFAULT_UNKNOWN_SPEED_POLICY, signal = null, onTiming = null, monotonicClock = undefined,
-    onReuseDiagnostic = null, onOriginDiagnostic = null, diagnosticPhase = "proof_before" }) {
+    onReuseDiagnostic = null, onOriginDiagnostic = null, diagnosticPhase = "proof_before",
+    // When the caller holds a previous proof, ask for the digest of that
+    // proof's exact session prefix. Append-only growth can then be proven
+    // without treating the whole origin set as changed.
+    previousOriginCount = null }) {
     if (!Number.isFinite(nowMs)) throw new TypeError("proof clock must be finite");
     const report = code => reportLocalRefreshReuseDiagnostic(onReuseDiagnostic, diagnosticPhase, code);
     const timing = createLocalRefreshTimer({ onTiming, clock: monotonicClock });
@@ -106,15 +110,29 @@ export function createLocalIndexAccountingReuse({
     const unresolved = snapshot.sessions.filter(row => relations.get(row.session_uuid)?.originKnown !== true);
     reportLocalRefreshOriginDiagnostic(onOriginDiagnostic, diagnosticPhase, "unknown_with_usage", unresolved.filter(row => row.has_usage).length);
     reportLocalRefreshOriginDiagnostic(onOriginDiagnostic, diagnosticPhase, "unknown_without_usage", unresolved.filter(row => !row.has_usage).length);
-    const originKey = digest(snapshot.sessions.map(row => {
+    const originRows = snapshot.sessions.map(row => {
       const relation = relations.get(row.session_uuid);
       return [Number(row.id), relation.originKnown ? relation.autoReview ? "auto_review" : "normal" : "unknown"];
-    }));
+    });
+    const originKey = digest(originRows);
+    const originCount = originRows.length;
+    // Sessions are returned in durable id order and new sessions append. A
+    // digest of the exact previous prefix proves that every prior session still
+    // has the same origin classification; only the tail is new. A removal,
+    // reclassification, or out-of-order insert makes the prefix differ and the
+    // caller falls back to the existing reuse/rebuild path.
+    const originPrefixKey = Number.isSafeInteger(previousOriginCount)
+        && previousOriginCount >= 0
+        && previousOriginCount <= originCount
+      ? digest(originRows.slice(0, previousOriginCount))
+      : null;
     const identity = readIdentity({ indexFile });
     if (!sameGeneration(identity, generation) || identity.calculationRevision !== snapshot.calculationRevision
         || digest(fileKey) !== digest(fileIdentity(indexFile))) { report("identity_changed"); return null; }
     report("proof_available");
     return { ...snapshot, sessions: undefined, fileKey, fingerprint: identity.fingerprint,
+      originCount,
+      ...(originPrefixKey === null ? {} : { originPrefixKey }),
       unknownSpeedPolicyIdentity: unknownSpeedCalculationIdentity(unknownSpeedPolicy),
       components: { file: digest(fileKey), revision: snapshot.calculationRevision,
         baselines: digest(relevantBaselines(declaredSpeedBaselines, snapshot.usageRange)),

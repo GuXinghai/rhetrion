@@ -78,8 +78,10 @@ pre-launch backup remains available. No software was installed.
 
 # Remaining gates
 
-- A new indexed session changes the origin proof and forces a full rebuild; the
-  zero-rebuild claim is limited to an unchanged session set.
+- At `5e089621`, a new indexed session changed the global origin proof and
+  forced a full rebuild; the zero-rebuild claim was limited to an unchanged
+  session set. A follow-up makes the proof append-aware, but this receipt does
+  not prove that follow-up in Live.
 - A 54-source rescan can exceed ten minutes; whole-refresh discovery/snapshot
   optimization remains open.
 - A failed pass can leave its failure notice visible until the next successful

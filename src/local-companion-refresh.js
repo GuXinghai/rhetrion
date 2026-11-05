@@ -1460,6 +1460,7 @@ export function createLocalCollectorRefreshRunner({
         try {
           calculationProof = await timing.measure("reuse_proof_before", () => calculationReuse.readProof({
             generation: unifiedIndex.generation, declaredSpeedBaselines, unknownSpeedPolicy, nowMs: clock(), signal, onTiming, monotonicClock, onReuseDiagnostic, onOriginDiagnostic,
+            previousOriginCount: previousAccountingCache?.freshness?.provenance?.originSessionCount ?? null,
           }));
           const previousCache = previousAccountingCache;
           const provenance = accountingProvenanceFromProof(calculationProof);
@@ -1470,6 +1471,7 @@ export function createLocalCollectorRefreshRunner({
               && typeof previousCache.freshness?.windows?.digest === "string"
               && accountingFastPathProvenanceMatches(
                 previousCache.freshness?.provenance, provenance,
+                { originPrefixKey: calculationProof?.originPrefixKey ?? null },
               )) {
             const fastPathEndMs = clock();
             let windowCache = null;

@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { renameSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createWorkspace, insertSyntheticUsageAt } from "./helpers/local-index-facts.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import { createLocalCollectorRefreshRunner } from "../src/local-companion-refresh.js";
 import { refreshLocalIndexAccountingCache } from "../src/local-index-accounting-cache.js";
+import { createLocalIndexAccountingReuse } from "../src/local-index-accounting-reuse.js";
 import { readLocalIndexCompanionProjection } from "../src/local-index-companion-source.js";
 import {
   readLocalCollectorAccountingCache,
@@ -217,6 +219,105 @@ test("normal appends stop triggering a full accounting rebuild", async t => {
   const recovered = await runner();
   assert.equal(recovered.accounting.refreshStatus, "rebuilt");
   assert.equal(rebuilds, 5, "the retry pauses then refits");
+});
+
+test("a newly indexed session stays incremental instead of replaying history", async t => {
+  const workspace = createWorkspace({
+    files: 2, events: 160, days: 20, fillerBytesPerEvent: 0, forkFraction: 0,
+  });
+  t.after(() => workspace.cleanup());
+  const indexFile = join(workspace.state, "index.sqlite");
+  const stateFile = join(workspace.state, "collector.sqlite");
+  const [, heldSession] = workspace.receipt.sources;
+  const held = join(workspace.root, "held-rollout.jsonl");
+  renameSync(heldSession, held);
+  const refreshIndex = () => refreshLocalIndex({
+    codexHome: workspace.codexHome, indexFile,
+    secretFile: workspace.secretFile, workerCount: 1,
+  });
+  await refreshIndex();
+  let nowMs = Date.parse("2026-09-01T00:00:00.000Z");
+  let rebuilds = 0;
+  const runner = createLocalCollectorRefreshRunner({
+    codexHome: workspace.codexHome,
+    stateFile,
+    unifiedIndexFile: indexFile,
+    unifiedIndexSecretFile: workspace.secretFile,
+    clock: () => nowMs,
+    accountingQuotaRefreshIntervalMs: 15 * 60_000,
+    accountingCalibrationIntervalHours: 6,
+    createCalculationReuse: ({
+      indexFile: proofIndexFile, codexHome, stateFile: proofStateFile,
+    }) => createLocalIndexAccountingReuse({
+      indexFile: proofIndexFile, codexHome, stateFile: proofStateFile,
+      readOrigins: async (_home, ids) => ({
+        complete: true,
+        relations: new Map(ids.map(id => [id, {
+          originKnown: true, autoReview: false,
+        }])),
+      }),
+    }),
+    selectAccountObservationSecret: () => ({
+      loadAccountObservationSecret: null,
+    }),
+    runCollector: async () => ({
+      rolloutRecordsWritten: 1,
+      filesDiscovered: 1,
+      refresh: { attempted: true, recordWritten: true, errorCode: null },
+      indexing: COMPLETE_INDEX,
+    }),
+    refreshUnifiedIndex: async () => ({
+      status: "ingested",
+      generation: (await readLocalIndexCompanionProjection({
+        indexFile, nowMs,
+      })).generation,
+    }),
+    refreshAccounting: async options => {
+      rebuilds += 1;
+      return refreshLocalIndexAccountingCache({
+        ...options,
+        indexFile,
+        stateFile,
+      });
+    },
+  });
+
+  const first = await runner();
+  assert.equal(first.accounting.refreshStatus, "rebuilt");
+  assert.equal(rebuilds, 1);
+  const before = await readLocalCollectorAccountingCache({ stateFile });
+  const beforeAll = before.cache.periods.find(row => row.id === "all").events;
+  assert.equal(before.cache.freshness.provenance.originSessionCount, 1);
+
+  const unchanged = await runner();
+  assert.equal(unchanged.accounting.refreshStatus, "fast_path");
+
+  // Restoring the held rollout adds a genuinely new session. Its usage facts
+  // land in existing UTC days, so the window cache can rebuild only those days.
+  renameSync(held, heldSession);
+  await refreshIndex();
+  nowMs += 10 * 60_000;
+  const appended = await runner();
+  assert.equal(appended.accounting.refreshStatus, "fast_path");
+  assert.equal(rebuilds, 1, "a new session must not replay the full history");
+  assert.equal(appended.accounting.windowCounters.fullRebuilds, 1);
+  assert.ok(
+    appended.accounting.windowCounters.recomputedWindows
+      > unchanged.accounting.windowCounters.recomputedWindows,
+    "the new session's days are recomputed",
+  );
+
+  const after = await readLocalCollectorAccountingCache({ stateFile });
+  const afterAll = after.cache.periods.find(row => row.id === "all").events;
+  assert.ok(afterAll > beforeAll, "the new session's events are included");
+  assert.equal(after.cache.freshness.provenance.originSessionCount, 2,
+    "the composed cache consumed the new session proof");
+
+  nowMs += 10 * 60_000;
+  const settled = await runner();
+  assert.equal(settled.accounting.refreshStatus, "fast_path");
+  assert.equal(rebuilds, 1, "the expanded origin proof stays retained");
+  assert.equal(settled.accounting.windowCounters.fullRebuilds, 1);
 });
 
 test("manual repair escalates from a window range to a full rebuild", async t => {

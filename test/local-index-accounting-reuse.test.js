@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, renameSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createLocalIndexAccountingReuse } from "../src/local-index-accounting-reuse.js";
 import { buildLocalIndexAccountingCache } from "../src/local-index-accounting-cache.js";
@@ -256,6 +256,56 @@ test("complete unknown origins are stable inputs; per-session changes and incomp
   assert.equal(reuse.matches(allUnknown), false);
 });
 
+
+test("a proof exposes the previous session prefix when a new session is appended", async t => {
+  const workspace = createWorkspace({
+    files: 2, events: 12, days: 2, forkFraction: 0,
+  });
+  t.after(() => workspace.cleanup());
+  const indexFile = join(workspace.state, "index.sqlite");
+  const stateFile = join(workspace.state, "collector.sqlite");
+  const [, heldSession] = workspace.receipt.sources;
+  const held = join(workspace.root, "held-rollout.jsonl");
+  renameSync(heldSession, held);
+  await refreshLocalIndex({ codexHome: workspace.codexHome, indexFile,
+    secretFile: workspace.secretFile, workerCount: 1 });
+  const reuse = createLocalIndexAccountingReuse({
+    indexFile, codexHome: workspace.codexHome, stateFile,
+    readOrigins: async (_home, ids) => ({
+      complete: true,
+      relations: new Map(ids.map(id => [id, {
+        originKnown: true, autoReview: false,
+      }])),
+    }),
+  });
+  const first = await reuse.readProof({
+    generation: readLocalIndexGenerationIdentity({ indexFile }),
+  });
+  assert.ok(first);
+  assert.equal(first.originCount, 1);
+  assert.equal(Object.hasOwn(first, "originPrefixKey"), false,
+    "a caller without a previous count does not pay for a prefix digest");
+
+  renameSync(held, heldSession);
+  await refreshLocalIndex({ codexHome: workspace.codexHome, indexFile,
+    secretFile: workspace.secretFile, workerCount: 1 });
+  const current = await reuse.readProof({
+    generation: readLocalIndexGenerationIdentity({ indexFile }),
+    previousOriginCount: first.originCount,
+  });
+  assert.ok(current);
+  assert.equal(current.originCount, 2);
+  assert.notEqual(current.components.origins, first.components.origins);
+  assert.equal(current.originPrefixKey, first.components.origins,
+    "the prior session is unchanged and the new session is only a tail");
+
+  const differentPrefix = await reuse.readProof({
+    generation: readLocalIndexGenerationIdentity({ indexFile }),
+    previousOriginCount: 0,
+  });
+  assert.notEqual(differentPrefix.originPrefixKey, first.components.origins,
+    "a different prefix cannot authorize the append");
+});
 
 test("an empty index with no published generation cannot authorize reuse", async t => {
   const workspace = createWorkspace({ files: 1, events: 1, days: 1 });

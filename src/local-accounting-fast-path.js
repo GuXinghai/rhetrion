@@ -334,7 +334,10 @@ export async function composeLocalAccountingFastPath({
         coveredTo: retainedAsOf,
       },
       planScope: { status: "retained", asOf: retainedAsOf },
-      provenance: freshness.provenance ?? null,
+      // The composed cache consumed the current proof, including any appended
+      // session tail. Keeping the previous envelope would make the next pass
+      // fail its origin check and rebuild everything.
+      provenance: provenance ?? freshness.provenance ?? null,
     },
   };
   if (dynamic.quotaRetained) {
@@ -374,6 +377,9 @@ export function accountingProvenanceFromProof(proof) {
       || typeof components.policy !== "string") return null;
   return {
     originFingerprint: components.origins,
+    ...(Number.isSafeInteger(proof.originCount)
+      ? { originSessionCount: proof.originCount }
+      : {}),
     policyIdentity: components.policy,
     calculationRevision: components.revision,
     baselinesDigest: components.baselines,
@@ -385,14 +391,37 @@ export function accountingProvenanceFromProof(proof) {
   };
 }
 
-/** True when only append-like inputs moved since the retained proof. */
-export function accountingFastPathProvenanceMatches(previous, current) {
+/**
+ * True when only append-like inputs moved since the retained proof.
+ *
+ * An exact origin digest is the ordinary case. A growing session set is also
+ * append-like when the current proof carries the digest of the previous
+ * session prefix: every retained session still has its old origin
+ * classification, and only the tail is new. The window shadow has already
+ * bounded the new sessions' facts to dirty UTC days, so this does not need a
+ * full replay. A removal, reclassification, or out-of-order insert changes the
+ * prefix and is rejected.
+ */
+export function accountingFastPathProvenanceMatches(
+  previous,
+  current,
+  { originPrefixKey = null } = {},
+) {
   if (previous === null || previous === undefined
       || current === null || current === undefined) return false;
   if (typeof previous.originFingerprint !== "string"
-      || typeof current.originFingerprint !== "string") return false;
-  return previous.originFingerprint === current.originFingerprint
-    && previous.policyIdentity === current.policyIdentity;
+      || typeof current.originFingerprint !== "string"
+      || previous.policyIdentity !== current.policyIdentity) return false;
+  if (previous.originFingerprint === current.originFingerprint) return true;
+  const previousCount = previous.originSessionCount;
+  const currentCount = current.originSessionCount;
+  return Number.isSafeInteger(previousCount)
+    && previousCount >= 0
+    && Number.isSafeInteger(currentCount)
+    && currentCount > previousCount
+    && typeof originPrefixKey === "string"
+    && /^[a-f0-9]{64}$/u.test(originPrefixKey)
+    && originPrefixKey === previous.originFingerprint;
 }
 
 /** Attach the window digest consumed by a full rebuild after its shadow pass. */
@@ -420,7 +449,10 @@ export function completeAccountingFreshness({
   const nextFreshness = {
     schemaVersion: LOCAL_ACCOUNTING_FRESHNESS_VERSION,
     ...(prior ?? {}),
-    provenance: prior?.provenance ?? provenance ?? null,
+    // A rebuild (or a verified reuse) consumed the current proof. Prefer it so
+    // an older envelope cannot keep a stale origin count after the session set
+    // grew.
+    provenance: provenance ?? prior?.provenance ?? null,
     timeline: prior?.timeline ?? {
       status: "exact",
       asOf: cache.coveredAt.endAt,

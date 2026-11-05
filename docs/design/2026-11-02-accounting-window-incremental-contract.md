@@ -149,12 +149,16 @@ The fast path is a composition, not a second accounting implementation.
 
 1. **Eligibility is closed.** It requires a valid previous cache carrying the
    freshness envelope, a stored window digest equal to the window state that
-   cache consumed, an unchanged window basis fingerprint, stable thread-origin
-   and policy proof components, available history and weekly-interval receipts,
-   and zero fallback. A missing marker, a changed basis, a changed origin set,
-   a tampered day, or an unknown state falls through to the existing reuse or
-   full-rebuild path. The fallback code is a bounded public diagnostic
-   (`fastPathFallbackCode`); no raw path, origin, or session identity is exposed.
+   cache consumed, an unchanged window basis fingerprint, a stable policy proof,
+   an append-only thread-origin proof, available history and weekly-interval
+   receipts, and zero fallback. The origin proof compares the current session
+   set with the previous session count: an unchanged prefix proves every prior
+   session kept its origin classification, and new sessions may only be a tail.
+   A missing marker, a changed basis, a removed or reclassified session, a
+   non-tail insert, a tampered day, or an unknown state falls through to the
+   existing reuse or full-rebuild path. The fallback code is a bounded public
+   diagnostic (`fastPathFallbackCode`); no raw path, origin, or session identity
+   is exposed.
 2. **Windows are exact.** `periods` and `history` come from the verified window
    cache. This is the same fold the equality audit compared against a full
    rebuild.

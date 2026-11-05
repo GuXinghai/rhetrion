@@ -123,6 +123,20 @@ test("fast path composes exact windows and timeline after a late fact", async t 
     windowDigest: accountingWindowCacheDigest(windowCache0),
     windowCache: windowCache0,
   });
+  const rebound = structuredClone(base.cache);
+  const nextProvenance = {
+    ...PROVENANCE,
+    originFingerprint: "n".repeat(64),
+    originSessionCount: 2,
+  };
+  completeAccountingFreshness({
+    cache: rebound,
+    provenance: nextProvenance,
+    windowDigest: accountingWindowCacheDigest(windowCache0),
+    windowCache: windowCache0,
+  });
+  assert.deepEqual(rebound.freshness.provenance, nextProvenance,
+    "a new proof replaces stale provenance instead of preserving it");
 
   // One late fact inside an older day and one fact in the new tail. The late
   // fact is what forces a real dirty-day rescan rather than a tail append.
@@ -284,9 +298,10 @@ test("fast-path fallback codes stay bounded across producer prefixes", () => {
   );
 });
 
-test("fast path provenance requires stable origins and policy", () => {
+test("fast path provenance accepts an unchanged or append-only origin set", () => {
   const current = {
     originFingerprint: "a".repeat(64),
+    originSessionCount: 2,
     policyIdentity: "b".repeat(64),
   };
   assert.equal(accountingFastPathProvenanceMatches(current, { ...current }), true);
@@ -296,6 +311,29 @@ test("fast path provenance requires stable origins and policy", () => {
   assert.equal(accountingFastPathProvenanceMatches(current, {
     ...current, policyIdentity: "d".repeat(64),
   }), false);
+
+  const appended = {
+    ...current,
+    originFingerprint: "c".repeat(64),
+    originSessionCount: 3,
+  };
+  assert.equal(accountingFastPathProvenanceMatches(current, appended, {
+    originPrefixKey: current.originFingerprint,
+  }), true, "a proven prefix lets a new session stay incremental");
+  assert.equal(accountingFastPathProvenanceMatches(current, appended, {
+    originPrefixKey: "d".repeat(64),
+  }), false, "a changed prefix is a reclassification or removal, not an append");
+  assert.equal(accountingFastPathProvenanceMatches(current, appended), false,
+    "append eligibility requires the prefix proof");
+  assert.equal(accountingFastPathProvenanceMatches({
+    ...current, originSessionCount: 3,
+  }, appended, { originPrefixKey: current.originFingerprint }), false,
+    "the current count must grow");
+  assert.equal(accountingFastPathProvenanceMatches({
+    ...current, originSessionCount: undefined,
+  }, appended, { originPrefixKey: current.originFingerprint }), false,
+    "a legacy proof without a count cannot prove an append");
+
   assert.equal(accountingFastPathProvenanceMatches(null, current), false);
   assert.equal(accountingFastPathProvenanceMatches(current, null), false);
 });
