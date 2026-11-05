@@ -103,7 +103,12 @@ const PARENT_WATCHDOG_EXIT_GRACE_MS = 1_000;
 const MAX_REQUEST_BODY_BYTES = 1_024;
 const MAX_STATIC_BYTES = 2 * 1024 * 1024;
 const MAX_REPORT_BYTES = 4 * 1024 * 1024;
-export const LOCAL_COMPANION_INCREMENTAL_REFRESH_TIMEOUT_MS = 5 * 60_000;
+// Ordinary incremental refreshes on a one-year profile can spend roughly
+// 100 s in discovery and another 120 s in snapshot projection before the
+// accounting stage. The former five-minute bound aborted healthy passes at
+// the terminal snapshot step; ten minutes keeps cancellation and progress
+// intact while leaving the four-hour cold-work bound separate.
+export const LOCAL_COMPANION_INCREMENTAL_REFRESH_TIMEOUT_MS = 10 * 60_000;
 
 
 function projectionAborted() {
