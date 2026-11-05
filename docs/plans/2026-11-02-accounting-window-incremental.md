@@ -149,6 +149,15 @@ windows and zero full rebuilds. Reuse proof (19.7 s), index refresh (10.1 s),
 and the window shadow (9.7 s) dominate the warm pass. Discovery/stat and
 snapshot reload/build were stubbed by this harness and remain unmeasured.
 
+A retained live overview timing from 2026-11-02 (generation 24545, 647 s total)
+does expose the split that the stubbed harness omits. `index_refresh` was 107 s,
+including `index_discovery` 82 s, `discovery_walk` 29 s, `discovery_stat` 26 s,
+and `discovery_graph` 53 s. `snapshot_reload` was 133 s, including
+`snapshot_build` 133 s and `snapshot_index_projection` 107 s. Accounting rebuild
+was 345 s. Nested stages are not additive. This is point-in-time live evidence,
+not a new measurement run; it shows that a whole-refresh claim must account for
+both discovery and snapshot cost.
+
 The runner now emits cumulative `accounting.windowCounters` for its lifetime:
 dirty, recomputed, unavailable, and mismatched window-days, plus every rebuilt
 pass and the explicit rebuild causes. The counters are content-free and are
@@ -232,12 +241,13 @@ cost is measured; no end-to-end page-speed or installed-app claim is made.
 
 Execution follow-up (2026-11-05): the first SQL quota-candidate experiment is
 recorded as a negative result; no production change is kept. Aggregate runtime
-counters are now emitted on the refresh result. Next run repeated refresh
-observation, measure discovery/stat separately from snapshot reload/build, and
-add a server-backed synthetic repair and proof-to-freshness end-to-end check.
-Owner-runtime evidence remains a separate open gate; copy rehearsals cannot
-satisfy it. No new optimization or slice completion is claimed by this
-execution order.
+counters are now emitted on the refresh result. The retained live timing now
+separates discovery/stat from snapshot reload/build; a fresh whole-refresh
+measurement after this branch lands remains. Next run repeated refresh
+observation and add a server-backed synthetic repair and proof-to-freshness
+end-to-end check. Owner-runtime evidence remains a separate open gate; copy
+rehearsals cannot satisfy it. No new optimization or slice completion is
+claimed by this execution order.
 
 The first SQL candidate experiment is complete with a
 [negative performance result](../receipts/2026-11-05-quota-sql-candidate-experiment.md).
