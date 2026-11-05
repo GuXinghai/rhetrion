@@ -145,6 +145,13 @@ the window cache cannot claim a zero. They distinguish an initial provenance
 seeding rebuild from later normal refreshes; no reader decision depends on
 them.
 
+A read-only inspection of the stable collector on 2026-11-05 found the
+pre-upgrade state: accounting cache schema `local-replay-safe-accounting-v0.26`
+with no `freshness` envelope, no `accounting_window_cache`, and no
+`accounting_calibration_settings`. The installed build therefore still needs its
+first production full rebuild to seed the provenance and window markers. No live
+write was performed, and this inspection is not a repeated-refresh observation.
+
 The exact path currently prices individual events; a faster rollup-bucket path
 moved a few hundred declared-speed provenance events across a baseline edge, so
 it is implemented but not used for the equality proof. The dashboard now
