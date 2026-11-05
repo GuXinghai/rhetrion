@@ -1601,7 +1601,8 @@ function renderDashboard(data) {
   let workloadRoot = $("#overview-workload");
   if (!workloadRoot) { workloadRoot = node("div"); workloadRoot.id="overview-workload"; overviewRoot.append(workloadRoot); }
   renderOverviewWorkload(workloadRoot,data.workload,{translate:t,locale:getFormattingLocale(),
-    currentQuota:{status:data.quotaWindows.length?'available':'unavailable',windows:data.quotaWindows}});
+    currentQuota:{status:data.quotaWindows.length?'available':'unavailable',
+      windows:data.quotaWindows,usageComparable:data.quotaUsageComparable}});
   observationFreshnessClock.update(data);
   // This optional lookup must never delay the native readiness marker or the
   // accounting render. Only the first-column cells are updated when it lands.
@@ -1670,7 +1671,11 @@ function renderQuotaCards(data) {
   }
   const context = $("#allowance-context");
   if (context) {
-    context.textContent = data.mode === "demo" ? t("dashboard.quota.demo") : "";
+    context.textContent = data.mode === "demo"
+      ? t("dashboard.quota.demo")
+      : data.quotaUsageComparable === false
+        ? t("dashboard.quota.attributionUnverified")
+        : "";
     context.hidden = !context.textContent;
   }
   for (const window of windows) {

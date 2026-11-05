@@ -874,6 +874,15 @@ crossing, display/current/trend/comparison window edge, exact five-minute start
 event or cleared `last_at_ms`; those buckets are expanded to raw events.
 `priced` coverage is combined across buckets exactly as across events.
 
+Quota windows and calibrated plan capacity select work-hour estimates only when
+the displayed usage period is fully attributed to a pseudonymous account and the
+quota observation carries the same attribution class. Rollout-derived usage
+normally has no account identity; an unattributed period therefore cannot
+inherit the default Codex login's plan or capacity. The API-equivalent rate and
+the local intensity grade still come from priced usage and remain available.
+The dashboard labels an unmatched quota observation as reference-only instead of
+showing it as the current plan.
+
 ## Generation and publication
 
 There is no staged generation, snapshot file or publication pointer. A commit

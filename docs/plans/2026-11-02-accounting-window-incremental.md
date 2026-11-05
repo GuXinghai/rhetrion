@@ -213,8 +213,10 @@ new session appended to the durable id order leaves the prefix unchanged, so the
 pass stays on `fast_path`; its facts dirty only the UTC days they touch. A
 removal, reclassification, or out-of-order insert changes the prefix and still
 falls through to reuse/rebuild. The pre-fix live launch on 2026-11-05 observed
-the older behavior, where any new session forced a full rebuild. A live rerun of
-this source remains open. `fullRebuilds` counts every rebuilt pass, while
+the older behavior, where any new session forced a full rebuild. The first live
+pass after the change stayed on `fast_path` and seeded `originSessionCount`;
+a live pass containing a genuinely new session remains open. `fullRebuilds`
+counts every rebuilt pass, while
 `fullRebuildsByReason` counts only the explicit causes; `unavailableWindows` and
 `mismatchWindows` are cumulative scope-weighted counts that reset with the
 process. A successful fast path clears the previous fallback code but keeps the

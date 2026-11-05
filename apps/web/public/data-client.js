@@ -4051,6 +4051,9 @@ export function normalizeDashboardPayload(payload = {}, fragments = {}) {
       )
     },
     quotaFreshness: normalizeQuotaFreshness(overview?.quotaFreshness),
+    // Older snapshots and demo payloads do not carry the decision. Defaulting
+    // to true only avoids inventing a warning; it does not create attribution.
+    quotaUsageComparable: overview?.quotaUsageComparable !== false,
     quotaWindows,
     activity: {
       ...(overview?.activity ?? overview?.live?.activity ?? {}),

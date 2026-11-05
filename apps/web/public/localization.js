@@ -242,6 +242,7 @@ export const WEB_MESSAGES = Object.freeze({
   "dashboard.quota.observations": ["Quota observations", "额度观测", "Observaciones de cuota"],
   "dashboard.quota.insufficient": ["Insufficient", "不足", "Insuficiente"],
   "dashboard.quota.noCurrent": ["The local companion has not exposed a current normal Codex allowance window.", "本地伴随程序尚未提供当前的正常 Codex 额度窗口。", "El acompañante local no ha expuesto una ventana actual de asignación normal de Codex."],
+  "dashboard.quota.attributionUnverified": ["This quota observation is not matched to the current local usage account; treat it as reference only.", "该额度观测未与当前本地用量账户匹配，仅供参考。", "Esta observación de cuota no está emparejada con la cuenta de uso local actual; úsala solo como referencia."],
   "dashboard.quota.demo": ["Demo", "演示", "Demostración"],
   "dashboard.quota.observed": ["Observed", "已观测", "Observado"],
   "dashboard.quota.windowFiveHour": ["Five-hour allowance", "五小时额度", "Asignación de cinco horas"],

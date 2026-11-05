@@ -76,6 +76,7 @@ export function normalizeOverviewWorkload(value) {
     allowance:{remainingPercent:scalar(value.allowance?.remainingPercent),observedAt:instant(value.allowance?.observedAt)?value.allowance.observedAt:null,
       points:rows(value.allowance?.points).filter(x=>instant(x?.at)).map(x=>({at:x.at,remainingPercent:scalar(x.remainingPercent),breakBefore:x.breakBefore===true}))},
     planAttribution:{estimationPlanType:plan(value.planAttribution?.estimationPlanType),
+      attribution:['usage_matched','usage_unattributed'].includes(value.planAttribution?.attribution)?value.planAttribution.attribution:'unknown',
       inferredObservations:Number.isSafeInteger(value.planAttribution?.inferredObservations)&&value.planAttribution.inferredObservations>=0?value.planAttribution.inferredObservations:0},
     workHours:LEVELS.map(level=>{const x=rows(value.workHours).find(x=>x.level===level);return {level,hours:scalar(x?.hours),inferred:x?.inferred===true};}),
     daily:rows(value.daily).slice(-7).filter(x=>/^\d{4}-\d{2}-\d{2}$/u.test(x?.date??"")).map(x=>({date:x.date,covered:x.covered===true,
@@ -133,14 +134,20 @@ export function renderOverviewWorkload(root,data,{translate:t,locale="en-US",cur
     :finite(currentWindow?.remainingPercent)?currentWindow.remainingPercent:null;
   const grid=node("div","workload-grid");root.append(grid);
   const allowance=card("allowance"),value=node("div","workload-remaining");value.append(node("span","",t("workload.current")),node("strong","",finite(remaining)?`${num(remaining)}%`:"—"));
-  allowance.append(value,lineChart(w?.allowance?.points??[],"allowance","remainingPercent",[0,100]));grid.append(allowance);
+  allowance.append(value,lineChart(w?.allowance?.points??[],"allowance","remainingPercent",[0,100]));
+  if(currentQuota?.usageComparable===false)allowance.append(node('p','workload-attribution-note',t('workload.quotaAttributionUnverified')));
+  grid.append(allowance);
   const workHours=card("hours"),maxHours=Math.max(0,...(w?.workHours??[]).map(x=>x.hours??0));
   for(const level of LEVELS){const item=w?.workHours?.find(x=>x.level===level),val=item?.hours??null;
     const row=node("div",`workload-hours-row ${level==="composite"?"is-composite":""}`);row.dataset.level=level;
     const track=node("div","workload-hour-track"),fill=node("i");fill.style.width=`${maxHours>0&&val!==null?100*val/maxHours:0}%`;fill.style.backgroundColor=COLORS[level];track.append(fill);
     row.append(node("span","",t(`workload.level.${level}`)),track,node("strong","",`${hour(val)}${item?.inferred&&val!==null?' *':''}`));workHours.append(row);}
   if(['overview-workload-v4','overview-workload-v5','overview-workload-v6','overview-workload-v7','overview-workload-v8','overview-workload-v9'].includes(w?.schemaVersion)){
-    workHours.append(node('p','',t('workload.estimateScope',{plan:planLabel(w.planAttribution.estimationPlanType)})));
+    if(w.planAttribution?.attribution==='usage_unattributed'){
+      workHours.append(node('p','',t('workload.estimateAttribution')));
+    }else if(w.planAttribution?.estimationPlanType!=='unknown'){
+      workHours.append(node('p','',t('workload.estimateScope',{plan:planLabel(w.planAttribution.estimationPlanType)})));
+    }
     if(w.workHours.every(x=>x.hours===null))workHours.append(node('p','',t('workload.estimateUnavailable')));
   }
   grid.append(workHours);
@@ -187,6 +194,7 @@ export function renderOverviewWorkload(root,data,{translate:t,locale="en-US",cur
   if(c?.state==='available'){
   const rest=node("p","workload-current-hours");rest.append(node("span","",t("workload.canWork")),node("strong","",finite(c?.hours)?hour(c.hours):"-"));current.append(rest);
   }
+  if(currentQuota?.usageComparable===false)current.append(node('p','workload-attribution-note',t('workload.rateAttribution')));
   grid.append(current);
   const comparison=card("comparison");comparison.classList.add("workload-wide");
   const totals=w?.comparison;
