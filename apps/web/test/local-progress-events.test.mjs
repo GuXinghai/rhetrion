@@ -13,7 +13,7 @@ const ONE = '11111111-1111-4111-8111-111111111111';
 const TWO = '22222222-2222-4222-8222-222222222222';
 const payload = (instanceId, sequence, extra = {}) => ({ instanceId, sequence,
   snapshot: { status: 'ready' }, refresh: { refreshId: null, status: 'idle', mode: null, reason: null,
-    quota: { status: 'skipped' }, usage: { status: 'skipped' }, progress: null, pending: null,
+    repair: null, quota: { status: 'skipped' }, usage: { status: 'skipped' }, progress: null, pending: null,
     quickResultPublished: false, publication: null }, report: null, ...extra });
 const send = value => FakeEventSource.last.emit('progress', { data: JSON.stringify(value) });
 
@@ -71,6 +71,23 @@ test('closed event contracts, observer isolation and abortable wait', async () =
   const waiting = bus.wait(bus.cursor(), { signal: controller.signal });
   controller.abort();
   await waiting;
+  bus.close();
+});
+
+test('manual repair state is part of the closed progress contract', async () => {
+  const bus = createLocalProgressEvents({ EventSourceRef: FakeEventSource });
+  send({ ...payload(ONE, 1), refresh: {
+    ...payload(ONE, 1).refresh,
+    repair: { scope: 'window', fromMs: 1_000, toMs: 2_000 },
+    pending: { mode: 'detailed', repair: { scope: 'range', fromMs: 1_000, toMs: 3_000 } },
+  } });
+  assert.equal(bus.current().refresh.repair.scope, 'window');
+  assert.equal(bus.current().refresh.pending.repair.scope, 'range');
+  send({ ...payload(ONE, 2), refresh: {
+    ...payload(ONE, 2).refresh,
+    repair: { scope: 'window', fromMs: 2_000, toMs: 1_000 },
+  } });
+  assert.equal(bus.current().sequence, 1);
   bus.close();
 });
 

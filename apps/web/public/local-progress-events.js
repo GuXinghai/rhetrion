@@ -13,19 +13,29 @@ function validProgress(value) {
   return ['filesDiscovered', 'filesSelected', 'filesProcessed', 'recordsWritten'].every(key =>
     value[key] === undefined || Number.isSafeInteger(value[key]) && value[key] >= 0);
 }
+function validRepair(value) {
+  if (value === null) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  if (value.scope === 'full') return exact(value, ['scope']);
+  return oneOf(value.scope, ['window', 'range'])
+    && exact(value, ['fromMs', 'scope', 'toMs'])
+    && Number.isSafeInteger(value.fromMs) && value.fromMs >= 0
+    && Number.isSafeInteger(value.toMs) && value.fromMs <= value.toMs;
+}
 function validEvent(value) {
   if (!exact(value, ['instanceId', 'sequence', 'snapshot', 'refresh', 'report'])
       || typeof value.instanceId !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.instanceId)
       || !Number.isSafeInteger(value.sequence) || value.sequence < 1
       || !exact(value.snapshot, ['status']) || !oneOf(value.snapshot.status, ['building', 'ready', 'failed'])) return false;
   const r = value.refresh;
-  return exact(r, ['refreshId', 'status', 'mode', 'reason', 'quota', 'usage', 'progress', 'pending', 'quickResultPublished', 'publication'])
+  return exact(r, ['refreshId', 'status', 'mode', 'reason', 'repair', 'quota', 'usage', 'progress', 'pending', 'quickResultPublished', 'publication'])
     && (r.refreshId === null || typeof r.refreshId === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(r.refreshId))
     && oneOf(r.status, ['idle', 'running', 'cancelling', 'succeeded', 'degraded', 'failed', 'cancelled'])
     && oneOf(r.mode, modes) && oneOf(r.reason, [null, 'manual', 'automatic', 'startup'])
+    && validRepair(r.repair)
     && exact(r.quota, ['status']) && oneOf(r.quota.status, ['skipped', 'running', 'published', 'failed', 'cancelled'])
     && exact(r.usage, ['status']) && oneOf(r.usage.status, ['skipped', 'pending', 'running', 'succeeded', 'deferred', 'reused', 'failed', 'cancelled'])
-    && validProgress(r.progress) && (r.pending === null || exact(r.pending, ['mode']) && oneOf(r.pending.mode, modes.slice(1)))
+    && validProgress(r.progress) && (r.pending === null || exact(r.pending, ['mode', 'repair']) && oneOf(r.pending.mode, modes.slice(1)) && validRepair(r.pending.repair))
     && typeof r.quickResultPublished === 'boolean' && oneOf(r.publication, [null, 'running'])
     && (value.report === null || exact(value.report, ['kind', 'status'])
       && oneOf(value.report.kind, ['work_usage', 'model_performance']) && oneOf(value.report.status, ['ready', 'failed', 'cancelled', 'changed']));
