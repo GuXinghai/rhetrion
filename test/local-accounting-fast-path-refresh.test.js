@@ -303,6 +303,14 @@ test("manual repair escalates from a window range to a full rebuild", async t =>
   assert.equal(first.accounting.windowCounters.unavailableWindows, 0);
   assert.equal(first.accounting.windowCounters.mismatchWindows, 0);
 
+  const noChange = await runner();
+  assert.equal(noChange.accounting.refreshStatus, "fast_path");
+  assert.deepEqual(
+    noChange.accounting.windowCounters,
+    first.accounting.windowCounters,
+    "a no-change pass must add no dirty, recomputed, or full-rebuild counters",
+  );
+
   insertSyntheticUsageAt(indexFile, nowMs + 5 * 60_000);
   nowMs += 5 * 60_000;
   const windowRepair = await runner({
