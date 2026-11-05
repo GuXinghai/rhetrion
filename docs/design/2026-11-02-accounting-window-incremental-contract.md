@@ -332,11 +332,11 @@ The enum is closed. `inputs_revision_changed`, `inputs_baselines_changed`,
 they identify dirty windows. Adding a full-rebuild reason requires a contract
 change, tests, and an owner decision.
 
-Implementation state: the automatic bounded repair, the manual **Recalculate**
-escalation, and the persisted closed full-rebuild reason enum in this section
-and the preceding proof-failure section are contract requirements, not shipped
-behavior. The current source records a bounded fallback reason and falls back to
-the existing reuse/rebuild path; the repair workflow and enum are open work.
+Implementation state: the manual **Recalculate** escalation and the persisted
+closed full-rebuild reason enum in this section and the preceding proof-failure
+section are shipped behavior. The automatic bounded repair remains a contract
+requirement, not shipped behavior; the current source records a bounded fallback
+reason and leaves the manual entry as the repair path.
 
 A full rebuild is idempotent and receipt-backed. It must publish a new manifest
 only after preflight passes. Existing last-good state remains untouched on

@@ -1049,6 +1049,7 @@ test("companion supervisor owns one child, injects a parent contract, and strips
       USAGE_MONITOR_WINDOWS_FILESYSTEM_DEVELOPMENT: "1",
       USAGE_MONITOR_WINDOWS_ELECTRON_QUALIFICATION: "windows-electron-v1",
       USAGE_MONITOR_TEST_LANE: "windows-electron-smoke",
+      USAGE_MONITOR_ACCOUNTING_FAST_PATH: "0",
       USAGE_MONITOR_WINDOWS_QUALIFICATION_RUN_ID:
         "550e8400-e29b-41d4-a716-446655440000",
       ELECTRON_RUN_AS_NODE: "0",
@@ -1083,6 +1084,7 @@ test("companion supervisor owns one child, injects a parent contract, and strips
     "windows-electron-v1",
   );
   assert.equal(spawnCalls[0].options.env.USAGE_MONITOR_TEST_LANE, "windows-electron-smoke");
+  assert.equal(spawnCalls[0].options.env.USAGE_MONITOR_ACCOUNTING_FAST_PATH, "0");
   assert.equal(spawnCalls[0].options.env.USAGE_MONITOR_WINDOWS_QUALIFICATION_RUN_ID, undefined);
   assert.equal(spawnCalls[0].options.env.ELECTRON_RUN_AS_NODE, "1");
   assert.equal(spawnCalls[0].options.env.USAGE_MONITOR_PORT, "0");

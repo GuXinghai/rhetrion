@@ -88,6 +88,7 @@ const FORWARDED_ENVIRONMENT_KEYS = Object.freeze([
   "LANG",
   "LC_ALL",
   "TZ",
+  "USAGE_MONITOR_ACCOUNTING_FAST_PATH",
 ]);
 const FIXED_STATUS = Object.freeze({
   argumentInvalid: "ELECTRON_WINDOWS_DEVELOPMENT_ARGUMENT_INVALID",

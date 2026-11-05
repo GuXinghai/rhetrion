@@ -1417,8 +1417,8 @@ test("a deferred unified projection publishes a loading history receipt", async 
         endAt: null,
       },
     });
-    assert.ok(snapshot.overview.warnings.some((warning) => (
-      warning.includes("Local history indexing has no published aggregate")
+    assert.ok(snapshot.overview.warnings.every((warning) => (
+      !warning.includes("Local history indexing has no published aggregate")
     )));
     assert.ok(snapshot.overview.warnings.every(warning =>
       !/indexing is in progress|indexing is still advancing/u.test(warning)));
@@ -2058,7 +2058,7 @@ test("a build serving retained evidence does not claim its figures are loading",
       builder: async () => snapshot(sequence[Math.min(call++, sequence.length - 1)]),
     });
   };
-  const [deferredLoading, withheldPartial, , , historyHidden] =
+  const [withheldPartial, deferredLoading, , historyHidden] =
     RETAINED_EVIDENCE_RELABELED_WARNINGS;
 
   // The captured cycle: an authoritative full, then the quick milestone. Both

@@ -322,6 +322,8 @@ test("manual repair escalates from a window range to a full rebuild", async t =>
   });
   assert.equal(windowRepair.accounting.refreshStatus, "fast_path");
   assert.equal(rebuilds, 1, "a window repair stays incremental");
+  assert.equal(Object.hasOwn(windowRepair.accounting, "fastPathFallbackCode"), false,
+    "a successful fast path clears the previous fallback code");
   assert.equal(windowRepair.accounting.repair.scope, "window");
   assert.equal(windowRepair.accounting.repair.status, "completed");
   assert.ok(windowRepair.accounting.repair.repairedDays >= 1);

@@ -342,7 +342,13 @@ export async function refreshAccountingWindowShadow({
   // Time advance alone changes the folded anchors but not the stored day
   // snapshots. Rewriting an 8 MB cache every scheduler tick would be pure
   // write amplification; readers can fold the persisted days at any anchor.
-  const factsChanged = previous === null || receiptMode !== "unchanged";
+  // A manual repair rebuilds days even when the index receipt did not move.
+  // Treat that as a durable change so the repaired cache is published and the
+  // caller cannot report completion against the old stored digest.
+  const factsChanged = previous === null
+    || receiptMode !== "unchanged"
+    || repairedKeys.length > 0
+    || dirtyDays > 0;
   const auditAdded = expectedPeriods !== null
     && (previous === null || previous.audit === null);
   const expose = () => {
@@ -351,7 +357,7 @@ export async function refreshAccountingWindowShadow({
   if (!factsChanged && !auditAdded) {
     expose();
     return summary({
-      status: "unchanged", receiptMode, rebuiltKeys, dirtyDays, scopeDays,
+      status: "unchanged", receiptMode, rebuiltKeys, repairedKeys, dirtyDays, scopeDays,
       periodsMatched,
       historyMatched, unchanged: true, digest, previousDigest,
     });

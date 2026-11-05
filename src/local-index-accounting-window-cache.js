@@ -215,7 +215,9 @@ function buildDaysFromAccumulators({
         period,
         hmacKey,
       }),
-      snapshot: exportAccountingPeriodAccumulator(accumulator),
+      snapshot: exportAccountingPeriodAccumulator(
+        accumulator ?? createAccountingPeriodAccumulator("window", "UTC day"),
+      ),
     };
   }).sort((left, right) => left.lowerMs - right.lowerMs);
 }

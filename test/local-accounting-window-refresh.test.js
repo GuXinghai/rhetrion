@@ -13,6 +13,7 @@ import {
 } from "../src/replay-safe-accounting-cache.js";
 import { readLocalIndexCompanionProjection } from "../src/local-index-companion-source.js";
 import { refreshAccountingWindowShadow } from "../src/local-accounting-window-refresh.js";
+import { accountingWindowCacheDigest } from "../src/local-index-accounting-window-cache.js";
 import {
   readLocalCollectorAccountingWindowCache,
   writeLocalCollectorAccountingWindowCache,
@@ -79,6 +80,36 @@ test("a shadow refresh writes a matched cache and reuses it without a scan", asy
   assert.equal(unchanged.rebuiltDays, 0);
   assert.equal(unchanged.dirtyDays, 0);
   assert.ok(unchanged.scopeDays >= 1);
+});
+
+test("a manual repair with unchanged receipts persists the rebuilt days", async t => {
+  const { workspace, indexFile, stateFile } = await setup(t);
+  const full = await fullCache(indexFile, workspace.codexHome);
+  await refreshAccountingWindowShadow({
+    indexFile, stateFile, hmacKey: KEY, endMs: END_MS,
+    expectedPeriods: full.periods, expectedHistory: full.history.period,
+    now: () => END_MS,
+  });
+  const before = await readLocalCollectorAccountingWindowCache({ stateFile });
+  const target = before.cache.receipts.windows.at(-1);
+  let writes = 0;
+  const repaired = await refreshAccountingWindowShadow({
+    indexFile, stateFile, hmacKey: KEY, endMs: END_MS,
+    mode: "foreground",
+    repairFromMs: target.lowerMs,
+    repairToMs: target.upperMs - 1,
+    now: () => END_MS,
+    writeCache: async options => {
+      writes += 1;
+      await writeLocalCollectorAccountingWindowCache(options);
+    },
+  });
+  assert.equal(repaired.status, "updated");
+  assert.equal(repaired.unchanged, false);
+  assert.equal(repaired.repairedDays, 1);
+  assert.equal(writes, 1, "the repaired cache must be written even without a receipt change");
+  const after = await readLocalCollectorAccountingWindowCache({ stateFile });
+  assert.equal(accountingWindowCacheDigest(after.cache), repaired.digest);
 });
 
 test("a new append updates only dirty days and still matches the shipping cache", async t => {

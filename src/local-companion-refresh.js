@@ -1537,6 +1537,7 @@ export function createLocalCollectorRefreshRunner({
               accounting = composed.cache;
               accountingRefreshStatus = "fast_path";
               fastPathUsed = true;
+              accountingFastPathFallbackCode = null;
               accountingRebuildDeferUntilMs = 0;
               accountingRebuildDeferredStreak = 0;
               if (repairRequest !== null) {

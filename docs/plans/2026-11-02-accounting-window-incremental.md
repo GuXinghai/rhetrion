@@ -197,6 +197,14 @@ pre-existing bounded replay diagnostics remain a separate projection. The
 calibration card keeps its last refit time visible, and the
 default 24-hour calibration due check is evaluated before reuse and the fast
 path, so a due refit forces a real rebuild even when the fast path is disabled.
+Two limits matter for live observation. The reuse proof covers the full indexed
+session set: a newly indexed session changes `originFingerprint` and forces the
+reuse/rebuild path instead of `fast_path`, so the zero-rebuild claim applies
+only while the session set is unchanged. `fullRebuilds` counts every rebuilt
+pass, while `fullRebuildsByReason` counts only the explicit causes;
+`unavailableWindows` and `mismatchWindows` are cumulative scope-weighted counts
+that reset with the process. A successful fast path clears the previous fallback
+code but keeps the lifetime fallback count.
 The calibration interval is selected in **Settings → Data & diagnostics** from
 the fixed 6/12/24/72/168-hour set and persisted in the owner-only collector
 state. A change stores the change instant as the new schedule anchor and never
@@ -222,9 +230,10 @@ cost is measured; no end-to-end page-speed or installed-app claim is made.
    event, source replacement, quota/origin update, and time advance are normal
    classes.
 4. **Proof failures are local.** Mark the affected window unavailable, retain
-   last-good state, run an automatic bounded repair, and surface partial state.
-   A manual **Recalculate** entry escalates window → related range → full
-   rebuild; only the last step needs explicit confirmation.
+   last-good state, and surface partial state. The current source ships the
+   manual **Recalculate** entry only; it escalates window → related range → full
+   rebuild, and only the last step needs explicit confirmation. The automatic
+   bounded repair remains a contract requirement, not shipped behavior.
 5. **Calibration is a separate model.** Window freshness and calibration age
    are independent; a new event does not refit the global model. The interval is
    a fixed-option user setting: 6 hours, 12 hours, 24 hours (default), 3 days,
@@ -444,9 +453,9 @@ The implementation is not accepted unless all of these hold:
   schema decision is needed; no downgrade or dual writer is allowed.
 - **Partial reader behavior**: 1A is approved; implementation must keep the
   `数据截至 X` label visible and must not drop the value silently.
-- **Repair UX**: automatic repair is local and bounded; the manual entry
-  escalates in order. It must not become a hidden scheduler retry or skip the
-  full-rebuild confirmation.
+- **Repair UX**: the shipped manual repair is local and bounded; automatic
+  repair remains open work. The manual entry escalates in order. It must not
+  become a hidden scheduler retry or skip the full-rebuild confirmation.
 - **Performance**: a fast path that still scans all facts or rebuilds the
   snapshot will not deliver the expected whole-refresh gain. Measure each stage.
 

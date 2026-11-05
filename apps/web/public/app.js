@@ -248,8 +248,9 @@ let lastReindexProgressReceipt = null;
 // retained longer than the quota refresh cadence. One click tries the affected
 // window, then the related range, then asks before a full rebuild.
 const ACCOUNTING_REPAIR_STALE_MS = 15 * 60_000;
-const ACCOUNTING_REPAIR_WINDOW_MS = 2 * 86_400_000;
-const ACCOUNTING_REPAIR_RANGE_MS = 31 * 86_400_000;
+const ACCOUNTING_REPAIR_DAY_MS = 86_400_000;
+const ACCOUNTING_REPAIR_WINDOW_DAYS = 2;
+const ACCOUNTING_REPAIR_RANGE_DAYS = 31;
 let accountingRepairStage = "window";
 let accountingRepairAnchorMs = null;
 let accountingRepairBusy = false;
@@ -9811,6 +9812,15 @@ async function requestRefresh({ autoContinue = false, detailed = false, observeO
       lastObservedRefreshPublication = `${finalRefreshState.refreshId ?? ""}:${finalRefreshState.quickResultAt ?? ""}:${finalRefreshState.finishedAt}`;
     }
     cancelled = outcome === "cancelled";
+    if (!cancelled
+        && finalRefreshState?.result?.accounting?.repair?.status === "unavailable") {
+      showConnectionNotice({
+        titleKey: "dashboard.recalculate.failedTitle",
+        copyKey: "dashboard.recalculate.failedCopy",
+        kind: "error",
+        showCheck: true,
+      });
+    }
     if (cancelled) {
       sidebarResultKey = "refresh.sidebar.cancelled";
       refreshProgressClock.stop();
@@ -10175,11 +10185,20 @@ accountingRecalculateButton?.addEventListener("click", () => {
     return;
   }
   const anchorMs = accountingRepairAnchorMs ?? Date.now();
-  const toMs = Math.max(Date.now(), anchorMs);
-  const maxSpanMs = accountingRepairStage === "window"
-    ? ACCOUNTING_REPAIR_WINDOW_MS
-    : ACCOUNTING_REPAIR_RANGE_MS;
-  const fromMs = Math.max(anchorMs - maxSpanMs, toMs - maxSpanMs);
+  // Repair exact UTC-day windows, not a floating 48-hour span. The stale
+  // component's own day must be inside the range even when it is older than
+  // the current cadence, and `toMs` stops at the end of that UTC day so the
+  // server never counts an extra partial day.
+  const anchorDayStartMs = Math.floor(anchorMs / ACCOUNTING_REPAIR_DAY_MS)
+    * ACCOUNTING_REPAIR_DAY_MS;
+  const repairDays = accountingRepairStage === "window"
+    ? ACCOUNTING_REPAIR_WINDOW_DAYS
+    : ACCOUNTING_REPAIR_RANGE_DAYS;
+  const fromMs = Math.max(
+    0,
+    anchorDayStartMs - (repairDays - 1) * ACCOUNTING_REPAIR_DAY_MS,
+  );
+  const toMs = anchorDayStartMs + ACCOUNTING_REPAIR_DAY_MS - 1;
   void requestAccountingRepair({
     scope: accountingRepairStage,
     fromMs,

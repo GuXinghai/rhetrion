@@ -57,7 +57,9 @@ With a synthetic retained `windows` receipt present, the dashboard rendered:
 - a visible **重新计算** button.
 
 The first click sent exactly one bounded request with `scope: "window"` and a
-two-day inclusive span. The button label then advanced to
+two-day width. The build under test did not yet align the range to UTC-day
+boundaries; the current source now sends the two/31 exact UTC days containing
+the stale component. The button label then advanced to
 **重新计算相关范围**, which is the ordered second stage. The renderer
 intercepted that request; no server repair was executed.
 

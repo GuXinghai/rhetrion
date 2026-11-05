@@ -20,6 +20,9 @@ test("the repair entry and confirmation dialog are present and start hidden", ()
   assert.match(html, /id="accounting-recalculate-cancel"/u);
   assert.match(appSource, /requestAccountingRepair/u);
   assert.match(appSource, /accountingRepairStage = repair\.scope === "window" \? "range" : "full"/u);
+  assert.match(appSource, /anchorDayStartMs/u);
+  assert.match(appSource, /ACCOUNTING_REPAIR_WINDOW_DAYS/u);
+  assert.match(appSource, /accounting\?\.repair\?\.status === "unavailable"/u);
   assert.match(appSource, /scope: "full"/u);
 });
 
