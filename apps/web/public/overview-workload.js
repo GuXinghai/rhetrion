@@ -128,12 +128,15 @@ export function renderOverviewWorkload(root,data,{translate:t,locale="en-US",cur
   const w=data;
   // Current quota is independently published while historical analysis runs.
   // This selects an already-normalized display window; it is not a quota ledger.
-  const currentWindow=currentQuota?.status==='available'?currentQuota.windows?.find(q=>
+  const quotaComparable=currentQuota?.usageComparable!==false;
+  const currentWindow=quotaComparable&&currentQuota?.status==='available'?currentQuota.windows?.find(q=>
     q.limitId==='codex'&&q.durationMinutes===10080):null;
   const remaining=currentQuota===undefined?w?.allowance?.remainingPercent
-    :finite(currentWindow?.remainingPercent)?currentWindow.remainingPercent:null;
+    :quotaComparable&&finite(currentWindow?.remainingPercent)?currentWindow.remainingPercent:null;
   const grid=node("div","workload-grid");root.append(grid);
-  const allowance=card("allowance"),value=node("div","workload-remaining");value.append(node("span","",t("workload.current")),node("strong","",finite(remaining)?`${num(remaining)}%`:"—"));
+  const allowance=card("allowance"),value=node("div","workload-remaining");
+  value.append(node("span","",t(quotaComparable?"workload.current":"workload.quotaUnmatched")),
+    node("strong","",finite(remaining)?`${num(remaining)}%`:"—"));
   allowance.append(value,lineChart(w?.allowance?.points??[],"allowance","remainingPercent",[0,100]));
   if(currentQuota?.usageComparable===false)allowance.append(node('p','workload-attribution-note',t('workload.quotaAttributionUnverified')));
   grid.append(allowance);

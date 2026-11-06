@@ -134,6 +134,8 @@ test('unattributed usage never borrows a provider quota plan or capacity',()=>{
   assert.doesNotMatch(hours.textContent,/Plus/);
   assert.match(hours.textContent,/当前套餐时段未估算/);
   const allowance=root.all().find(x=>x.dataset.workloadCard==='allowance');
+  assert.doesNotMatch(allowance.textContent,/51%/);
+  assert.match(allowance.textContent,/额度未匹配/);
   assert.match(allowance.textContent,/额度观测的账户归属未与本地用量匹配/);
   const current=root.all().find(x=>x.dataset.workloadCard==='current');
   assert.match(current.textContent,/US\$4.2／小时/);

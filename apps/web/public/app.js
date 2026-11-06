@@ -1531,9 +1531,22 @@ function renderLiveObservationPresentation(data, recency = observationRecency(da
       companionReachable: data.mode !== "demo"
     });
     renderObservationConnectionState(presentation, recency);
-    renderQuotaCards(presentation);
-    renderWeeklyPaceForecast(presentation);
-    renderOverviewPace(presentation);
+    // An unmatched quota observation must not become a current percentage or
+    // feed a pace forecast. Keep its reset metadata visible, but strip the
+    // value that would imply it belongs to this usage account.
+    const quotaPresentation = presentation.quotaUsageComparable === false
+      ? {
+        ...presentation,
+        quotaWindows: (presentation.quotaWindows ?? []).map(window => ({
+          ...window,
+          remainingPercent: null,
+          usedPercent: null,
+        })),
+      }
+      : presentation;
+    renderQuotaCards(quotaPresentation);
+    renderWeeklyPaceForecast(quotaPresentation);
+    renderOverviewPace(quotaPresentation);
   }
 }
 

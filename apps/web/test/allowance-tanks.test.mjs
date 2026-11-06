@@ -197,7 +197,7 @@ test("one forecast preserves pace, evidence and early/unknown gates across refre
 test("the Allowance forecast follows current observations independently of historical plan selection", () => {
   assert.match(
     declaration("renderLiveObservationPresentation"),
-    /renderQuotaCards\(presentation\);\s+renderWeeklyPaceForecast\(presentation\);/u,
+    /renderQuotaCards\(quotaPresentation\);\s+renderWeeklyPaceForecast\(quotaPresentation\);/u,
   );
   assert.doesNotMatch(declaration("renderWeekly"), /renderWeeklyPaceForecast/u);
   const weekly = new Element();
