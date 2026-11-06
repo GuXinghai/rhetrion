@@ -106,9 +106,11 @@ const MAX_REPORT_BYTES = 4 * 1024 * 1024;
 // Ordinary incremental refreshes on a one-year profile can spend roughly
 // 100 s in discovery and another 120 s in snapshot projection before the
 // accounting stage. The former five-minute bound aborted healthy passes at
-// the terminal snapshot step; ten minutes keeps cancellation and progress
-// intact while leaving the four-hour cold-work bound separate.
-export const LOCAL_COMPANION_INCREMENTAL_REFRESH_TIMEOUT_MS = 10 * 60_000;
+// the terminal snapshot step; ten minutes then aborted an observed 54-source
+// rescan that completed in 11 min 14 s. Fifteen minutes covers that bounded
+// rescan while keeping cancellation and progress intact; the four-hour
+// cold-work bound remains separate.
+export const LOCAL_COMPANION_INCREMENTAL_REFRESH_TIMEOUT_MS = 15 * 60_000;
 
 
 function projectionAborted() {

@@ -191,8 +191,9 @@ A stable-metadata unsigned candidate from `5e089621` was launched directly from
 `win-unpacked` against the live profile on 2026-11-05. The first app-driven pass
 after the launch reached `fast_path` in about 99 s with zero full rebuilds and
 the dashboard updated automatically. A later pass with a new index generation
-and a 54-source rescan exceeded the ten-minute budget at the snapshot stage; the
-following pass completed a full rebuild in 11 min 14 s at generation `24921`.
+and a 54-source rescan exceeded the then ten-minute budget at the snapshot
+stage; the following pass completed a full rebuild in 11 min 14 s at generation
+`24921`.
 The launch is recorded in the
 [live-launch receipt](../receipts/2026-11-05-stable-candidate-live-launch.md).
 No application was installed or signed.
@@ -247,9 +248,10 @@ records `originSessionCount = 4268`, matching the index, with zero fallback and
 `exact` windows and timeline. The pass started at `2026-11-06T19:23:37Z` and
 finished at `19:29:53Z`; the accounting cache was written at `19:26:27Z`, so the
 remaining snapshot/index tail, not accounting, still dominated the pass. This
-closes the previously pending live new-session gate. It does not change the
-other performance gates: a 54-source rescan can still exceed the ten-minute
-budget, and whole-refresh discovery/snapshot optimization remains open.
+closes the previously pending live new-session gate. The incremental refresh
+deadline is now fifteen minutes, covering the observed 11 min 14 s 54-source
+rescan; a larger rescan can still exceed that bound, and whole-refresh
+discovery/snapshot optimization remains open.
 
 # Decisions
 
