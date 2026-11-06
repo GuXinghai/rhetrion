@@ -3,7 +3,7 @@ title: Workload quota attribution isolation
 date: 2026-11-06
 type: receipt
 status: verified
-source_commit: a4404ed5
+source_commit: 244bf1a9
 ---
 
 # Result and boundary
@@ -17,9 +17,10 @@ plan-based work-hour estimates that did not belong to the measured account.
 The fix keeps the API-equivalent rate and local intensity grade, which come from
 priced usage rather than a plan, and removes the unmatched plan and capacity
 inputs. It does not change accounting, quota collection, or any provider data.
-The quota card remains visible as a reference-only observation with an explicit
-attribution note. A real same-scope quota/usage match is still unproven, and the
-custom account's own provider quota is not read.
+The unmatched quota's percentage and pace inputs are suppressed from the current
+allowance card; its reset metadata remains visible only with an explicit
+reference-only note. A real same-scope quota/usage match is still unproven, and
+the custom account's own provider quota is not read.
 
 # Change
 
@@ -34,6 +35,9 @@ custom account's own provider quota is not read.
 - The dashboard shows "当前套餐时段未估算" instead of a plan label, explains
   that the rate is API-equivalent rather than a plan conversion, and marks the
   quota observation as reference-only.
+- An unmatched quota no longer supplies a remaining percentage or a pace
+  input. The allowance card shows `额度未匹配` and `—`; the quota card strips the
+  percentage while retaining its reset metadata and the reference-only note.
 - `quotaUsageComparable` is projected from the companion overview to the
   browser; older snapshots default to no warning rather than inventing
   attribution.
@@ -70,6 +74,22 @@ profile. No install, signing, updater, or publication step was run.
   `当前套餐时段未估算：本地用量没有账户归属，无法确认额度观测属于同一账户。`,
   `该速率按本地用量的 API 等价价格计算，不按套餐额度折算。`, and the
   reference-only quota note.
+- That candidate still rendered the unmatched quota's `51%` value beside the
+  reference note, so a follow-up suppressed unmatched quota percentages and
+  pace inputs.
+
+A second candidate was built from `244bf1a9` (build `2026110603`) and launched
+the same way:
+
+- App-driven pass: `2026-11-06T02:58:26.429Z` to
+  `2026-11-06T03:04:10.759Z`, about 344 s.
+- Accounting: `fast_path`, `fullRebuilds = 0`, one dirty/recomputed window,
+  generation `24972`.
+- Overview remained `quotaUsageComparable = false`, `estimationPlanType = null`,
+  all work hours null.
+- The allowance card rendered `剩余额度 / 额度未匹配 / —` and no `51%` or `Plus`.
+  The current load remained `US$2.54/hour`, light, with the API-equivalent
+  explanation and the reference-only quota note.
 
 # Remaining gates
 
