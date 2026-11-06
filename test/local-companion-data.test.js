@@ -18,7 +18,6 @@ import {
   buildLocalCompanionSnapshot,
   isInformationalTerminalHistoryGap,
   projectAccountingFreshness,
-  quotaUsageAttributionComparable,
 } from "../src/local-companion-data.js";
 import {
   createAccountingPricer,
@@ -135,25 +134,6 @@ function rolloutToken(timestamp, total, last, usedPercent) {
     },
   });
 }
-
-test("quota attribution is comparable only when usage is fully attributed", () => {
-  assert.equal(quotaUsageAttributionComparable(
-    { attributedPseudonymousEvents: 0, unattributedEvents: 120 },
-    "attributed_pseudonymous",
-  ), false, "an entirely unattributed usage period cannot borrow a quota plan");
-  assert.equal(quotaUsageAttributionComparable(
-    { attributedPseudonymousEvents: 4, unattributedEvents: 1 },
-    "attributed_pseudonymous",
-  ), false, "mixed attribution has no single account scope");
-  assert.equal(quotaUsageAttributionComparable(
-    { attributedPseudonymousEvents: 4, unattributedEvents: 0 },
-    "unattributed",
-  ), false, "the quota side must also carry attribution");
-  assert.equal(quotaUsageAttributionComparable(
-    { attributedPseudonymousEvents: 4, unattributedEvents: 0 },
-    "attributed_pseudonymous",
-  ), true);
-});
 
 test("accounting freshness projection exposes only status and asOf", () => {
   const asOf = "2026-11-02T12:06:14.356Z";

@@ -147,21 +147,6 @@ export function projectAccountingFreshness(cache) {
     : null;
 }
 
-/**
- * Quota can grade a workload only when the displayed usage itself is fully
- * attributed to a pseudonymous account and the quota observation carries the
- * same kind of attribution. Rollout-derived usage usually has no account
- * identity; in that case a provider quota from the default Codex login belongs
- * to a different, unproven account and must not select a plan or capacity.
- */
-export function quotaUsageAttributionComparable(usageAttribution, quotaAttribution) {
-  const attributed = Number(usageAttribution?.attributedPseudonymousEvents ?? 0);
-  const unattributed = Number(usageAttribution?.unattributedEvents ?? 0);
-  return Number.isFinite(attributed) && attributed > 0
-    && Number.isFinite(unattributed) && unattributed === 0
-    && quotaAttribution === "attributed_pseudonymous";
-}
-
 export function isInformationalTerminalHistoryGap(historyCoverage) {
   const sourceCount = Number.isSafeInteger(historyCoverage?.sourceCount)
       && historyCoverage.sourceCount >= 0
@@ -2920,19 +2905,11 @@ export async function buildLocalCompanionSnapshot({
       : unifiedAccountingWithheld
         ? "insufficient_evidence"
         : "collector_projection_unverified";
-  const quotaUsageComparable = quotaUsageAttributionComparable(
-    displayUsage?.accountAttribution,
-    quota.accountAttribution,
-  );
   let storedWorkloadState=null,workloadStateError=null;
   const workloadScope=localCollectorQuotaPublicationScope(collector);
-  const workloadAccountScope=quotaUsageComparable
-      && workloadScope?.observedAt===quota.observedAt
-    ? workloadScope.scopeToken : null;
+  const workloadAccountScope=workloadScope?.observedAt===quota.observedAt?workloadScope.scopeToken:null;
   const workloadStore=workloadStateStore(unifiedIndexFile);
-  try{storedWorkloadState=quotaUsageComparable
-    ? await workloadStore.read(workloadAccountScope)
-    : null;}catch{workloadStateError="workload_state_read_failed";}
+  try{storedWorkloadState=await workloadStore.read(workloadAccountScope);}catch{workloadStateError="workload_state_read_failed";}
   let quotaEvidence;
   try{quotaEvidence=await readWorkloadQuotaEvidence({stateFile:collectorStateFile,signal,
     fromMs:workloadLiveSinceMs??nowMs,nowMs,
@@ -2942,27 +2919,14 @@ export async function buildLocalCompanionSnapshot({
   const workload = readLocalIndexWorkload({ indexFile: unifiedIndexFile, nowMs,
     signal,
     quotaEvidence,
-    // An unattributed usage period cannot inherit the default Codex login's
-    // plan, quota windows, or calibrated capacity. The API-equivalent rate and
-    // the local intensity grade remain available because they come from the
-    // usage model, not from a plan.
-    accountScopeToken: quotaUsageComparable ? workloadAccountScope : null,
-    previousAccountScopeToken: quotaUsageComparable ? previousWorkloadScope : null,
-    storedState: quotaUsageComparable ? storedWorkloadState : null,
+    accountScopeToken:workloadAccountScope,previousAccountScopeToken:previousWorkloadScope,
+    storedState: storedWorkloadState,
     declaredSpeedBaselines: codexSpeedBaselines,
-    quotaWindows: quotaUsageComparable
-      ? quota.windows.map((window) => ({ ...window, observedAt: quota.observedAt }))
-      : [],
-    capacity: quotaUsageComparable
-      ? { ...allowanceCapacity, computedAt: replaySafeCache?.generatedAt }
-      : null,
-    previous: quotaUsageComparable ? previousWorkload : null,
+    quotaWindows: quota.windows.map((window) => ({ ...window, observedAt: quota.observedAt })),
+    capacity: { ...allowanceCapacity, computedAt: replaySafeCache?.generatedAt }, previous: previousWorkload,
     liveSinceMs: workloadLiveSinceMs ?? nowMs,
     sourceFresh: workloadSourceFresh });
-  workload.planAttribution.attribution = quotaUsageComparable
-    ? "usage_matched"
-    : "usage_unattributed";
-  if(quotaUsageComparable&&workloadSourceFresh&&["available","partial"].includes(workload.status)){
+  if(workloadSourceFresh&&["available","partial"].includes(workload.status)){
     try{await workloadStore.write(workloadAccountScope,workloadState(workload));}catch{workloadStateError="workload_state_write_failed";}
   }
   if(workloadStateError){workload.errors.push({code:workloadStateError,stage:"publish"});if(workload.status==="available")workload.status="partial";}
@@ -3012,7 +2976,6 @@ export async function buildLocalCompanionSnapshot({
         exportableCoveredAt,
       },
       quota,
-      quotaUsageComparable,
       quotaFreshness: {
         status: quota.windows.length > 0 ? quotaFreshnessStatus : "unavailable",
         latestObservedAt: quota.observedAt,

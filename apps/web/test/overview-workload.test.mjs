@@ -116,30 +116,7 @@ test('unclassified API intensity retains observed values including zero without 
     assert.equal(current.all().find(x=>x.dataset.workloadWindow==='shortTerm').children[2].children[1].textContent,`US$${value}／小时`);
     assert.doesNotMatch(current.textContent,/数据不足|未分类/);
   }
-  const hours=root.all().find(x=>x.dataset.workloadCard==='hours');
-  assert.doesNotMatch(hours.textContent,/当前套餐时段：/);
-});
-
-test('unattributed usage never borrows a provider quota plan or capacity',()=>{
-  const root=documentFixture();
-  const p={...currentPayload(),
-    planAttribution:{estimationPlanType:'plus',attribution:'usage_unattributed',inferredObservations:0},
-    workHours:payload().workHours.map(row=>({...row,hours:null}))};
-  renderOverviewWorkload(root,normalizeOverviewWorkload(p),{
-    translate:(key,values)=>translate(key,values,'zh-Hans'),locale:'zh-CN',
-    currentQuota:{status:'available',usageComparable:false,windows:[{
-      limitId:'codex',durationMinutes:10080,remainingPercent:51,
-      resetAt:'2026-10-22T00:00:00.000Z',observedAt:'2026-10-15T12:00:00.000Z'}]}});
-  const hours=root.all().find(x=>x.dataset.workloadCard==='hours');
-  assert.doesNotMatch(hours.textContent,/Plus/);
-  assert.match(hours.textContent,/当前套餐时段未估算/);
-  const allowance=root.all().find(x=>x.dataset.workloadCard==='allowance');
-  assert.doesNotMatch(allowance.textContent,/51%/);
-  assert.match(allowance.textContent,/额度未匹配/);
-  assert.match(allowance.textContent,/额度观测的账户归属未与本地用量匹配/);
-  const current=root.all().find(x=>x.dataset.workloadCard==='current');
-  assert.match(current.textContent,/US\$4.2／小时/);
-  assert.match(current.textContent,/不按套餐额度折算/);
+  assert.match(root.all().find(x=>x.dataset.workloadCard==='hours').textContent,/当前套餐时段/);
 });
 
 test('quota trend refuses invalid coverage and stale values without hiding specific failures',()=>{

@@ -452,5 +452,5 @@ test("the overview and the Forecast card share one reading", () => {
   assert.match(card, /weeklyPaceReading\(data\)/u);
   // No second forecast parser: the Overview never reads the payload itself.
   assert.doesNotMatch(overview, /paceForecast|hoursToExhaustion|etaAt/u);
-  assert.match(appSource, /renderWeeklyPaceForecast\(quotaPresentation\);\s*renderOverviewPace\(quotaPresentation\);/u);
+  assert.match(appSource, /renderWeeklyPaceForecast\(presentation\);\s*renderOverviewPace\(presentation\);/u);
 });

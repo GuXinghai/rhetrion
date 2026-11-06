@@ -1531,22 +1531,9 @@ function renderLiveObservationPresentation(data, recency = observationRecency(da
       companionReachable: data.mode !== "demo"
     });
     renderObservationConnectionState(presentation, recency);
-    // An unmatched quota observation must not become a current percentage or
-    // feed a pace forecast. Keep its reset metadata visible, but strip the
-    // value that would imply it belongs to this usage account.
-    const quotaPresentation = presentation.quotaUsageComparable === false
-      ? {
-        ...presentation,
-        quotaWindows: (presentation.quotaWindows ?? []).map(window => ({
-          ...window,
-          remainingPercent: null,
-          usedPercent: null,
-        })),
-      }
-      : presentation;
-    renderQuotaCards(quotaPresentation);
-    renderWeeklyPaceForecast(quotaPresentation);
-    renderOverviewPace(quotaPresentation);
+    renderQuotaCards(presentation);
+    renderWeeklyPaceForecast(presentation);
+    renderOverviewPace(presentation);
   }
 }
 
@@ -1614,8 +1601,7 @@ function renderDashboard(data) {
   let workloadRoot = $("#overview-workload");
   if (!workloadRoot) { workloadRoot = node("div"); workloadRoot.id="overview-workload"; overviewRoot.append(workloadRoot); }
   renderOverviewWorkload(workloadRoot,data.workload,{translate:t,locale:getFormattingLocale(),
-    currentQuota:{status:data.quotaWindows.length?'available':'unavailable',
-      windows:data.quotaWindows,usageComparable:data.quotaUsageComparable}});
+    currentQuota:{status:data.quotaWindows.length?'available':'unavailable',windows:data.quotaWindows}});
   observationFreshnessClock.update(data);
   // This optional lookup must never delay the native readiness marker or the
   // accounting render. Only the first-column cells are updated when it lands.
@@ -1684,11 +1670,7 @@ function renderQuotaCards(data) {
   }
   const context = $("#allowance-context");
   if (context) {
-    context.textContent = data.mode === "demo"
-      ? t("dashboard.quota.demo")
-      : data.quotaUsageComparable === false
-        ? t("dashboard.quota.attributionUnverified")
-        : "";
+    context.textContent = data.mode === "demo" ? t("dashboard.quota.demo") : "";
     context.hidden = !context.textContent;
   }
   for (const window of windows) {
