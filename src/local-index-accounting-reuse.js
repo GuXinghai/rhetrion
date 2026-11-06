@@ -6,6 +6,7 @@ import { readCodexLocalThreadUsageRelations } from "./platform/index.js";
 import { readLocalIndexGenerationIdentity } from "./local-index-companion-source.js";
 import { readLocalIndexCoverage } from "./local-index-report.js";
 import { openLocalIndexStore, readCalculationRevision, withReadSnapshot } from "./local-index-store.js";
+import { createOriginEvidenceCache, readLocalOriginMetadataIdentity } from "./local-origin-evidence-cache.js";
 import { readLocalCollectorAccountingReuse, serializeLocalCollectorAccountingCache, writeLocalCollectorAccountingCache } from "./local-collector-state.js";
 import { assertReplaySafeAccountingCache, REPLAY_SAFE_CALIBRATION_INTERNALS } from "./replay-safe-accounting-cache.js";
 
@@ -38,10 +39,17 @@ export function createLocalIndexAccountingReuse({
   indexFile, codexHome, stateFile,
   readOrigins = readCodexLocalThreadUsageRelations,
   readIdentity = readLocalIndexGenerationIdentity,
+  originMetadataIdentity = readLocalOriginMetadataIdentity,
   write = writeLocalCollectorAccountingCache,
   read = readLocalCollectorAccountingReuse,
 } = {}) {
   let retained = null;
+  // Injected origin readers are test seams and must keep their exact call
+  // behavior. Production reads can reuse a complete proof while the Codex
+  // thread store, generation, and session count are unchanged.
+  const originEvidenceCache = readOrigins === readCodexLocalThreadUsageRelations
+    ? createOriginEvidenceCache({ metadataIdentity: originMetadataIdentity })
+    : null;
 
   async function readProof({ generation, nowMs = Date.now(), declaredSpeedBaselines = [], unknownSpeedPolicy = DEFAULT_UNKNOWN_SPEED_POLICY, signal = null, onTiming = null, monotonicClock = undefined,
     onReuseDiagnostic = null, onOriginDiagnostic = null, diagnosticPhase = "proof_before",
@@ -93,10 +101,30 @@ export function createLocalIndexAccountingReuse({
     if (!snapshot) { report("session_limit"); return null; }
     if (snapshot.invalidSessions) { report("origins_unavailable"); return null; }
     if (snapshot.id !== generation?.id) { report("generation_changed"); return null; }
-    const evidence = snapshot.sessions.length === 0 ? { complete: true, relations: new Map() }
-      : await timing.measure("proof_origins", () => readOrigins(codexHome, snapshot.sessions.map(row => row.session_uuid),
-      { signal, includeOriginEvidence: true, withOriginReadReceipt: true, diagnosticTimer: timing, onOriginDiagnostic: value =>
-        reportLocalRefreshOriginDiagnostic(onOriginDiagnostic, diagnosticPhase, value?.code, value?.count) }));
+    const sessionIds = snapshot.sessions.map(row => row.session_uuid);
+    const readOriginEvidence = ids => readOrigins(
+      codexHome,
+      ids,
+      {
+        signal,
+        includeOriginEvidence: true,
+        withOriginReadReceipt: true,
+        diagnosticTimer: timing,
+        onOriginDiagnostic: value => reportLocalRefreshOriginDiagnostic(
+          onOriginDiagnostic, diagnosticPhase, value?.code, value?.count,
+        ),
+      },
+    );
+    const evidence = sessionIds.length === 0
+      ? { complete: true, relations: new Map() }
+      : await timing.measure("proof_origins", () => originEvidenceCache === null
+        ? readOriginEvidence(sessionIds)
+        : originEvidenceCache.read({
+          codexHome,
+          sessionIds,
+          read: readOriginEvidence,
+          signal,
+        }));
     timing.flush();
     throwIfAborted(signal);
     // Only a complete, guarded read can distinguish an absent row from an unread store.

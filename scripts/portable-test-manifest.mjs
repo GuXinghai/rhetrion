@@ -67,6 +67,7 @@ export const PORTABLE_TEST_GROUPS = Object.freeze({
     "test/local-companion-refresh.test.js",
     "test/local-installation-diagnostics.test.js",
     "test/local-metadata-bundle-files.test.js",
+    "test/local-origin-evidence-cache.test.js",
     "test/owner-only-filesystem.test.js",
     "test/portable-local-companion-process.test.js",
     "test/prospective-collector-cli.test.js",

@@ -70,9 +70,15 @@
     },
     {
       "file": "test/local-collector-state.test.js",
-      "win32BranchCount": 2,
+      "win32BranchCount": 3,
       "classification": "windows-equivalent-needed",
       "followUp": "Add a native Windows abrupt-process-termination SQLite recovery fixture."
+    },
+    {
+      "file": "test/local-companion-data.test.js",
+      "win32BranchCount": 1,
+      "classification": "windows-equivalent-needed",
+      "followUp": "Validate owner-only collector state and recovery with native Windows ACLs and handle semantics; portable fixtures do not qualify installed behavior."
     },
     {
       "file": "test/local-installation-diagnostics.test.js",

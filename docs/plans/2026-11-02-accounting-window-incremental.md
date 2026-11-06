@@ -248,9 +248,19 @@ records `originSessionCount = 4268`, matching the index, with zero fallback and
 `exact` windows and timeline. The pass started at `2026-11-06T19:23:37Z` and
 finished at `19:29:53Z`; the accounting cache was written at `19:26:27Z`, so the
 remaining snapshot/index tail, not accounting, still dominated the pass. This
-closes the previously pending live new-session gate. The incremental refresh
-deadline is now fifteen minutes, covering the observed 11 min 14 s 54-source
-rescan; a larger rescan can still exceed that bound, and whole-refresh
+closes the previously pending live new-session gate. The origin proof now
+reuses a complete Codex thread-store read while the main metadata database, its
+WAL, and any rollback journal are unchanged. The SHM coordination file is
+excluded because ordinary reader activity can move it without changing data.
+An appended session reads only its tail; a removal, reorder, metadata write,
+incomplete read, or unidentifiable store forces a full read. The cache is
+process-local and holds one entry, so the first proof after a metadata write
+still reads the store. A live pass from `2026-11-06T21:49:25Z` to `21:55:31Z`
+recorded `proof_origins` at 4.9 ms after the first read, with `fast_path` and
+zero full rebuilds. The 76.6 s `origin_read` in that pass belonged to
+`projection_work`, not the accounting proof. The incremental refresh deadline
+is now fifteen minutes, covering the observed 11 min 14 s 54-source rescan; a
+larger rescan can still exceed that bound, and whole-refresh
 discovery/snapshot optimization remains open.
 
 # Decisions

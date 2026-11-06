@@ -32,6 +32,7 @@ const TEST_FILE_PATH = /^(?:test|apps\/(?:web\/test|electron\/test|local)|packag
 const LOCAL_TEST_FILES = Object.freeze([
   "test/local-companion-data.test.js",
   "test/local-companion-refresh.test.js",
+  "test/local-origin-evidence-cache.test.js",
 ]);
 
 const SUITE_DIRECTORIES = Object.freeze({
