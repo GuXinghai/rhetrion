@@ -215,8 +215,9 @@ removal, reclassification, or out-of-order insert changes the prefix and still
 falls through to reuse/rebuild. The pre-fix live launch on 2026-11-05 observed
 the older behavior, where any new session forced a full rebuild. The first live
 pass after the change stayed on `fast_path` and seeded `originSessionCount`;
-a 20-minute follow-up watch saw no new session, so a live pass containing a
-genuinely new session remains open. `fullRebuilds` counts every rebuilt pass,
+a 20-minute follow-up watch saw no new session. A later live pass on 2026-11-07
+indexed new sessions and remained on `fast_path`; the exact evidence is in the
+implementation status below. `fullRebuilds` counts every rebuilt pass,
 while
 `fullRebuildsByReason` counts only the explicit causes; `unavailableWindows` and
 `mismatchWindows` are cumulative scope-weighted counts that reset with the
@@ -236,6 +237,19 @@ unbounded lineage change, quota candidate projection (about 28 seconds per
 refresh pass on the protected copy), and the one-time full rebuild that seeds
 the first marker. A 10x reduction in the normal append
 cost is measured; no end-to-end page-speed or installed-app claim is made.
+
+Implementation status (2026-11-07): a live pass on the stable profile stayed on
+`fast_path` while the index grew to `4268` sessions. The last recorded baseline
+was `4264`; the pass itself observed `4267` to `4268`. It recorded 28
+dirty and 28 recomputed windows, zero unavailable or mismatched windows,
+`fullRebuilds = 0`, no fallback code, and no rebuild cause. The published cache
+records `originSessionCount = 4268`, matching the index, with zero fallback and
+`exact` windows and timeline. The pass started at `2026-11-06T19:23:37Z` and
+finished at `19:29:53Z`; the accounting cache was written at `19:26:27Z`, so the
+remaining snapshot/index tail, not accounting, still dominated the pass. This
+closes the previously pending live new-session gate. It does not change the
+other performance gates: a 54-source rescan can still exceed the ten-minute
+budget, and whole-refresh discovery/snapshot optimization remains open.
 
 # Decisions
 
@@ -278,10 +292,11 @@ measurement after this branch lands remains. The stable collector has its first
 freshness and window markers. The live launch observed one app-driven
 `fast_path` pass and one full rebuild after a new generation and 54-source
 rescan; the latter took over ten minutes. After that launch, the origin proof
-was made append-aware, and a synthetic runner check now keeps a newly indexed
-session on `fast_path`; a live rerun of that path remains open. Next run
-sustained app-driven observation, optimize the rescan/snapshot path, and add a
-server-backed synthetic repair and proof-to-freshness end-to-end check.
+was made append-aware, and a synthetic runner check keeps a newly indexed
+session on `fast_path`; the 2026-11-07 live pass confirmed the same behavior
+with new sessions. Next run sustained app-driven observation, optimize the
+rescan/snapshot path, and add a server-backed synthetic repair and
+proof-to-freshness end-to-end check.
 Owner-runtime evidence remains a separate open gate; copy rehearsals cannot
 satisfy it. No new optimization or slice completion is claimed by this
 execution order.
