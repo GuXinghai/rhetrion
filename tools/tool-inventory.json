@@ -6,6 +6,22 @@
     {
       "classification": "reusable_benchmark",
       "owner": "local_refresh_performance",
+      "canonicalPath": "scripts/benchmark-codex-history-cutoff.mjs",
+      "stableAlias": null,
+      "stableAliasReason": "Explicit synthetic or read-only live comparison; never an ordinary live test or refresh command.",
+      "additionalAliases": [],
+      "callers": [
+        "test/codex-history-cutoff-benchmark.test.js",
+        "docs/plans/2026-11-07-local-refresh-performance.md"
+      ],
+      "decision": "retain_as_explicit_read_only_live_diagnostic",
+      "provenance": null,
+      "provenanceReason": "Compares pinned history-cutoff readers on synthetic or explicitly admitted stable indexed inputs, with state/publication fences, content-free counts and no live writes.",
+      "legacyPaths": []
+    },
+    {
+      "classification": "reusable_benchmark",
+      "owner": "local_refresh_performance",
       "canonicalPath": "scripts/benchmark-work-origin-reads.mjs",
       "stableAlias": null,
       "stableAliasReason": "Explicit read-only live diagnostic; never an ordinary test or refresh command.",

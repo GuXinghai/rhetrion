@@ -66,8 +66,8 @@ export function createLocalCodexLogPorts(configuration = {}) {
       statPath(path) {
         return stat(path);
       },
-      lstatPath(path) {
-        return lstat(path);
+      lstatPath(path, options) {
+        return lstat(path, options);
       },
       openReadOnlyNoFollow(path) {
         return open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));

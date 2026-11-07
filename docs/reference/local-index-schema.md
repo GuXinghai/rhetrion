@@ -591,6 +591,19 @@ rollout header, what to do with a file:
   reported as wholly skipped or fully parsed; unknown response coverage stays
   explicit. Legacy tail quarantine codes remain readable for forward recovery.
 
+History-base cutoff validation has a separate, bounded scanner-local proof
+cache (at most 2,048 entries). A hit still performs a fresh source open, the
+existing source guards, exact bigint held-file/named-path identity and
+nanosecond state checks before and after, and a successful close. The proof
+binds physical and logical sizes, compression, parent start ordinal and both
+cutoff coordinates; it retains validated byte/line counts, not source bytes.
+Changed or unsupported state causes a fresh validation. Unknown, failed,
+unsafe or cancelled evidence cannot authorize a cached success. A compressed
+proof is seeded only after consuming the complete existing decoder iterator,
+including its end-of-stream integrity validation. Adapters without exact
+state keep their existing validation path. These proofs are process-local;
+schema, source cursors and durable cache formats are unchanged.
+
 ## Invariants
 
 - **Commit marker.** `source.scanned_bytes` is the publication point for a

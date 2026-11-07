@@ -7,6 +7,8 @@ import { classifySessionSurface } from "./surface-classification.js";
 
 const MAXIMUM_ACTIVE_APPEND_PROOF_BYTES = 8 * 1024 * 1024;
 const MAXIMUM_ROLLOUT_LINEAGE_BYTES = 1024 * 1024;
+const MAXIMUM_HISTORY_CUTOFF_PROOFS = 2048;
+const MAXIMUM_HISTORY_CUTOFF_KEY_LENGTH = 8192;
 const UINT64_MAX = 0xffff_ffff_ffff_ffffn;
 const UINT128_MAX = 0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffffn;
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
@@ -187,6 +189,48 @@ function sameSourceState(left, right) {
 }
 
 export function createCodexLogSources({ filesystem, lineReader }) {
+  // Successful prefix proofs only, scoped to this scanner's fixed ports and
+  // process. Every reuse opens and guards the file again. No bytes or handles
+  // are retained, and unsupported/coarse metadata never authorizes reuse.
+  const historyCutoffProofs = new Map();
+
+  function exactCutoffState(stats) {
+    const fields = ["dev", "ino", "size", "birthtimeNs", "mtimeNs", "ctimeNs"];
+    if (!fields.every(field => typeof stats?.[field] === "bigint")
+        || typeof stats.nlink !== "bigint") return null;
+    if (stats.dev < 0n || stats.dev > UINT64_MAX || stats.ino < 0n || stats.ino > UINT128_MAX
+        || stats.size < 0n || stats.size > BigInt(Number.MAX_SAFE_INTEGER)
+        || !stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1n) sourceChanged();
+    const uid = filesystem.currentUid();
+    if (uid !== null && stats.uid !== BigInt(uid)) sourceChanged();
+    return fields.map(field => String(stats[field])).join(":");
+  }
+
+  async function readExactCutoffState(handle, path) {
+    let held;
+    let named;
+    try {
+      held = await handle.stat({ bigint: true });
+      named = await filesystem.lstatPath(path, { bigint: true });
+    } catch (error) {
+      rethrowScannerControlError(error);
+      return null;
+    }
+    const heldState = exactCutoffState(held);
+    const namedState = exactCutoffState(named);
+    if (heldState === null || namedState === null) return null;
+    if (heldState !== namedState) sourceChanged();
+    return heldState;
+  }
+
+  function retainHistoryCutoffProof(key, proof) {
+    historyCutoffProofs.delete(key);
+    if (historyCutoffProofs.size >= MAXIMUM_HISTORY_CUTOFF_PROOFS) {
+      historyCutoffProofs.delete(historyCutoffProofs.keys().next().value);
+    }
+    historyCutoffProofs.set(key, Object.freeze(proof));
+  }
+
   function boundedScannerLines(
     source,
     resourceGuard,
@@ -627,8 +671,9 @@ export function createCodexLogSources({ filesystem, lineReader }) {
     // Optional. Called with a walked file's path and exact stat tuple; returns
     // the inspection recorded for that exact state ({ lineage,
     // compressionReason, size?, contentSha256? }) or null. A hit skips the
-    // header read and cold-source decode, so an unchanged corpus costs only
-    // the directory walk. Absent, discovery inspects every file as before.
+    // header read and cold-source decode. Graph cutoff verification remains
+    // independent; even a reusable cutoff proof opens, guards and closes the
+    // source again. Absent, discovery inspects every file as before.
     inspectionCache = null,
     diagnosticTimer = null,
   }) {
@@ -1024,75 +1069,102 @@ export function createCodexLogSources({ filesystem, lineReader }) {
         || !Number.isSafeInteger(base.endByteOffset)
         || base.endByteOffset < 0;
     }
-    const cutoffValidity = new Map();
+    // Preserve the original within-pass bound for rejected shared cutoffs.
+    // Failures never survive discovery, and this set cannot authorize success.
+    const rejectedHistoryCutoffs = new Set();
     async function historyCutoffValid(parent, base) {
-      const key = `${parent.rolloutKey}\0${base.endByteOffset}\0${base.endOrdinalExclusive}`;
-      if (cutoffValidity.has(key)) return cutoffValidity.get(key);
+      const startOrdinal = Number(parent.lineage?.startOrdinal ?? 0);
+      const key = JSON.stringify(["history-cutoff-v1", codexHome, parent.path,
+        parent.compressed === true, parent.size, parent.physicalSize ?? parent.size, startOrdinal,
+        base.endByteOffset, base.endOrdinalExclusive]);
+      const cacheable = key.length <= MAXIMUM_HISTORY_CUTOFF_KEY_LENGTH;
       let handle;
       let valid = false;
+      let before = null;
+      let proof = null;
       try {
+        throwIfAborted(signal);
+        resourceGuard?.checkRuntime();
+        if (rejectedHistoryCutoffs.has(key)) return false;
         handle = await filesystem.openReadOnlyNoFollow(parent.path);
         const stats = await handle.stat();
         assertActiveSourceStats(stats, parent);
         if (stats.size !== (parent.physicalSize ?? parent.size) || base.endByteOffset > parent.size) {
+          historyCutoffProofs.delete(key);
           return false;
         }
-        if (parent.compressed) {
+        before = cacheable ? await readExactCutoffState(handle, parent.path) : null;
+        const cached = before === null ? null : historyCutoffProofs.get(key);
+        if (cached?.state === before
+            && cached.bytes === base.endByteOffset
+            && cached.lines === base.endOrdinalExclusive - startOrdinal
+            && (cached.bytes === 0 || cached.lastByte === 0x0a)) {
+          proof = cached;
+          valid = true;
+        } else {
+          historyCutoffProofs.delete(key);
           let bytes = 0;
           let lines = 0;
           let lastByte = null;
-          for await (const chunk of lineReader.readCompressedRolloutBytes(
-            lineReader.compressedRolloutHandle(handle),
-            { end: base.endByteOffset, resourceGuard, signal },
-          )) {
-            bytes += chunk.length;
-            let from = 0;
-            for (;;) {
-              const newline = chunk.indexOf(0x0a, from);
-              if (newline < 0) break;
-              lines += 1;
-              from = newline + 1;
+          if (parent.compressed) {
+            // Consume the entire existing decoder iterator. It validates the
+            // physical stream to EOF even though only cutoff bytes are yielded;
+            // an early break would not establish a reusable integrity proof.
+            for await (const chunk of lineReader.readCompressedRolloutBytes(
+              lineReader.compressedRolloutHandle(handle),
+              { end: base.endByteOffset, resourceGuard, signal },
+            )) {
+              bytes += chunk.length;
+              let from = 0;
+              for (;;) {
+                const newline = chunk.indexOf(0x0a, from);
+                if (newline < 0) break;
+                lines += 1;
+                from = newline + 1;
+              }
+              lastByte = chunk[chunk.length - 1] ?? lastByte;
             }
-            lastByte = chunk[chunk.length - 1] ?? lastByte;
+          } else {
+            const buffer = Buffer.allocUnsafe(256 * 1024);
+            while (bytes < base.endByteOffset) {
+              throwIfAborted(signal);
+              resourceGuard?.checkRuntime();
+              const length = Math.min(buffer.length, base.endByteOffset - bytes);
+              const read = await handle.read(buffer, 0, length, bytes);
+              if (read.bytesRead !== length) return false;
+              let from = 0;
+              for (;;) {
+                const newline = buffer.indexOf(0x0a, from);
+                if (newline < 0 || newline >= read.bytesRead) break;
+                lines += 1;
+                from = newline + 1;
+              }
+              lastByte = buffer[read.bytesRead - 1];
+              bytes += read.bytesRead;
+            }
           }
-          const startOrdinal = Number(parent.lineage?.startOrdinal ?? 0);
-          valid = bytes === base.endByteOffset && base.endOrdinalExclusive > startOrdinal
+          valid = Number.isSafeInteger(startOrdinal)
+            && base.endOrdinalExclusive > startOrdinal
+            && bytes === base.endByteOffset
             && lines === base.endOrdinalExclusive - startOrdinal
             && (bytes === 0 || lastByte === 0x0a);
-          return valid;
+          if (valid && before !== null) proof = { state: before, bytes, lines, lastByte };
         }
-        const buffer = Buffer.allocUnsafe(256 * 1024);
-        let offset = 0;
-        let lines = 0;
-        let lastByte = null;
-        while (offset < base.endByteOffset) {
-          throwIfAborted(signal);
-          resourceGuard?.checkRuntime();
-          const length = Math.min(buffer.length, base.endByteOffset - offset);
-          const read = await handle.read(buffer, 0, length, offset);
-          if (read.bytesRead !== length) return false;
-          let from = 0;
-          for (;;) {
-            const newline = buffer.indexOf(0x0a, from);
-            if (newline < 0 || newline >= read.bytesRead) break;
-            lines += 1;
-            from = newline + 1;
-          }
-          lastByte = buffer[read.bytesRead - 1];
-          offset += read.bytesRead;
-        }
-        const startOrdinal = Number(parent.lineage?.startOrdinal ?? 0);
-        valid = Number.isSafeInteger(startOrdinal)
-          && base.endOrdinalExclusive > startOrdinal
-          && lines === base.endOrdinalExclusive - startOrdinal
-          && (base.endByteOffset === 0 || lastByte === 0x0a);
+        if (before !== null && await readExactCutoffState(handle, parent.path) !== before) valid = false;
+        throwIfAborted(signal);
+        resourceGuard?.checkRuntime();
       } catch (error) {
+        historyCutoffProofs.delete(key);
         rethrowScannerControlError(error);
         valid = false;
       } finally {
-        await handle?.close().catch(() => {});
-        cutoffValidity.set(key, valid);
+        try { await handle?.close(); }
+        catch { valid = false; historyCutoffProofs.delete(key); }
+        if (!valid) rejectedHistoryCutoffs.add(key);
+        if (signal?.aborted) { historyCutoffProofs.delete(key); throwIfAborted(signal); }
       }
+      if (valid && proof !== null) retainHistoryCutoffProof(key, proof);
+      else historyCutoffProofs.delete(key);
       return valid;
     }
     for (const info of physical) {

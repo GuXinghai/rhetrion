@@ -43,6 +43,18 @@ receipts. Record origin read bytes/calls and discovery cutoff bytes separately
 from wall time. Live phase comparisons require matched workload evidence;
 unmatched refreshes remain observations, not an A/B performance claim.
 
+The owner's acceptance target is elapsed time until both the current overview
+and the requested work view are ready. Snapshot publication alone does not
+close that target. In the second `2026110802` observation, snapshot publication
+took 278.160 seconds, while work was first confirmed ready 415.677 seconds
+after refresh started; that later check is an upper bound, not its exact
+completion time. Report-worker isolation increased reader wall time in the
+controlled matrix and did not prove total refresh acceleration. Do not promote
+another response-isolation slice as a throughput fix. Prioritize removing
+actual repeated reads/scans, and show same-input cold/warm samples, semantic
+equality and a median improvement beyond observed variation before claiming
+acceleration. Keep source evidence distinct from loading and natural live runs.
+
 # Progress
 
 - The baseline checkout was clean at the starting revision. The accepted source
@@ -162,7 +174,7 @@ Continue the other costs as separate slices:
    arbitrary descriptor fields or relaxing the publication fence. This has
    not been established as the cause of production preload timeouts.
 
-The next graph slice should first separate actual duplicate hashing, each
+Additional graph timing can separate actual duplicate hashing, each
 uncached history-cutoff verification, pure cycle/quarantine propagation and
 final selection/fingerprinting. The reviewed source boundaries are
 `digestSource`, `historyCutoffValid` and their enclosing graph pass in
@@ -175,6 +187,64 @@ and physical read calls through synthetic adapters first. Adding live byte
 counters needs a separately closed diagnostic contract, not extra arbitrary
 fields, overloaded milliseconds or accounting-origin diagnostic codes. This
 is a proposed measurement slice, not an implemented discovery optimization.
+
+## Active throughput slice: history-cutoff proof reuse
+
+A read-only inventory at `2026-11-07T21:47:58.053Z`, generation `25172`, found
+99 distinct history-base cutoffs with 99 distinct parents: 91 compressed and
+8 plain. Their indexed logical prefix lengths total 3258270751 bytes, with a
+largest prefix of 297103436 bytes. These are retained-reference sizes, not
+measured I/O or proof that every reference is validated in every pass.
+Plain-only optimization would miss most parent representations.
+
+The active bounded slice retains successful cutoff proofs in the existing
+scanner instance. Every prospective reuse still opens the parent and performs
+the original source guards, plus exact held-handle/named-path bigint identity
+and nanosecond state checks before and after the operation and successful
+close. A changed, unidentifiable, unsafe or unsupported state must not serve a
+cached success. The key binds compression, physical/logical size, parent start
+ordinal and both cutoff coordinates. A compressed proof can be seeded only
+after the existing decoder is fully consumed and validates its end state;
+reuse does not shorten that initial validation. Failed and unknown proofs
+are never cached. Bound the in-process retained set and keep native adapters
+without exact state on the existing read path. No schema or durable format
+change is authorized by this slice.
+
+Acceptance requires identical selected sources/quarantine/receipt fingerprints,
+fresh guards on a hit, zero repeated cutoff bytes for unchanged inputs, and
+refusal/fallback for append, same-size mutation, replacement, unsafe links,
+coarse timestamps, cancellation, decoder failure, failed close and eviction.
+First establish this on synthetic plain/compressed histories, then compare
+read-only stable live inputs before preparing another candidate. No
+whole-refresh acceleration or production loading is yet claimed for this slice.
+
+The implemented slice passed focused and ingestion tests. A same-generation
+live read-only matrix now proves reduced repeated work: warm reader median
+18876.116 to 4271.887 ms, graph median 15137.512 to 572.854 ms, with zero warm
+candidate physical reads/decodes and exact source/receipt equality. Baseline
+performed 7008 reads (1822070465 bytes) and 91 cutoff decodes per operation.
+Cold validation still reads the entire prefix; no cold speedup is claimed.
+The [cutoff receipt](../receipts/2026-11-08-history-cutoff-proof-reuse.md)
+records all samples and the admitted-inventory/runtime limits. Candidate
+loading and complete overview-plus-work readiness remain unverified.
+
+`scripts/benchmark-codex-history-cutoff.mjs` compares baseline `a911573f` with
+the current reader. Use `--synthetic --phase cold --run 1|2|3` in three fresh
+processes, then `--synthetic --phase warm --run 1` in a separate process; warm
+emits an excluded warm-up and three measured pairs. Default input is 12
+parents, 11 compressed, about 108 MiB logical prefixes. Both readers receive
+the same validated inspection inventory, so this measures cutoff/graph
+validation rather than cold compressed inspection. The source and receipt
+objects must match exactly, and samples include actual physical reads,
+compressed cutoff decoder calls, yielded logical bytes and fresh opens/closes.
+Process uptime is recorded separately; fresh process does not mean cold OS
+cache. Live mode replaces `--synthetic` with `--allow-live-read` and requires
+the in-memory-only comparison key, fixed anchor and expected generation named
+below. It excludes recently written or catalog-mismatched sources, freezes
+only an in-memory source inventory and rechecks exact file/directory identity
+and index publication around each pair. A changed input refuses the sample.
+This qualifies the admitted reader inventory, not whole-refresh or private
+work enrichment. It never writes source or profile state.
 
 # Read-only live diagnostic
 

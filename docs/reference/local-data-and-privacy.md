@@ -184,6 +184,17 @@ damaged histories produce explicit partial coverage. See the
 [compressed-history contract](./local-index-schema.md#compressed-codex-histories)
 for runtime and resource limits.
 
+History-cutoff discovery retains at most 2,048 narrow validation proofs in the
+scanner's process memory. Each reuse freshly opens the source and checks its
+held identity against its named path and exact nanosecond file state before
+and after, then closes successfully. The retained proof contains only private
+in-memory lookup keys, file state and validated cutoff counts; no source bytes,
+decoded content or open handle is retained or persisted. Changed, unsafe or
+unsupported evidence follows the original validation path. Compressed proofs
+require complete decoder validation before they can be reused. The local
+index scanner keeps its existing filesystem boundary; this cache does not
+substitute for native ACL qualification or enable a less precise adapter.
+
 Work-usage ancestry keeps at most 8,192 verified header relations in process
 memory. Each reuse still opens the source through the native owner/link/reparse
 boundary and checks its held identity and file state. Exact path metadata must
