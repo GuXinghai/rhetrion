@@ -82,8 +82,23 @@ unmatched refreshes remain observations, not an A/B performance claim.
 
 # Remaining measured slices
 
-No discovery production change is retained. Continue with separate, bounded
-investigation rather than broadening this accepted repair:
+No discovery production change is retained. Follow-up on build `2026110705`
+found continuing background preload timeouts (`request`, HTTP status null,
+10000 ms limit), and a 12145 ms health response during one natural refresh.
+The graph stage reached 95259.510 ms in that pass, but this does not establish
+graph as the timeout cause: cutoff reads yield asynchronously.
+
+The next bounded repair removes the reverse discarded projection: independent
+work queries formerly built the complete companion report before selecting
+only work. A work-only backend read now captures `commit_seq` before all
+metadata/usage reads and checks it after completion. It retains explicit
+unavailable/capacity, cancellation, native origin guards and the existing
+query/lease/anchor lifecycle; it adds no completed work cache. Acceptance:
+exact work equality across periods, no report stage, refusal on publication
+change, route publication independent of a pending work build, and source then
+read-only live verification. The running candidate does not load source edits.
+
+Continue the other costs as separate slices:
 
 1. Measure graph cutoff reads across unchanged automatic passes. The startup
    graph cost was 23766.850 ms; the removed within-pass batching experiment
@@ -135,3 +150,12 @@ the projection/composition boundary, not the live selected-price policy. Exact
 companion equality excludes only the explicitly measured `readWallMs` field.
 The live index generation, anchor and candidate module hash must match across
 accepted samples. This target does not need the private corpus comparison key.
+
+The optional `--target work` compares the former combined read with the
+work-only backend on live inputs. It additionally requires the fixed expected
+`RHETRION_PERF_GENERATION`; a changed publication refuses the matrix. The anchor
+is required, source hashes cover the projection owners, and exact work equality
+excludes only metadata's observation-clock field. External thread/repository
+inputs remain live, so equal outputs at one fixed publication do not establish
+a frozen external corpus. Record this narrower scope explicitly rather than
+claiming a controlled full-refresh benchmark. Never publish either result.

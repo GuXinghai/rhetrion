@@ -882,8 +882,10 @@ its id and `generation-v2-<64 hex>` as its fingerprint, computed from the
 committed snapshot. Companion-only projection caches also require unchanged
 options and proven time-window membership. Work-usage projections additionally
 read external thread and repository metadata; the database proof alone cannot
-retain a completed work-usage result. Identical in-flight reads can still share
-one build. Rediscovered unchanged sources restore `present` in a transaction
+retain a completed work-usage result. The query service joins an identical
+active period/scope/anchor build; the combined projection reader also retains
+its separate in-flight-only sharing contract. Rediscovered unchanged sources
+restore `present` in a transaction
 without replaying retained facts; that transition advances publication and
 calculation revisions.
 
@@ -893,6 +895,14 @@ cancellation lifecycle; an in-progress work report does not block publication
 of companion figures. Each work result still checks its own generation and
 reporting anchor. Process-local reuse of individually authenticated header
 relations does not authorize completed work-projection reuse.
+
+Independent work queries use the backend's work-only reader, without computing
+and discarding a companion report. It captures `commit_seq` before any
+asynchronous work metadata access and refuses the result if publication changed
+by completion. This replaces the combined report/work fence with the same
+publication boundary and retains the report's current-rollup-basis admission;
+it does not authorize external-metadata cache reuse or
+change reporting anchors, retained states, cancellation or leases.
 
 The v11 `calculation_revision` advances transactionally for material fact,
 dimension, ownership/order, coverage and diagnostic changes. Metadata-only

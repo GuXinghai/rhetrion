@@ -6,6 +6,7 @@ import {
   readLocalIndexCompanionProjection,
   readLocalIndexGenerationIdentity,
   readLocalIndexProjectionValidUntil,
+  readLocalIndexWorkProjection,
 } from "./local-index-companion-source.js";
 import { readLegacyOrdinalMap } from "./local-index-cutover.js";
 import { maintainLocalIndex } from "./local-index-maintenance.js";
@@ -335,6 +336,11 @@ export function createLocalIndexBackend({
     ),
   });
 
+  const readWorkUsage = (options = {}, controls = {}) => readLocalIndexWorkProjection({
+    ...options, indexFile: options.indexFile ?? indexFile,
+    secretFile: options.secretFile ?? secretFile, signal: controls.signal ?? null,
+  });
+
   return Object.freeze({
     version: LOCAL_INDEX_BACKEND_VERSION,
     indexFile,
@@ -343,6 +349,7 @@ export function createLocalIndexBackend({
     refreshAccounting,
     refreshTimeoutMs,
     projectionReader,
+    readWorkUsage,
     /** The cache-drop thread-link provider; same inputs as the previous index's. */
     cacheDropThreadLinks: (options = {}) => buildLocalIndexCacheDropThreadLinks({
       ...options, indexFile: options.indexFile ?? indexFile,

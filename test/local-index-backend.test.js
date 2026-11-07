@@ -13,6 +13,7 @@ import {
   readLocalIndexCompanionProjection,
   readLocalIndexGenerationIdentity,
   readLocalIndexProjectionValidUntil,
+  readLocalIndexWorkProjection,
 } from "../src/local-index-companion-source.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import { readLocalIndexWindowBreakdown } from "../src/local-index-window-breakdown.js";
@@ -21,6 +22,80 @@ import { createWorkspace } from "./helpers/local-index-facts.js";
 
 const END_MS = Date.parse("2026-09-01T00:00:00.000Z");
 const NOW_MS = END_MS + 3_600_000;
+
+function comparableWorkProjection(value) {
+  const copy = structuredClone(value);
+  for (const period of Object.values(copy.periods ?? {})) {
+    for (const snapshot of Object.values(period.snapshots)) delete snapshot.metadata.observedAt;
+  }
+  return copy;
+}
+
+test("work-only projection preserves every period without constructing a companion report", async () => {
+  const workspace = createWorkspace({ variety: true, files: 4, events: 100, days: 6, seed: 52 });
+  try {
+    const indexFile = join(workspace.state, "work-only.sqlite");
+    const backend = createLocalIndexBackend({ indexFile, secretFile: workspace.secretFile, workerCount: 1 });
+    await backend.refreshUnifiedIndex({ codexHome: workspace.codexHome });
+    const options = { indexFile, codexHome: workspace.codexHome, secretFile: workspace.secretFile,
+      nowMs: NOW_MS, declaredSpeedBaselines: [] };
+    const combined = await readLocalIndexCompanionProjection({ ...options, includeWorkUsage: true });
+    const stages = [];
+    const { secretFile: _secretFile, ...backendOptions } = options;
+    const work = await backend.readWorkUsage({ ...backendOptions, onTiming: span => stages.push(span.stage) });
+    assert.equal(work.status, "available");
+    assert.deepEqual(comparableWorkProjection(work), comparableWorkProjection(combined.workUsage));
+    assert.ok(stages.includes("projection_work"));
+    assert.equal(stages.includes("projection_report"), false);
+
+    // A report-only table is unavailable: work still reads its own retained
+    // facts and publication proof. This would fail in the combined reader.
+    const writer = new DatabaseSync(indexFile);
+    try { writer.exec("ALTER TABLE cache_candidate RENAME TO unavailable_report_candidate"); }
+    finally { writer.close(); }
+    const independent = await backend.readWorkUsage(options);
+    assert.deepEqual(comparableWorkProjection(independent), comparableWorkProjection(work));
+  } finally { workspace.cleanup(); }
+});
+
+test("work-only projection refuses publication changes and propagates cancellation", async () => {
+  const workspace = createWorkspace({ files: 2, events: 20, days: 2, seed: 53 });
+  try {
+    const indexFile = join(workspace.state, "work-fence.sqlite");
+    await refreshLocalIndex({ indexFile, codexHome: workspace.codexHome,
+      secretFile: workspace.secretFile, workerCount: 1 });
+    const options = { indexFile, codexHome: workspace.codexHome,
+      secretFile: workspace.secretFile, nowMs: NOW_MS };
+    let changed = false;
+    const refused = await readLocalIndexWorkProjection({ ...options, onTiming(span) {
+      if (span.stage !== "work_memberships" || changed) return;
+      changed = true;
+      const writer = new DatabaseSync(indexFile);
+      try { writer.exec("UPDATE store_state SET commit_seq=commit_seq+1 WHERE id=1"); }
+      finally { writer.close(); }
+    } });
+    assert.equal(changed, true);
+    assert.deepEqual(refused, { status: "unavailable", asOfMs: NOW_MS, errorCode: "work_usage_unavailable" });
+    const controller = new AbortController();
+    await assert.rejects(readLocalIndexWorkProjection({ ...options, signal: controller.signal,
+      onTiming(span) { if (span.stage === "work_memberships") controller.abort(); },
+    }), { name: "AbortError" });
+    const beforeStart = new AbortController(); beforeStart.abort();
+    await assert.rejects(readLocalIndexWorkProjection({ ...options, signal: beforeStart.signal }), { name: "AbortError" });
+    for (const invalid of [{ onTiming: 1 }, { monotonicClock: 1 }]) {
+      await assert.rejects(readLocalIndexWorkProjection({ ...options, ...invalid }), TypeError);
+    }
+    assert.equal((await readLocalIndexWorkProjection({ ...options,
+      indexFile: join(workspace.state, "absent.sqlite") })).status, "missing");
+    const writer = new DatabaseSync(indexFile);
+    try { writer.exec("INSERT INTO rollup_context_start(start_tokens) VALUES (123456789)"); }
+    finally { writer.close(); }
+    const combined = await readLocalIndexCompanionProjection({ ...options, includeWorkUsage: true });
+    assert.equal(combined.companion.status, "unavailable");
+    assert.equal(combined.companion.errorCode, "local_index_rollup_basis_stale");
+    assert.equal((await readLocalIndexWorkProjection(options)).status, "unavailable");
+  } finally { workspace.cleanup(); }
+});
 
 const COLLECTED_INDEXING = Object.freeze({
   mode: "recent_7d",

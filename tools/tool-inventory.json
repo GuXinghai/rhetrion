@@ -16,7 +16,7 @@
       ],
       "decision": "retain_as_explicit_read_only_live_diagnostic",
       "provenance": null,
-      "provenanceReason": "Compares a pinned baseline and current origin readers on closed live sources with native authentication, no source or profile writes, and aggregate-only output.",
+      "provenanceReason": "Compares pinned origin readers or companion/work projection composition through explicit read-only live admission, fixed publication/anchor checks, no source or profile writes, and aggregate-only output.",
       "legacyPaths": []
     },
     {

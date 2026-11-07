@@ -1104,11 +1104,15 @@ function createPreparedLocalCompanionServer({
   cacheDropThreadLinksProvider = ({ overview }) => (
     localIndexBackend.cacheDropThreadLinks({ codexHome, overview })
   ),
-  workUsageBuild = async (query, controls) => sharedProjectionReader({
-      mode: "full", nowMs: query.toMs, includeWorkUsage: true, exactWindow: query.exactWindow === true,
+  workUsageBuild = async (query, controls) => selectSharedWorkUsageSnapshot({
+    // Work queries do not consume the companion report. The work-only backend
+    // preserves the publication fence without repeating that synchronous scan.
+    workUsage: await localIndexBackend.readWorkUsage({
+      nowMs: query.toMs,
       indexFile: unifiedStoreFile, codexHome,
       declaredSpeedBaselines: await codexSpeedBaseline.readWindows(),
-    }, { ...controls, selectProjection: projection => selectSharedWorkUsageSnapshot(projection, query) }),
+    }, controls),
+  }, query),
   workUsageEnrich = (query) => enrichWorkUsageRows({ ...query, codexHome }),
   refreshRunner = createLocalCollectorRefreshRunner({
     getUnknownSpeedPolicy: unknownSpeedPolicyConfiguration.get,

@@ -1754,12 +1754,17 @@ test("startup defers history while full and overview refreshes publish the compl
       staticRoot: files.staticRoot,
       accountingSourceMode: "unified",
       codexSpeedBaseline: { readWindows: async () => [] },
-      sharedProjectionReader: async (options, controls) => {
-        if (options.includeWorkUsage) {
+      localIndexBackend: {
+        indexFile: join(files.stateRoot, "local-index-store-v1.sqlite"),
+        refreshTimeoutMs: () => 60_000,
+        readWorkUsage: async (options, controls) => {
+          assert.ok(controls.signal instanceof AbortSignal);
           workBuildStarted.resolve(options);
           await workBuild.promise;
           return { status: "unavailable" };
-        }
+        },
+      },
+      sharedProjectionReader: async (options, controls) => {
         assert.equal(options.includeWorkUsage, false);
         projectionModes.push(options.mode);
         if (options.mode === "full" && !fullRefreshRequested) {
@@ -1797,7 +1802,8 @@ test("startup defers history while full and overview refreshes publish the compl
     assert.equal(workRequest.status, 200);
     assert.equal((await workRequest.json()).status, "preparing");
     const workOptions = await workBuildStarted.promise;
-    assert.equal(workOptions.includeWorkUsage, true);
+    assert.equal(workOptions.codexHome, files.codexHome);
+    assert.ok(Number.isFinite(workOptions.nowMs));
 
     fullRefreshRequested = true;
     const started = await fetch(`${base}/api/local/refresh`, {

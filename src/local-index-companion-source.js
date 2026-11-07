@@ -13,9 +13,11 @@ import {
   LOCAL_INDEX_STORE_USER_VERSION,
   openLocalIndexStore,
   readCalculationRevision,
+  readCommitSeq,
   withReadSnapshot,
 } from "./local-index-store.js";
 import { readLocalIndexWorkUsage } from "./local-index-work-usage.js";
+import { rollupBasisCurrent } from "./local-index-rollup.js";
 import { LOCAL_UNIFIED_INDEX_PARSER_VERSION } from "./codex-usage-vocabulary.js";
 
 // The companion's unified projection, read from the v2 local index store.
@@ -240,6 +242,55 @@ export function readLocalIndexProjectionValidUntil({
     });
   } catch {
     return nowMs;
+  } finally {
+    database.close();
+  }
+}
+
+/** Work-only read; the publication fence does not require a companion report. */
+export async function readLocalIndexWorkProjection({
+  indexFile, codexHome, secretFile = null, nowMs = Date.now(),
+  declaredSpeedBaselines = [], signal = null, onTiming = null,
+  monotonicClock = undefined,
+} = {}) {
+  if (typeof indexFile !== "string" || indexFile.length < 1
+      || typeof codexHome !== "string" || !Number.isFinite(nowMs)) {
+    throw new TypeError("work projection options are invalid");
+  }
+  signal?.throwIfAborted();
+  const unavailableWork = (status = "unavailable", errorCode = "work_usage_unavailable") => ({
+    status, asOfMs: nowMs, errorCode,
+  });
+  const timing = createLocalRefreshTimer({ onTiming, clock: monotonicClock });
+  let database;
+  try {
+    const metadata = lstatSync(indexFile);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return unavailableWork();
+    database = openLocalIndexStore(indexFile, { readOnly: true });
+  } catch (error) {
+    return unavailableWork(error?.code === "ENOENT" ? "missing" : "unavailable");
+  }
+  try {
+    // Capture before any asynchronous metadata access. A source transaction
+    // during any part of the read invalidates the entire work result, just as
+    // the former combined report/work reader did. No completed result cache.
+    const before = readCommitSeq(database);
+    if (before < 1) return unavailableWork("missing");
+    // The combined reader admitted the pricing basis through its report.
+    // Work's raw-event fallback still groups with stored context classes, so
+    // it cannot authorize a stale pricing basis by itself.
+    if (!rollupBasisCurrent(database)) return unavailableWork();
+    const result = await timing.measure("projection_work", () => readLocalIndexWorkUsage({
+      database, indexFile, codexHome, secretFile, nowMs, signal,
+      declaredSpeedBaselines, onTiming, monotonicClock,
+    }));
+    signal?.throwIfAborted();
+    if (readCommitSeq(database) !== before) return unavailableWork();
+    return result;
+  } catch (error) {
+    signal?.throwIfAborted();
+    return unavailableWork("unavailable", error?.code === "work_usage_capacity_exceeded"
+      ? error.code : "work_usage_unavailable");
   } finally {
     database.close();
   }
