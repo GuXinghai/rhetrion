@@ -375,12 +375,13 @@ async function readSnapshot({
   // The report and the work breakdown must describe the same publication. The
   // work read is asynchronous, so it cannot sit inside the synchronous
   // snapshot; its `commit_seq` is compared afterwards instead.
-  const report = timing.measureSync("projection_report",()=>withReadSnapshot(database, ({ commitSeq }) => ({
-    commitSeq,
-    result: readLocalIndexReport(database, { nowMs, declaredSpeedBaselines: baselines }),
-  })));
+  const { report, generation } = timing.measureSync("projection_report", () => withReadSnapshot(database, ({ commitSeq }) => {
+    const result = readLocalIndexReport(database, { nowMs, declaredSpeedBaselines: baselines });
+    // The descriptor reads publication metadata too. Keep it in the same
+    // snapshot as the figures, including when a worker returns them later.
+    return { report: { commitSeq, result }, generation: describeLocalIndexGeneration(database, result, commitSeq) };
+  }));
   signal?.throwIfAborted();
-  const generation = describeLocalIndexGeneration(database, report.result, report.commitSeq);
   const { commitSeq, buildInProgress, expandedBuckets, readWallMs, ...projection } = report.result;
   void commitSeq; void expandedBuckets;
   const companion = {

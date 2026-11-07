@@ -27,6 +27,7 @@ import { readWorkProjectionStatuses } from "./local-index-work-projection-backfi
 import { readLocalIndexWindowBreakdown } from "./local-index-window-breakdown.js";
 import {reconcileRuntimeModelEvidence} from './local-index-runtime-model-evidence.js';
 import { createLocalRefreshTimer } from "./local-refresh-timing.js";
+import { createLocalIndexCompanionProjectionReader } from "./local-index-companion-projection-off-main.js";
 export { readLocalIndexWorkload, readWorkloadQuotaEvidence, workloadStateStore, workloadState } from "./local-index-workload.js";
 
 // The v2 index as one backend the local companion composes.
@@ -316,15 +317,17 @@ export function createLocalIndexBackend({
   }
 
   /** The three callbacks `createCachedLocalUnifiedProjectionReader` accepts. */
+  const companionProjectionReader = createLocalIndexCompanionProjectionReader();
   const projectionReader = Object.freeze({
     reader: Object.assign(
       async function readProjection(options = {}, controls = {}) {
-        return readLocalIndexProjection(
+        const read = options.includeWorkUsage ? readLocalIndexProjection : companionProjectionReader;
+        return read(
           { ...options, indexFile: options.indexFile ?? indexFile },
           controls,
         );
       },
-      { close: async () => {} },
+      { close: () => companionProjectionReader.close() },
     ),
     validUntil: async ({
       indexFile: file = indexFile, generationFingerprint, nowMs, includeWorkUsage = false,

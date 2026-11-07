@@ -97,6 +97,31 @@ test("work-only projection refuses publication changes and propagates cancellati
   } finally { workspace.cleanup(); }
 });
 
+test("companion figures and publication descriptor share the same read snapshot", async () => {
+  const workspace = createWorkspace({ files: 2, events: 20, days: 2, seed: 54 });
+  try {
+    const indexFile = join(workspace.state, "descriptor-fence.sqlite");
+    await refreshLocalIndex({ indexFile, codexHome: workspace.codexHome,
+      secretFile: workspace.secretFile, workerCount: 1 });
+    const options = { indexFile, nowMs: NOW_MS };
+    const initial = await readLocalIndexCompanionProjection(options);
+    let changed = false;
+    const result = await readLocalIndexCompanionProjection({ ...options, onTiming(span) {
+      if (span.stage !== "projection_report" || changed) return;
+      changed = true;
+      const writer = new DatabaseSync(indexFile);
+      try { writer.exec("UPDATE store_state SET commit_seq=commit_seq+1, calculation_revision=calculation_revision+1 WHERE id=1"); }
+      finally { writer.close(); }
+    } });
+    assert.equal(changed, true);
+    assert.deepEqual(result.generation, initial.generation,
+      "a publication immediately after the report cannot replace its descriptor metadata");
+    const later = await readLocalIndexCompanionProjection(options);
+    assert.equal(later.generation.calculationRevision, initial.generation.calculationRevision + 1);
+    assert.equal(later.generation.id, initial.generation.id + 1);
+  } finally { workspace.cleanup(); }
+});
+
 const COLLECTED_INDEXING = Object.freeze({
   mode: "recent_7d",
   status: "recent_7d_complete",

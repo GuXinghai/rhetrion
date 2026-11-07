@@ -44,12 +44,15 @@ test("the server's readers serve the v2 store and never create the previous inde
       body: JSON.stringify({ reason: "user_request" }),
     });
     assert.equal(started.status, 202);
-    let overview = null;
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      overview = await get("/api/local/overview");
-      if (/^generation-v2-[0-9a-f]{64}$/u.test(overview.body.accounting?.generationFingerprint ?? "")) break;
-      await new Promise((resolveWait) => setTimeout(resolveWait, 250));
-    }
+    // This checks publication identity, not a cold-worker startup deadline.
+    // Join the real refresh lifecycle rather than sampling a retained snapshot.
+    await app.refresh.whenSettled();
+    assert.equal(app.refresh.getStatus().status, "succeeded", JSON.stringify({
+      errorCode: app.refresh.getStatus().errorCode,
+      failedStep: app.refresh.getStatus().result?.failedStep,
+      failureCode: app.refresh.getStatus().result?.failureCode,
+    }));
+    const overview = await get("/api/local/overview");
     assert.equal(overview.status, 200);
     assert.match(overview.body.accounting.generationFingerprint, /^generation-v2-[0-9a-f]{64}$/u);
 

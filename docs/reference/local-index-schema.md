@@ -896,6 +896,15 @@ of companion figures. Each work result still checks its own generation and
 reporting anchor. Process-local reuse of individually authenticated header
 relations does not authorize completed work-projection reuse.
 
+The backend runs full companion-only projection in a cancellable read-only
+worker so synchronous report SQL and aggregation do not occupy the companion
+event loop. Figures and their full generation descriptor are computed inside
+the same SQLite read snapshot and returned after connection close and worker
+exit. Deferred, unavailable and partial states remain explicit. The worker
+accepts no Codex home, salt or work metadata and adds no persisted format;
+existing generation/time-membership cache proofs still control result reuse.
+Backend close aborts and settles its active reads before shutdown continues.
+
 Independent work queries use the backend's work-only reader, without computing
 and discarding a companion report. It captures `commit_seq` before any
 asynchronous work metadata access and refuses the result if publication changed
