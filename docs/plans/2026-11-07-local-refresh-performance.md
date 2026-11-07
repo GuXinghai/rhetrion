@@ -98,6 +98,18 @@ exact work equality across periods, no report stage, refusal on publication
 change, route publication independent of a pending work build, and source then
 read-only live verification. The running candidate does not load source edits.
 
+This slice is committed as `8f2307ed` and loaded in unsigned build
+`2026110801`. Its startup automatic refresh and next natural pass succeeded,
+with matched accounting generations and no fallback/full rebuild. Live reader
+comparison preserved exact work output but did not establish a total speedup;
+origin-open variation and paired cold-cache ordering dominate that claim.
+The [work-only receipt](../receipts/2026-11-08-work-only-projection.md) records
+the samples and limitations. Health still reached 14.440 seconds and snapshot
+report 12.522 seconds, so the next independent slice moves companion-only
+projection to a cancellable read-only worker, with report and generation
+descriptor computed inside one SQLite snapshot. Work/discovery/accounting
+semantics and production timeout values stay unchanged.
+
 Continue the other costs as separate slices:
 
 1. Measure graph cutoff reads across unchanged automatic passes. The startup
