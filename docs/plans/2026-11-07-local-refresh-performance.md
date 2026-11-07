@@ -227,6 +227,13 @@ Cold validation still reads the entire prefix; no cold speedup is claimed.
 The [cutoff receipt](../receipts/2026-11-08-history-cutoff-proof-reuse.md)
 records all samples and the admitted-inventory/runtime limits. Candidate
 loading and complete overview-plus-work readiness remain unverified.
+Source is committed as `868ec69a`. Unsigned candidate `2026110803` passed
+exact 762-file package verification and isolated native rendering with plain
+and compressed history-base fixtures, five sources and no quarantines.
+The complete local suite passed all 300 tests. The next normal switch still
+requires the owner's normal quit of `2026110802`; no forced exit or manual
+production refresh is used. Observe both startup and the next natural pass:
+the startup must establish proofs before unchanged parents can benefit.
 
 `scripts/benchmark-codex-history-cutoff.mjs` compares baseline `a911573f` with
 the current reader. Use `--synthetic --phase cold --run 1|2|3` in three fresh

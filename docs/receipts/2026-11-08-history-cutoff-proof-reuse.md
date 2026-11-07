@@ -4,6 +4,7 @@ date: 2026-11-08
 type: receipt
 status: partial
 baseline_commit: a911573fd324baf534f72bf143999d794c0aec6e
+source_commit: 868ec69ad4b3b79e8dddb59b613d146679f4f27a
 ---
 
 # Scope and acceptance
@@ -127,8 +128,25 @@ live profile, source, setting or refresh was mutated by these measurements.
 
 # Remaining gates and rollback
 
-Exact candidate packaging, isolated native rendering and authorized automatic
-live refresh observation remain separate gates. Whole-refresh validation must include independent
+Unsigned candidate `2026110803`, version `0.1.27`, source `868ec69a`, was staged
+with exactly Node `26.2.0`. Exact staged/archive file-set and byte verification
+passed for 762 files. ASAR SHA-256:
+`c8ba8a6ca8992654a520ee39ee5e2351a38fd154ca36448e60fb2eeb431b32ce`.
+The prior artifact and staging were preserved; this candidate was not signed,
+installed or published.
+
+Its disposable profile included two extra history-base parents (one compressed)
+beside the ordinary synthetic usage fixture. The actual packaged app built a
+ready snapshot and rendered its overview without an error dialog; work moved
+from preparing to available. The isolated index contained five sources, two
+history bases and no quarantined sources. Normal quit succeeded. The synthetic
+quota collector remained `app_server_unavailable` without credentials, so this
+does not pass the normal hosted/credential smoke or native general-security
+qualification. The screenshot was inspected; unavailable quota/forecast values
+remained explicit. No real profile was used for the synthetic run.
+
+Authorized automatic live refresh observation remains a separate gate, pending
+the owner's normal exit of the still-running `2026110802`. Whole-refresh validation must include independent
 work readiness, not only snapshot publication. Rollback is a source revert
 and, after normal quit, loading the preserved previous candidate. There is no
 schema migration or durable cache conversion to reverse. No rollback,
