@@ -116,9 +116,22 @@ Three-run synthetic and live reader matrices preserved complete companion
 figures and reduced parent heartbeat stalls, with explicit worker startup and
 transfer overhead. Local suite 300, backend 13 and worker/loopback 21 tests
 passed. The [worker receipt](../receipts/2026-11-08-companion-projection-worker.md)
-records the measured response/wall-time tradeoff. Production loading awaits
-normal exit of build `2026110801`; no forced termination or manual live refresh
-is authorized or used to cross that boundary.
+records the measured response/wall-time tradeoff. After the owner's normal
+exit, build `2026110802` loaded the repair and its startup automatic refresh
+succeeded in 196353.256 ms, with matched generation `25144`, zero fallback
+and no full rebuild. Snapshot build was 25164.765 ms; worker report was
+8967.697 ms. Startup health had 84 samples, median 6 ms and maximum 7926 ms.
+The independent work view became ready after refresh. No new startup timeout
+was recorded, but remaining stalls and sustained timeout absence are separate
+gates. No forced termination, profile edit or manual live refresh was used.
+The next natural pass also succeeded in 278160.027 ms with matched generation
+`25160`, zero fallback/full rebuild and three recomputed windows. Its health
+observation still reached 13169 ms, before the later worker report, so the
+control-plane stall problem is not closed. No new timeout diagnostic was
+recorded through the roughly 13-minute observation. Work had become ready,
+then honestly showed retained figures updating after the next publication.
+The second work build subsequently became ready as well.
+These changing-generation observations are not controlled speed comparisons.
 
 Continue the other costs as separate slices:
 
@@ -137,6 +150,31 @@ Continue the other costs as separate slices:
    phases during natural refreshes. A ready post-refresh view does not prove
    that the recurring `work_usage_timeout` has been eliminated. Do not alter
    timeout limits or hide stale/unknown output to close this gate.
+   The second `2026110802` pass exposed a 12330.372 ms index descriptor and
+   a 13169 ms health response before its snapshot report. Measure this
+   synchronous descriptor and later snapshot composition independently;
+   report isolation alone cannot account for either remaining stall.
+5. Separately reproduce related-period generation comparison when a work
+   result lacks a primitive fingerprint. The service's current fallback
+   compares generation objects by reference; equivalent fresh descriptors
+   must not be accepted or rejected solely on object allocation. A repair
+   needs a validated identity token and mismatch tests, without serializing
+   arbitrary descriptor fields or relaxing the publication fence. This has
+   not been established as the cause of production preload timeouts.
+
+The next graph slice should first separate actual duplicate hashing, each
+uncached history-cutoff verification, pure cycle/quarantine propagation and
+final selection/fingerprinting. The reviewed source boundaries are
+`digestSource`, `historyCutoffValid` and their enclosing graph pass in
+`src/providers/codex/log-sources.js`. Keep the existing closed three-field
+timing frame and extend only its fixed stage vocabulary, with tests proving
+identical source selection, quarantine and receipt fingerprints when timing
+is enabled. Emit one whole-operation span per actual hash/cutoff; aggregated
+chunk spans do not make `stages[].calls` a filesystem-read count. Count bytes
+and physical read calls through synthetic adapters first. Adding live byte
+counters needs a separately closed diagnostic contract, not extra arbitrary
+fields, overloaded milliseconds or accounting-origin diagnostic codes. This
+is a proposed measurement slice, not an implemented discovery optimization.
 
 # Read-only live diagnostic
 
