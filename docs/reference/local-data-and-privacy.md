@@ -184,6 +184,15 @@ damaged histories produce explicit partial coverage. See the
 [compressed-history contract](./local-index-schema.md#compressed-codex-histories)
 for runtime and resource limits.
 
+Work-usage ancestry keeps at most 8,192 verified header relations in process
+memory. Each reuse still opens the source through the native owner/link/reparse
+boundary and checks its held identity and file state. Exact path metadata must
+match that identity, including nanosecond timestamps; unavailable or changed
+evidence causes a fresh bounded header read or an explicit unknown relation.
+No source handle, raw header or session content is retained. The cache is not
+persisted and does not establish account attribution. Plain headers start with
+a 4 KiB read and extend only within the existing 64 KiB line bound.
+
 ## Optional local integrations
 
 | Integration | Activation | Data boundary | Persistence |

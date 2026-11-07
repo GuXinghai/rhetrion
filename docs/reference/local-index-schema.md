@@ -887,6 +887,13 @@ one build. Rediscovered unchanged sources restore `present` in a transaction
 without replaying retained facts; that transition advances publication and
 calculation revisions.
 
+Dashboard snapshot publication requests the companion projection only. Work
+usage continues through its separate query, preparing/retained state, lease and
+cancellation lifecycle; an in-progress work report does not block publication
+of companion figures. Each work result still checks its own generation and
+reporting anchor. Process-local reuse of individually authenticated header
+relations does not authorize completed work-projection reuse.
+
 The v11 `calculation_revision` advances transactionally for material fact,
 dimension, ownership/order, coverage and diagnostic changes. Metadata-only
 cursor/stat updates may leave it unchanged; the global publication sequence

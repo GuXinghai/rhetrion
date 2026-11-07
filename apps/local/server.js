@@ -1042,7 +1042,10 @@ function createPreparedLocalCompanionServer({
     localIndexBackend.projectionReader,
   ),
   unifiedProjectionReader = async (options, controls) => {
-    return sharedProjectionReader({ ...options, includeWorkUsage: true, codexHome }, {
+    // The dashboard persists only companion figures. Work reports have their
+    // own request/lease lifecycle below; building and discarding them here
+    // delayed snapshot publication and disabled the companion cache proof.
+    return sharedProjectionReader({ ...options, includeWorkUsage: false, codexHome }, {
       ...controls, selectProjection: projection => projection.companion ?? projection,
     });
   },

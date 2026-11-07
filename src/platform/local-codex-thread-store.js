@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { normalizeWorkUsageRepositoryOrigin } from "./work-usage-projects.js";
@@ -79,6 +79,47 @@ const MAX_THREAD_SOURCE_LENGTH = 4_096;
 const MAX_THREAD_SOURCE_CLASS_LENGTH = 80;
 const MAX_ROLLOUT_PATH_LENGTH = 4_096;
 const MAX_SESSION_METADATA_LINE_BYTES = 64 * 1024;
+const MAX_SOURCE_USAGE_RELATIONS = 8192;
+// Process-local verified relations only. Native open/stat validation still
+// runs on every lookup; no source handles or metadata records are retained.
+const sourceUsageRelations = new Map();
+
+function sourceUsageState(stats) {
+  if (![stats.birthtimeMs, stats.mtimeMs, stats.ctimeMs, stats.size].every(Number.isFinite)
+      || stats.dev === undefined || stats.ino === undefined) return null;
+  return JSON.stringify([String(stats.dev), String(stats.ino), stats.birthtimeMs,
+    stats.mtimeMs, stats.ctimeMs, stats.size]);
+}
+
+async function guardedSourceUsageState(path, before) {
+  const state = sourceUsageState(before);
+  if (state === null) return null;
+  try {
+    // The native lease pins the file and ancestors. Bind the finer Node
+    // timestamps to that exact identity; native millisecond timestamps alone
+    // cannot distinguish two same-size header writes within one millisecond.
+    const stats = await lstat(path, { bigint: true });
+    if (!/^[0-9a-f]{16}$/iu.test(before.dev) || !/^[0-9a-f]{32}$/iu.test(before.ino)) return null;
+    const volume = BigInt(`0x${before.dev}`);
+    const fileId = Buffer.from(before.ino, "hex");
+    // Windows Node exposes the 32-bit volume serial and 64-bit file index.
+    // Native leases keep the full volume/128-bit identity in the cache key.
+    // Refuse reuse when Node cannot represent the held file's upper ID bits.
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1n
+        || (stats.dev !== volume && stats.dev !== (volume & 0xffff_ffffn))
+        || fileId.readBigUInt64LE(8) !== 0n || stats.ino !== fileId.readBigUInt64LE(0)
+        || stats.size !== BigInt(before.size)) return null;
+    return JSON.stringify([state, String(stats.birthtimeNs), String(stats.mtimeNs), String(stats.ctimeNs)]);
+  } catch { return null; }
+}
+
+function retainSourceUsageRelation(key, state, relation) {
+  sourceUsageRelations.delete(key);
+  if (sourceUsageRelations.size >= MAX_SOURCE_USAGE_RELATIONS) {
+    sourceUsageRelations.delete(sourceUsageRelations.keys().next().value);
+  }
+  sourceUsageRelations.set(key, { state, relation });
+}
 const AUTO_REVIEW_THREAD_SOURCE = "guardian_review";
 const AUTO_REVIEW_SOURCE_KIND = "guardian";
 const LOCAL_NAVIGATION_THREAD_ID =
@@ -151,10 +192,11 @@ function isCodexSessionPath(codexHome, rolloutPath) {
  * The indexed source-only path can also verify ordinary worker/root headers
  * and receives a narrowed relation without retaining the source record.
  */
-async function readAutoReviewParent(codexHome, rolloutPath, id, filesystem, usageRelations = false, includeWorker = false, diagnosticTimer = null) {
+async function readAutoReviewParent(codexHome, rolloutPath, id, filesystem, usageRelations = false, includeWorker = false, diagnosticTimer = null, signal = null) {
   if (typeof rolloutPath !== "string" || rolloutPath.length === 0
       || !isAbsolute(rolloutPath)) return null;
   let handle;
+  let cacheKey = null;
   try {
     const home = diagnosticTimer ? await diagnosticTimer.measure("origin_realpath",()=>realpath(codexHome),{aggregate:true}) : await realpath(codexHome);
     let path;
@@ -168,22 +210,63 @@ async function readAutoReviewParent(codexHome, rolloutPath, id, filesystem, usag
     const opened = diagnosticTimer ? await diagnosticTimer.measure("origin_open",()=>filesystem.openFile(path),{aggregate:true}) : await filesystem.openFile(path);
     handle = opened.handle;
     const before = opened.before;
+    cacheKey = usageRelations && includeWorker ? JSON.stringify([home, path, id]) : null;
+    const state = cacheKey === null ? null : await guardedSourceUsageState(path, before);
+    const cached = state === null ? null : sourceUsageRelations.get(cacheKey);
+    if (cached?.state === state) {
+      const finishValidate = diagnosticTimer?.start("origin_validate", { aggregate: true });
+      try {
+        signal?.throwIfAborted();
+        const after = await handle.stat();
+        const named = await filesystem.namedStat(path, handle);
+        const settledState = await guardedSourceUsageState(path, after);
+        signal?.throwIfAborted();
+        if (sourceUsageState(after) === sourceUsageState(named)
+            && settledState === state) {
+          retainSourceUsageRelation(cacheKey, state, cached.relation);
+          return { ...cached.relation };
+        }
+        sourceUsageRelations.delete(cacheKey);
+        return null;
+      } finally { finishValidate?.(); }
+    }
+    if (cacheKey !== null) sourceUsageRelations.delete(cacheKey);
     let line;
     const finishRead = diagnosticTimer?.start("origin_read",{aggregate:true});
-    if (path.endsWith(".zst")) {
-      for await (const entry of readBoundedUtf8LineEntries(compressedRolloutHandle(handle), {
-        maximumLineBytes: MAX_SESSION_METADATA_LINE_BYTES,
-        maximumTotalBytes: MAX_SESSION_METADATA_LINE_BYTES + 1,
-        highWaterMark: 4096,
-      })) { line = entry.line; break; }
-    } else {
-      const bytes = Buffer.alloc(MAX_SESSION_METADATA_LINE_BYTES + 1);
-      const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
-      const newline = bytes.subarray(0, bytesRead).indexOf(0x0a);
-      if (newline < 0) return null;
-      line = bytes.toString("utf8", 0, newline);
-    }
-    finishRead?.();
+    try {
+      signal?.throwIfAborted();
+      if (path.endsWith(".zst")) {
+        for await (const entry of readBoundedUtf8LineEntries(compressedRolloutHandle(handle), {
+          maximumLineBytes: MAX_SESSION_METADATA_LINE_BYTES,
+          maximumTotalBytes: MAX_SESSION_METADATA_LINE_BYTES + 1,
+          highWaterMark: 4096,
+          signal,
+        })) { line = entry.line; break; }
+      } else {
+        // Most headers fit in one page. Only read the rest of the existing
+        // bound when the first page has no newline; never read the body just
+        // to recover a short metadata record. Decode after joining bytes so
+        // a multibyte character crossing the page boundary stays intact.
+        const maximumBytes = MAX_SESSION_METADATA_LINE_BYTES + 1;
+        let bytes = Buffer.alloc(4096);
+        let offset = 0;
+        while (offset < maximumBytes) {
+          signal?.throwIfAborted();
+          if (offset === bytes.length) {
+            const expanded = Buffer.alloc(maximumBytes);
+            bytes.copy(expanded);
+            bytes = expanded;
+          }
+          const length = bytes.length - offset;
+          const { bytesRead } = await handle.read(bytes, offset, length, offset);
+          if (bytesRead === 0) break;
+          const newline = bytes.subarray(offset, offset + bytesRead).indexOf(0x0a);
+          if (newline >= 0) { line = bytes.toString("utf8", 0, offset + newline); break; }
+          offset += bytesRead;
+        }
+      }
+    } finally { finishRead?.(); }
+    signal?.throwIfAborted();
     if (typeof line !== "string" || line.includes("\ufffd")) return null;
     const record = diagnosticTimer ? diagnosticTimer.measureSync("origin_parse",()=>JSON.parse(line),{aggregate:true}) : JSON.parse(line);
     const header = record?.type === "session_meta" && threadId(record.payload?.id) === id;
@@ -206,12 +289,25 @@ async function readAutoReviewParent(codexHome, rolloutPath, id, filesystem, usag
       ? includeWorker ? { parentId: root ? null : parentId, origin: verified ? "auto_review" : null } : parentId
       : null;
     finishValidate?.();
+    signal?.throwIfAborted();
+    if (relation !== null && state !== null && await guardedSourceUsageState(path, after) === state) {
+      signal?.throwIfAborted();
+      retainSourceUsageRelation(cacheKey, state, relation);
+    }
+    signal?.throwIfAborted();
     return relation;
   } catch {
+    if (cacheKey !== null) sourceUsageRelations.delete(cacheKey);
+    signal?.throwIfAborted();
     return null;
   } finally {
-    if (diagnosticTimer) await diagnosticTimer.measure("origin_close",()=>handle?.close(),{aggregate:true});
-    else await handle?.close();
+    try {
+      if (diagnosticTimer) await diagnosticTimer.measure("origin_close",()=>handle?.close(),{aggregate:true});
+      else await handle?.close();
+    } catch (error) {
+      if (cacheKey !== null) sourceUsageRelations.delete(cacheKey);
+      throw error;
+    }
   }
 }
 
@@ -234,7 +330,7 @@ async function readSourceUsageRelations(codexHome, ids, sourcePaths, knownThread
     let accepted = null, invalid = false;
     for (const path of paths) {
       if (++reads > 50_000) return new Map();
-      const record = await readAutoReviewParent(codexHome, path, id, filesystem, true, true, diagnosticTimer);
+      const record = await readAutoReviewParent(codexHome, path, id, filesystem, true, true, diagnosticTimer, signal);
       if (!record || accepted && (accepted.parentId !== record.parentId || accepted.origin !== record.origin)) {
         invalid = true; break;
       }
@@ -373,7 +469,7 @@ async function readSelectedThreadMetadata(codexHome, ids, { ancestryOnly = false
       const verifiedAutoReview = sourceAutoReview && (threadStoreAutoReview || usageRelations && row.thread_source === "subagent");
       const worker = autoReview ? null : workerMetadata(source, id);
       const parentId = verifiedAutoReview && (!ancestryOnly || usageRelations)
-        ? await readAutoReviewParent(codexHome, row.rollout_path, id, filesystem, usageRelations, false, diagnosticTimer)
+        ? await readAutoReviewParent(codexHome, row.rollout_path, id, filesystem, usageRelations, false, diagnosticTimer, signal)
         : worker?.parentId ?? null;
       if (parentId !== null) parentIds.add(parentId);
       result.set(id, {
@@ -400,7 +496,7 @@ async function readSelectedThreadMetadata(codexHome, ids, { ancestryOnly = false
         const verifiedReview = isAutoReviewSource(source)
           && [AUTO_REVIEW_THREAD_SOURCE, "subagent"].includes(row.thread_source);
         const parentId = usageRelations && verifiedReview
-          ? await readAutoReviewParent(codexHome, row.rollout_path, id, filesystem, true, false, diagnosticTimer)
+          ? await readAutoReviewParent(codexHome, row.rollout_path, id, filesystem, true, false, diagnosticTimer, signal)
           : ancestryOnly && !review ? workerMetadata(source, id)?.parentId ?? null : null;
         if (parentId) parentIds.add(parentId);
         result.set(id, { name: selectedName(row), nickname: null, parentId, origin: review ? "auto_review" : null });

@@ -1737,6 +1737,8 @@ test("the port and readiness answer before the first snapshot is built", async (
 test("startup defers history while full and overview refreshes publish the complete projection", async () => {
   const files = await fixture();
   const projectionModes = [];
+  const workBuildStarted = deferred();
+  const workBuild = deferred();
   let fullRefreshRequested = false;
   let app;
   try {
@@ -1752,12 +1754,19 @@ test("startup defers history while full and overview refreshes publish the compl
       staticRoot: files.staticRoot,
       accountingSourceMode: "unified",
       codexSpeedBaseline: { readWindows: async () => [] },
-      unifiedProjectionReader: async (options) => {
+      sharedProjectionReader: async (options, controls) => {
+        if (options.includeWorkUsage) {
+          workBuildStarted.resolve(options);
+          await workBuild.promise;
+          return { status: "unavailable" };
+        }
+        assert.equal(options.includeWorkUsage, false);
         projectionModes.push(options.mode);
         if (options.mode === "full" && !fullRefreshRequested) {
           throw new Error("startup_must_not_build_full_projection");
         }
-        return readLocalIndexProjection(options);
+        const result = await readLocalIndexProjection(options, controls);
+        return controls.selectProjection(result);
       },
       refreshRunner: async () => ({}),
       port: 0,
@@ -1779,6 +1788,16 @@ test("startup defers history while full and overview refreshes publish the compl
     );
     assert.deepEqual(overview.timeline.usage, []);
     assert.equal(overview.timeline.history.status, "loading");
+
+    const workRequest = await fetch(`${base}/api/local/work-usage/query`, {
+      method: "POST", headers: { "Content-Type": "application/json",
+        "X-Usage-Monitor-Local": "1", Origin: base },
+      body: JSON.stringify({ schemaVersion: "local-work-usage-v1", period: "7d" }),
+    });
+    assert.equal(workRequest.status, 200);
+    assert.equal((await workRequest.json()).status, "preparing");
+    const workOptions = await workBuildStarted.promise;
+    assert.equal(workOptions.includeWorkUsage, true);
 
     fullRefreshRequested = true;
     const started = await fetch(`${base}/api/local/refresh`, {
@@ -1806,7 +1825,10 @@ test("startup defers history while full and overview refreshes publish the compl
     assert.equal(scheduled.status, 202);
     await app.refresh.whenSettled();
     assert.deepEqual(projectionModes, ["deferred", "full", "full"]);
+    // Both publications completed while the independent work build is still
+    // pending. Work remains an honest preparing response, not a zero report.
   } finally {
+    workBuild.resolve();
     await app?.close();
     await rm(files.root, { recursive: true });
   }

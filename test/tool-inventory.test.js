@@ -294,10 +294,10 @@ test("the checked-in inventory classifies every retained tool entry point and np
     true,
     formatToolInventoryReport(result),
   );
-  // 85 current records / 86 paths after telemetry retirement and local generator ownership.
+  // Includes the explicitly admitted read-only live work/projection benchmark.
   // Keep exact counts: future executables still require an ownership decision.
-  assert.equal(result.records, 85);
-  assert.equal(result.candidates.length, 86);
+  assert.equal(result.records, 86);
+  assert.equal(result.candidates.length, 87);
   assert.ok(result.aliases >= 25);
 });
 

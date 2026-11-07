@@ -4,6 +4,22 @@
   "scope": "Executable and executable-adjacent sources under root scripts/** and tools/**, legacy root report builders and verifiers..",
   "records": [
     {
+      "classification": "reusable_benchmark",
+      "owner": "local_refresh_performance",
+      "canonicalPath": "scripts/benchmark-work-origin-reads.mjs",
+      "stableAlias": null,
+      "stableAliasReason": "Explicit read-only live diagnostic; never an ordinary test or refresh command.",
+      "additionalAliases": [],
+      "callers": [
+        "test/work-origin-benchmark.test.js",
+        "docs/plans/2026-11-07-local-refresh-performance.md"
+      ],
+      "decision": "retain_as_explicit_read_only_live_diagnostic",
+      "provenance": null,
+      "provenanceReason": "Compares a pinned baseline and current origin readers on closed live sources with native authentication, no source or profile writes, and aggregate-only output.",
+      "legacyPaths": []
+    },
+    {
       "classification": "build_release_operation",
       "owner": "test_isolation",
       "canonicalPath": "scripts/run-isolated-tests.mjs",

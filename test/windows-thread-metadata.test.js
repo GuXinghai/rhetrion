@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { closeSync, fstatSync, openSync, readSync, writeFileSync, utimesSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat as sourceStat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -66,9 +66,12 @@ async function fixture(t, { wal = false } = {}) {
     },
     statSourceFile(lease) {
       const stats = fstatSync(leases.get(lease).fd);
+      const exact = fstatSync(leases.get(lease).fd, { bigint: true });
+      const fileId = Buffer.alloc(16);
+      fileId.writeBigUInt64LE(exact.ino);
       // Native source stats do not expose POSIX ownership or permissions.
-      return { dev: String(stats.dev), ino: String(stats.ino), size: stats.size,
-        nlink: 1, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs };
+      return { dev: exact.dev.toString(16).padStart(16, "0"), ino: fileId.toString("hex"), size: stats.size,
+        nlink: 1, birthtimeMs: stats.birthtimeMs, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs };
     },
     readSourceFile(lease, position, length) {
       assert.ok(length <= 65536); reads.push(length);
@@ -90,6 +93,139 @@ function wrappedDatabase(factory) {
     return factory(db);
   };
 }
+
+test("source-only work ancestry reads one page for a short header and preserves the line bound", async t => {
+  const f = await fixture(t);
+  const metadata = { type: "session_meta", payload: { id: REVIEW, parent_thread_id: ROOT,
+    thread_source: "guardian_review", source: { subagent: { other: "guardian" } } } };
+  const small = JSON.stringify(metadata);
+  const options = { ...f.options, includeProjectAncestry: true,
+    sourcePaths: new Map([[REVIEW, [f.rollout]]]), knownThreadIds: new Set([ROOT]),
+    databaseFactory() { assert.fail("source-only ancestry must not open SQLite"); } };
+  const padded = (length) => {
+    const value = JSON.stringify({ ...metadata, ignored: "" });
+    return JSON.stringify({ ...metadata, ignored: "x".repeat(length - Buffer.byteLength(value)) });
+  };
+  for (const [label, header, accepted, requests] of [
+    ["short", small + "\n" + "x".repeat(100_000), true, [4096]],
+    ["CRLF", small + "\r\n", true, [4096]],
+    ["second page", padded(4096) + "\n", true, [4096, 61441]],
+    ["exact maximum", padded(65536) + "\n", true, [4096, 61441]],
+    ["oversized", padded(65537) + "\n", false, [4096, 61441]],
+    ["unterminated", small, false, [4096, 4096 - Buffer.byteLength(small)]],
+    ["malformed", "{\n", false, [4096]],
+    ["invalid UTF-8", Buffer.concat([Buffer.from(small.slice(0, -1)), Buffer.from([0xff]), Buffer.from("}\n")]), false, [4096]],
+  ]) {
+    await t.test(label, async () => {
+      await writeFile(f.rollout, header);
+      f.reads.length = 0;
+      const result = await readCodexLocalThreadUsageRelations(f.home, [REVIEW], options);
+      assert.equal(result.get(REVIEW).ancestryKnown, accepted);
+      assert.deepEqual(f.reads, requests);
+      assert.equal(f.leases.size, 0);
+    });
+  }
+  const prefix = JSON.stringify({ ...metadata, ignored: "" });
+  const unicode = JSON.stringify({ ...metadata, ignored: "x".repeat(4095 - Buffer.byteLength(prefix) + 2) + "界" });
+  assert.equal(Buffer.from(unicode).indexOf(Buffer.from("界")), 4095);
+  await writeFile(f.rollout, unicode + "\n");
+  assert.equal((await readCodexLocalThreadUsageRelations(f.home, [REVIEW], options)).get(REVIEW).ancestryKnown, true);
+});
+
+test("work ancestry reuses only verified unchanged headers after fresh native authentication", async t => {
+  const f = await fixture(t);
+  const options = { ...f.options, includeProjectAncestry: true,
+    sourcePaths: new Map([[REVIEW, [f.rollout]]]), knownThreadIds: new Set([ROOT, WORKER]) };
+  const read = () => readCodexLocalThreadUsageRelations(f.home, [REVIEW], options);
+  const first = await read();
+  assert.equal(first.get(REVIEW).root, ROOT);
+  assert.ok(f.reads.length > 0);
+  const opened = f.opened.length;
+  f.reads.length = 0;
+  assert.deepEqual(await read(), first);
+  assert.equal(f.reads.length, 0);
+  assert.equal(f.opened.length, opened + 1);
+  assert.equal(f.leases.size, 0);
+  f.refuse(file => file === f.rollout);
+  assert.equal((await read()).get(REVIEW).ancestryKnown, false);
+  f.refuse(null);
+  const stat = f.native.statSourceFile;
+  let epoch = 1;
+  f.native.statSourceFile = lease => ({ ...stat(lease), ctimeMs: epoch });
+  await read();
+  const before = await sourceStat(f.rollout);
+  // Same length and restored mtime must still invalidate through ctime.
+  await writeFile(f.rollout, (await readFile(f.rollout)).toString().replace(ROOT, WORKER));
+  await utimes(f.rollout, new Date(), new Date(before.mtimeMs));
+  epoch++;
+  f.reads.length = 0;
+  assert.equal((await read()).get(REVIEW).root, WORKER);
+  assert.ok(f.reads.length > 0);
+});
+
+test("unidentifiable source states never authorize work-header reuse", async t => {
+  const f = await fixture(t);
+  const stat = f.native.statSourceFile;
+  f.native.statSourceFile = lease => ({ ...stat(lease), birthtimeMs: undefined });
+  const options = { ...f.options, includeProjectAncestry: true,
+    sourcePaths: new Map([[REVIEW, [f.rollout]]]), knownThreadIds: new Set([ROOT]) };
+  for (let i = 0; i < 2; i++) {
+    f.reads.length = 0;
+    assert.equal((await readCodexLocalThreadUsageRelations(f.home, [REVIEW], options)).get(REVIEW).root, ROOT);
+    assert.ok(f.reads.length > 0);
+  }
+});
+
+test("work-header reuse detects writes hidden by coarse native timestamps and drops failed closes", async t => {
+  const f = await fixture(t);
+  const options = { ...f.options, includeProjectAncestry: true,
+    sourcePaths: new Map([[REVIEW, [f.rollout]]]), knownThreadIds: new Set([ROOT, WORKER]) };
+  const stat = f.native.statSourceFile;
+  let coarse;
+  f.native.statSourceFile = lease => {
+    const result = stat(lease);
+    coarse ??= { birthtimeMs: result.birthtimeMs, mtimeMs: result.mtimeMs, ctimeMs: result.ctimeMs };
+    return { ...result, ...coarse };
+  };
+  const read = () => readCodexLocalThreadUsageRelations(f.home, [REVIEW], options);
+  assert.equal((await read()).get(REVIEW).root, ROOT);
+  f.reads.length = 0;
+  await read();
+  assert.equal(f.reads.length, 0);
+  await writeFile(f.rollout, (await readFile(f.rollout)).toString().replace(ROOT, WORKER));
+  f.reads.length = 0;
+  assert.equal((await read()).get(REVIEW).root, WORKER);
+  assert.ok(f.reads.length > 0, "native coarse-state equality must not hide a changed header");
+  const close = f.native.closeSourceFile;
+  f.native.closeSourceFile = lease => { close(lease); throw new Error("synthetic close refusal"); };
+  await assert.rejects(read(), /synthetic close refusal/u);
+  f.native.closeSourceFile = close;
+  f.reads.length = 0;
+  assert.equal((await read()).get(REVIEW).root, WORKER);
+  assert.ok(f.reads.length > 0, "a failed close cannot leave an eligible cache entry");
+  assert.equal(f.leases.size, 0);
+});
+
+test("paged work ancestry still refuses changed sources, native denial and cancellation", async t => {
+  const f = await fixture(t);
+  const options = { ...f.options, includeProjectAncestry: true,
+    sourcePaths: new Map([[REVIEW, [f.rollout]]]), knownThreadIds: new Set([ROOT]) };
+  const stat = f.native.statSourceFile;
+  let stats = 0;
+  f.native.statSourceFile = lease => ({ ...stat(lease), mtimeMs: ++stats });
+  assert.equal((await readCodexLocalThreadUsageRelations(f.home, [REVIEW], options)).get(REVIEW).ancestryKnown, false);
+  f.native.statSourceFile = stat;
+  f.refuse(file => file === f.rollout);
+  assert.equal((await readCodexLocalThreadUsageRelations(f.home, [REVIEW], options)).get(REVIEW).ancestryKnown, false);
+  f.refuse(null);
+  const controller = new AbortController();
+  const read = f.native.readSourceFile;
+  f.native.readSourceFile = (...args) => { const result = read(...args); controller.abort(); return result; };
+  await writeFile(f.rollout, "x".repeat(8192));
+  await assert.rejects(readCodexLocalThreadUsageRelations(f.home, [REVIEW], { ...options, signal: controller.signal }),
+    { name: "AbortError" });
+  assert.equal(f.leases.size, 0);
+});
 
 test("origin diagnostics distinguish a missing selected row, busy database and unsupported schema", async t => {
   const f = await fixture(t), absent = "55555555-5555-4555-8555-555555555555", events = [];
