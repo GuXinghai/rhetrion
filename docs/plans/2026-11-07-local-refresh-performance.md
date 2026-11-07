@@ -110,6 +110,16 @@ projection to a cancellable read-only worker, with report and generation
 descriptor computed inside one SQLite snapshot. Work/discovery/accounting
 semantics and production timeout values stay unchanged.
 
+The worker slice is committed as `2bc631d3`; unsigned candidate `2026110802`
+passed exact 762-file package verification and isolated packaged rendering.
+Three-run synthetic and live reader matrices preserved complete companion
+figures and reduced parent heartbeat stalls, with explicit worker startup and
+transfer overhead. Local suite 300, backend 13 and worker/loopback 21 tests
+passed. The [worker receipt](../receipts/2026-11-08-companion-projection-worker.md)
+records the measured response/wall-time tradeoff. Production loading awaits
+normal exit of build `2026110801`; no forced termination or manual live refresh
+is authorized or used to cross that boundary.
+
 Continue the other costs as separate slices:
 
 1. Measure graph cutoff reads across unchanged automatic passes. The startup
