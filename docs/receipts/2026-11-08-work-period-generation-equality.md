@@ -135,100 +135,33 @@ At this package observation, normal live loading and the complete natural
 refresh measurement were still pending; `2026110803` had not loaded the repairs.
 No manual live refresh, direct profile edit or forced exit was used.
 
-# Owner qualification added after the live observations
-
-On 2026-11-08, after the observations below, the owner reported that other
-programs were consuming host resources and instructed that this test must not
-serve as a performance baseline for now. Both `2026110806` live runs, their
-phase timings, response latency and publication-to-work gaps are retained only
-as observations under uncontrolled resource contention. Do not use them to
-claim improvement/regression, rank intrinsic bottlenecks, estimate optimization
-benefits or pass/fail the performance target. Earlier timing-based acceptance
-judgments for these runs are superseded by this qualification.
-
-Package identity, successful publication, matched-generation/fallback facts,
-rendered states and isolated correctness tests remain separate functional
-evidence. Performance acceptance is pending a repeat with comparable resource
-conditions and fixed-input repeated measurements. This qualification does not
-claim that earlier matrices had controlled host load or invalidate their
-independently checked semantic equality. No new live benchmark is triggered.
-
-# Live startup: functional success, timings excluded from baseline
+# Live functional verification and measurement reset
 
 After the owner's normal quit, the previous process group drained and no
 `usage-monitor.exe` remained. The archive hash was rechecked and `2026110806`
-normally launched at `2026-11-08T07:34:08.1632328Z`. No forced termination,
-manual refresh, settings change or direct profile edit was used. Natural startup
-refresh ran `07:34:32.739Z`–`07:41:18.024Z`: 405287.899 ms (6m45.288s) to
-snapshot publication. The first passively observed fresh work matching
-generation `25236` arrived at `07:42:48.286Z`: 495547 ms (8m15.547s) from
-refresh start. This is an observation bound, not the exact internal completion
-time. Under the later owner qualification above, this run provides no
-performance acceptance verdict.
+normally launched at `2026-11-08T07:34:08.1632328Z`. Startup and the next
+natural automatic refresh succeeded. Accounting remained fast path with
+matched generations, no fallback/full rebuild and no unavailable/mismatch
+windows; quota published. Read-only status/DOM inspection confirmed available
+overview, ready/nonbusy work and a hidden work issue. Tool-history uncertainty
+remained explicit. No manual refresh, direct profile edit, setting change or
+forced termination was used. These are functional observations only.
 
-| Startup stage | Wall time, ms |
-|---|---:|
-| Index refresh | 206254.443 |
-| Discovery / graph | 140616.786 / 111102.463 |
-| Discovery walk / stat | 26652.616 / 23157.967 |
-| Index execute / maintenance | 19866.312 / 22843.673 |
-| Index descriptor | 595.733 |
-| Accounting origin proof | 33384.675 |
-| Accounting window shadow | 60879.946 |
-| Accounting fast path / quota within it | 35339.115 / 30615.187 |
-| Snapshot reload / build | 38639.099 / 38412.646 |
-| Snapshot index projection / report | 20057.201 / 17968.918 |
-| Snapshot clone / persist timing | 224.833 / 0.596 |
+The owner subsequently identified other programs consuming host resources,
+excluded that test from performance use, then explicitly requested clearing
+its records and starting fresh. The contended live timing tables, response
+latencies, work gaps, quantitative conclusions and ignored observer receipts
+were removed. Package/launch identity, isolated correctness/rendering and the
+functional facts above remain. Git history is not rewritten, and application
+profile/diagnostics are not deleted. No retained performance sample from that
+session enters the new recording or an aggregate.
 
-Spans are inclusive, not additive. The descriptor now avoids the discarded
-report, but this does not remove cold graph, accounting or work costs. Inputs
-and timing conditions differ from earlier natural passes; no causal total
-speedup is established. No heavy benchmark or test ran during observation.
-Accounting stayed `fast_path`, generation matched, fallback/full rebuild zero,
-one dirty/recomputed window and no unavailable/mismatch windows. Quota published.
-
-The 201 completed health reads had median 10 ms and maximum 12646 ms, with zero
-failed observer reads recorded. At `07:43:47.632Z`, read-only status/DOM inspection
-confirmed live available overview, no stale serve, ready/nonbusy work and hidden
-work issue. Tool history remained explicitly partial. Diagnostics through
-`07:43:47.768Z` recorded no new work timeout since launch; this finite interval
-does not establish sustained timeout absence. A later passive work response
-belongs to the same startup publication and is not a second refresh result.
-The next automatic pass remains a separate warm-process gate.
-
-# Next natural pass: warm process, timings excluded from baseline
-
-Automatic refresh ran `2026-11-08T07:46:19.018Z`–`07:50:27.472Z`, succeeded
-in 248454.580 ms to snapshot publication. Generation `25240` matched, accounting
-stayed fast path, fallback/full rebuild zero, two dirty/recomputed windows and
-no unavailable/mismatch windows. Quota published. First passive fresh work for
-that generation was observed at `07:52:04.084Z`: 345066 ms (5m45.066s) from
-refresh start, 96.612 seconds after snapshot publication. The result was not
-retained/refreshing and metadata was available. These elapsed times do not
-establish normal performance or a target failure under the owner's later
-resource-contention qualification. Performance acceptance remains pending.
-
-| Warm automatic stage | Wall time, ms |
-|---|---:|
-| Index refresh | 80361.354 |
-| Discovery / graph | 32230.395 / 2197.530 |
-| Discovery walk / stat | 27665.147 / 22363.624 |
-| Index execute / descriptor | 33045.285 / 895.170 |
-| Accounting origin proof | 50791.558 |
-| Accounting window shadow | 56847.499 |
-| Accounting fast path, quota retained this pass | 3064.690 |
-| Snapshot reload / build | 42215.343 / 41950.248 |
-| Snapshot index projection / report | 19752.513 / 17600.631 |
-| Snapshot clone / persist timing | 263.083 / 1.007 |
-
-The 161 completed health reads had median 10 ms and maximum 13432 ms; failed
-observer-read count was zero. Read-only inspection at `07:50:45.581Z` still
-showed savedUpdating/busy work after the overview had published; it was not
-reported as fresh. At `07:52:26.385Z`, work was ready with a hidden issue.
-Diagnostics through `07:52:26.210Z` had no new work timeout since launch. This
-does not establish sustained absence, a controlled total A/B or release safety.
-Natural inputs and quota retention differ from startup. No heavy test or
-benchmark ran during either observation, and no manual refresh was triggered.
+Fresh recording observes natural automatic refreshes in the already running
+process after an explicit new UTC cutoff. It does not restart the app or claim
+cold-start evidence. Corpus/generation changes remain visible; natural runs do
+not become a controlled same-input A/B merely because host contention stopped.
+Performance acceptance and cause attribution require their own matched-input
+repeat evidence.
 
 # Follow-up experiment not retained
 
@@ -246,5 +179,5 @@ native open, path resolution and metadata-database proof, and async wall spans
 can include competing synchronous work. Both source edits and the experimental
 test were removed; their diff and content-free test output are retained only
 as ignored local evidence. No candidate was prepared or loaded for it. This
-avoids presenting a one-read reduction as a fix for the live 50.8-second span.
+avoids presenting a one-read reduction as an end-to-end performance fix.
 The accepted production source remains exactly `95cec576`.
