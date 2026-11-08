@@ -275,6 +275,13 @@ slice compares validated publication values, preserves changed/unknown refusal
 and must show all four packaged background periods settling without a restart
 loop. See the [related-period receipt](../receipts/2026-11-08-work-period-generation-equality.md).
 
+Successor `2026110805` is also held before live loading. Its service generation
+comparison passes, but an empty 24h response lacks required observation metadata
+and stops browser preloading. A real-backend/browser-validator regression
+reproduced that independent failure. The empty branch now reuses the same
+pass's common metadata and preserves partial coverage; no validator is relaxed.
+The successor must complete the full four-period packaged gate before loading.
+
 `scripts/benchmark-codex-history-cutoff.mjs` compares baseline `a911573f` with
 the current reader. Use `--synthetic --phase cold --run 1|2|3` in three fresh
 processes, then `--synthetic --phase warm --run 1` in a separate process; warm

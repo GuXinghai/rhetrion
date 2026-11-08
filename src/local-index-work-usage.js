@@ -557,7 +557,6 @@ export function createWorkUsageCollectorCore({
         retained: false,
       },
     };
-    const metadataAvailable = described.metadataAvailable !== false;
     const output = { status: "available", asOfMs: nowMs, periods: {} };
     for (const period of periods) {
       const states = [...scopeStates.values()].filter((state) =>
@@ -601,16 +600,8 @@ export function createWorkUsageCollectorCore({
           threadLookup: {},
           threadFamilies: {},
           display: { projects: {}, worktrees: {}, threads: {} },
-          pricing: {
-            basis: "event_time",
-            fingerprint: createHash("sha256")
-              .update(JSON.stringify(["speed-api-prices-v1", APP_PRICE_REGISTRY_MANIFEST]))
-              .digest("hex"),
-          },
-          metadata: {
-            status: metadataAvailable ? "available" : "partial",
-            retained: false,
-          },
+          pricing: common.pricing,
+          metadata: { ...common.metadata, excludedAllowanceUpdates: 0 },
         };
       output.periods[period.id] = {
         fromMs: period.fromMs,

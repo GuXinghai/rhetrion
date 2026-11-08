@@ -66,3 +66,43 @@ Rollback is a normal source revert and, after normal quit, loading a preserved
 candidate; no data conversion is needed. No manual live refresh, direct profile
 edit, force kill, settings change, installation, signing, publication or push
 is authorized by this slice.
+
+# Candidate 2026110805: held at the complete-period gate
+
+Source `b68ab159289de1fb97d65faa4e8b32cf7e6d781e`, Node `26.2.0`, all 762
+staged/archive files exactly verified, ASAR SHA-256:
+`5c9d6f9b8c4508c730efc924ccb4b7652ee60a65aae9b2e46e6f33347eb94d75`.
+It remains unsigned, uninstalled, unpublished and not loaded live. Passive
+isolated observations confirmed matching-generation 7d and empty 24h service
+responses but did not complete all four periods. A visible-window diagnostic
+confirmed unchanged reporting end and ready overview; no live state was used.
+One probe also observed a startup work refusal before a later successful read;
+that is retained as an observation, not suppressed or attributed to this fix.
+
+The complete-period gate exposed another existing contract failure: the empty
+interval branch constructs separate metadata without `observedAt`, which the
+existing browser validator requires. The real-backend regression was extended
+to pass its actual responses through that validator; it failed with
+`invalid_response` on the empty 24h interval. Renderer breakpoint diagnostics
+were restricted to the synthetic process and boolean branch conditions; they
+do not qualify timing. The candidate stays held rather than weakening the gate.
+
+# Empty interval metadata repair
+
+Empty intervals now reuse the same pass's common pricing and metadata, including
+its observation time, method, coverage and partial/unknown status. No fresh
+identity, usage row or inferred continuity is manufactured. No facts in an
+interval also means no excluded allowance-update facts there; that existing
+metadata count is explicitly zero. Unknown usage or metadata coverage remains
+explicit in its original generation/status evidence. This fills the existing
+transient response contract; it does not change a schema, cache format or ledger.
+
+The real-backend/browser regression then passed for all periods while retaining
+changed-commit refusal. The focused service/shared-reader/rollup selection
+passed 53 tests with no failures/skips. The empty period has no rows, validates
+against the unchanged browser validator and retains the same metadata status
+as the populated period. Wider gates and a new package are recorded separately.
+
+The complete local suite then passed all 300 tests, the browser work-view file
+passed all 107 tests, architecture passed with zero debt and preflight passed
+all 20 tests. No test timeout, response validator or privacy gate was changed.

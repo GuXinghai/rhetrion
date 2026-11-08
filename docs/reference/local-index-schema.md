@@ -944,6 +944,11 @@ related period. Existing fingerprint identities remain supported, and an
 available calculation revision must match. This comparison is process-local;
 it does not add fields to the generation or a persisted schema/cache format.
 
+An empty work interval carries the same pass's common observation, method,
+coverage and pricing metadata as a populated interval, including the required
+observation time. Empty rows do not promote partial metadata to available or
+omit the evidence needed by the browser response validator.
+
 The v11 `calculation_revision` advances transactionally for material fact,
 dimension, ownership/order, coverage and diagnostic changes. Metadata-only
 cursor/stat updates may leave it unchanged; the global publication sequence

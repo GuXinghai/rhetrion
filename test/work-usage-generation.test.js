@@ -8,6 +8,7 @@ import { createLocalIndexBackend } from "../src/local-index-backend.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import { WORK_USAGE_SCHEMA } from "../src/reporting/index.js";
 import { createWorkspace } from "./helpers/local-index-facts.js";
+import { validateWorkUsageResponse } from "../apps/web/public/work-usage-view.js";
 
 const NOW = Date.parse("2026-09-01T01:00:00.000Z");
 const base = { schemaVersion: WORK_USAGE_SCHEMA, period: "7d" };
@@ -53,11 +54,15 @@ test("related periods accept fresh equal generations from the real work backend 
   };
   const source = await read(base);
   assert.equal(source.status, "available");
+  assert.equal(validateWorkUsageResponse(source), source);
   for (const period of ["24h", "30d", "all"]) {
     const related = await read({ ...base, period, sourceSnapshotId: source.snapshotId });
     assert.equal(related.status, "available", related.errorCode);
     assert.deepEqual(related.generation, source.generation);
     assert.equal(related.toMs, source.toMs);
+    if (period === "24h") assert.equal(related.rowCount, 0, "exercise the empty-interval fallback");
+    assert.equal(validateWorkUsageResponse(related), related);
+    assert.equal(related.metadata.status, source.metadata.status, "empty intervals preserve metadata uncertainty");
   }
   assert.equal(builds, 4, "one build per requested period, no restart loop");
   assert.notEqual(generations[0], generations[1], "different reads return different object references");
