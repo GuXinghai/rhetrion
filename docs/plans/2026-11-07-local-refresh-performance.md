@@ -293,12 +293,23 @@ After the owner's normal quit, `2026110806` loaded and both startup and the
 next automatic pass succeeded with matched accounting generations and zero
 fallback/full rebuild. Startup took 405287.899 ms to snapshot and 495547 ms
 to first passive fresh work; warm automatic took 248454.580/345066 ms. The
-complete waiting objective remains open. Descriptor was 595.733/895.170 ms;
-warm graph 2197.530 ms. Remaining measured costs include work after publication
+complete waiting objective has no accepted performance verdict from these runs.
+Descriptor was 595.733/895.170 ms; warm graph 2197.530 ms. Observed spans
+include work after publication
 (96.612 seconds warm), origin proof (50791.558 ms warm), window shadow
 (56847.499 ms warm) and traversal/stat (27665.147/22363.624 ms). No new work
 timeout was recorded through `2026-11-08T07:52:26.210Z`, a finite observation.
 Keep these live results distinct from earlier same-input reader matrices.
+
+After these observations, the owner reported other programs consuming local
+resources and excluded this test from the performance baseline for now. The
+two `2026110806` live runs and all associated phase/latency values are therefore
+observations only: no speedup/regression, intrinsic bottleneck ordering,
+benefit estimate or performance pass/fail may be inferred. This supersedes the
+earlier timing-based conclusions for those runs; functional/package and
+isolated correctness evidence remains separate. Repeat performance acceptance
+under comparable, recorded resource conditions, fixed corpus/generation and
+three cold/warm samples. Do not assume prior matrices had controlled host load.
 
 A guardian parent-header cache experiment was not retained. Synthetic evidence
 proved one fewer warm header read under the existing fresh-open/exact-state
@@ -308,8 +319,10 @@ ignored locally; running and committed source do not contain it. Native open,
 realpath and database proof would still run. Async wall spans may include
 contention, so treating the whole span as physical file I/O is unjustified.
 
-Next measured throughput boundary is the 96.612-second publication-to-work
-gap. The current production work composition does not pass its existing
+The publication-to-work boundary remains an investigation candidate because
+source still repeats complete all-period work reads; the contended 96.612-second
+gap does not establish its priority or intrinsic cost. The current production
+work composition does not pass its existing
 `onTiming` observer, so the refresh receipt cannot attribute that gap to
 `work_origins`, Git, SQL, aggregation or response validation. Use the existing
 read-only diagnostic/adapters on a fixed synthetic or protected-copy corpus,

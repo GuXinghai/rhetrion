@@ -135,7 +135,25 @@ At this package observation, normal live loading and the complete natural
 refresh measurement were still pending; `2026110803` had not loaded the repairs.
 No manual live refresh, direct profile edit or forced exit was used.
 
-# Live startup: functional success, waiting target failed
+# Owner qualification added after the live observations
+
+On 2026-11-08, after the observations below, the owner reported that other
+programs were consuming host resources and instructed that this test must not
+serve as a performance baseline for now. Both `2026110806` live runs, their
+phase timings, response latency and publication-to-work gaps are retained only
+as observations under uncontrolled resource contention. Do not use them to
+claim improvement/regression, rank intrinsic bottlenecks, estimate optimization
+benefits or pass/fail the performance target. Earlier timing-based acceptance
+judgments for these runs are superseded by this qualification.
+
+Package identity, successful publication, matched-generation/fallback facts,
+rendered states and isolated correctness tests remain separate functional
+evidence. Performance acceptance is pending a repeat with comparable resource
+conditions and fixed-input repeated measurements. This qualification does not
+claim that earlier matrices had controlled host load or invalidate their
+independently checked semantic equality. No new live benchmark is triggered.
+
+# Live startup: functional success, timings excluded from baseline
 
 After the owner's normal quit, the previous process group drained and no
 `usage-monitor.exe` remained. The archive hash was rechecked and `2026110806`
@@ -145,7 +163,8 @@ refresh ran `07:34:32.739Z`–`07:41:18.024Z`: 405287.899 ms (6m45.288s) to
 snapshot publication. The first passively observed fresh work matching
 generation `25236` arrived at `07:42:48.286Z`: 495547 ms (8m15.547s) from
 refresh start. This is an observation bound, not the exact internal completion
-time. The overview-plus-requested-work waiting target failed again.
+time. Under the later owner qualification above, this run provides no
+performance acceptance verdict.
 
 | Startup stage | Wall time, ms |
 |---|---:|
@@ -177,7 +196,7 @@ does not establish sustained timeout absence. A later passive work response
 belongs to the same startup publication and is not a second refresh result.
 The next automatic pass remains a separate warm-process gate.
 
-# Next natural pass: warm process, complete wait still near six minutes
+# Next natural pass: warm process, timings excluded from baseline
 
 Automatic refresh ran `2026-11-08T07:46:19.018Z`–`07:50:27.472Z`, succeeded
 in 248454.580 ms to snapshot publication. Generation `25240` matched, accounting
@@ -185,8 +204,9 @@ stayed fast path, fallback/full rebuild zero, two dirty/recomputed windows and
 no unavailable/mismatch windows. Quota published. First passive fresh work for
 that generation was observed at `07:52:04.084Z`: 345066 ms (5m45.066s) from
 refresh start, 96.612 seconds after snapshot publication. The result was not
-retained/refreshing and metadata was available. This remains close to the
-owner's reported six-minute wait, so the overall performance objective is open.
+retained/refreshing and metadata was available. These elapsed times do not
+establish normal performance or a target failure under the owner's later
+resource-contention qualification. Performance acceptance remains pending.
 
 | Warm automatic stage | Wall time, ms |
 |---|---:|
