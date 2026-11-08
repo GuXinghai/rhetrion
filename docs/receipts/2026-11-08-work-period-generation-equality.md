@@ -131,6 +131,100 @@ metadata stayed partial, including the empty period. This does not pass the
 credential or general native-security gates and does not qualify live latency.
 The previous failed probes remain recorded above and in ignored local evidence.
 
-Normal live loading and the overview-plus-requested-work natural refresh
-measurement are still pending. The running `2026110803` has not loaded these
-repairs. No manual live refresh, direct profile edit or forced exit was used.
+At this package observation, normal live loading and the complete natural
+refresh measurement were still pending; `2026110803` had not loaded the repairs.
+No manual live refresh, direct profile edit or forced exit was used.
+
+# Live startup: functional success, waiting target failed
+
+After the owner's normal quit, the previous process group drained and no
+`usage-monitor.exe` remained. The archive hash was rechecked and `2026110806`
+normally launched at `2026-11-08T07:34:08.1632328Z`. No forced termination,
+manual refresh, settings change or direct profile edit was used. Natural startup
+refresh ran `07:34:32.739Z`–`07:41:18.024Z`: 405287.899 ms (6m45.288s) to
+snapshot publication. The first passively observed fresh work matching
+generation `25236` arrived at `07:42:48.286Z`: 495547 ms (8m15.547s) from
+refresh start. This is an observation bound, not the exact internal completion
+time. The overview-plus-requested-work waiting target failed again.
+
+| Startup stage | Wall time, ms |
+|---|---:|
+| Index refresh | 206254.443 |
+| Discovery / graph | 140616.786 / 111102.463 |
+| Discovery walk / stat | 26652.616 / 23157.967 |
+| Index execute / maintenance | 19866.312 / 22843.673 |
+| Index descriptor | 595.733 |
+| Accounting origin proof | 33384.675 |
+| Accounting window shadow | 60879.946 |
+| Accounting fast path / quota within it | 35339.115 / 30615.187 |
+| Snapshot reload / build | 38639.099 / 38412.646 |
+| Snapshot index projection / report | 20057.201 / 17968.918 |
+| Snapshot clone / persist timing | 224.833 / 0.596 |
+
+Spans are inclusive, not additive. The descriptor now avoids the discarded
+report, but this does not remove cold graph, accounting or work costs. Inputs
+and timing conditions differ from earlier natural passes; no causal total
+speedup is established. No heavy benchmark or test ran during observation.
+Accounting stayed `fast_path`, generation matched, fallback/full rebuild zero,
+one dirty/recomputed window and no unavailable/mismatch windows. Quota published.
+
+The 201 completed health reads had median 10 ms and maximum 12646 ms, with zero
+failed observer reads recorded. At `07:43:47.632Z`, read-only status/DOM inspection
+confirmed live available overview, no stale serve, ready/nonbusy work and hidden
+work issue. Tool history remained explicitly partial. Diagnostics through
+`07:43:47.768Z` recorded no new work timeout since launch; this finite interval
+does not establish sustained timeout absence. A later passive work response
+belongs to the same startup publication and is not a second refresh result.
+The next automatic pass remains a separate warm-process gate.
+
+# Next natural pass: warm process, complete wait still near six minutes
+
+Automatic refresh ran `2026-11-08T07:46:19.018Z`–`07:50:27.472Z`, succeeded
+in 248454.580 ms to snapshot publication. Generation `25240` matched, accounting
+stayed fast path, fallback/full rebuild zero, two dirty/recomputed windows and
+no unavailable/mismatch windows. Quota published. First passive fresh work for
+that generation was observed at `07:52:04.084Z`: 345066 ms (5m45.066s) from
+refresh start, 96.612 seconds after snapshot publication. The result was not
+retained/refreshing and metadata was available. This remains close to the
+owner's reported six-minute wait, so the overall performance objective is open.
+
+| Warm automatic stage | Wall time, ms |
+|---|---:|
+| Index refresh | 80361.354 |
+| Discovery / graph | 32230.395 / 2197.530 |
+| Discovery walk / stat | 27665.147 / 22363.624 |
+| Index execute / descriptor | 33045.285 / 895.170 |
+| Accounting origin proof | 50791.558 |
+| Accounting window shadow | 56847.499 |
+| Accounting fast path, quota retained this pass | 3064.690 |
+| Snapshot reload / build | 42215.343 / 41950.248 |
+| Snapshot index projection / report | 19752.513 / 17600.631 |
+| Snapshot clone / persist timing | 263.083 / 1.007 |
+
+The 161 completed health reads had median 10 ms and maximum 13432 ms; failed
+observer-read count was zero. Read-only inspection at `07:50:45.581Z` still
+showed savedUpdating/busy work after the overview had published; it was not
+reported as fresh. At `07:52:26.385Z`, work was ready with a hidden issue.
+Diagnostics through `07:52:26.210Z` had no new work timeout since launch. This
+does not establish sustained absence, a controlled total A/B or release safety.
+Natural inputs and quota retention differ from startup. No heavy test or
+benchmark ran during either observation, and no manual refresh was triggered.
+
+# Follow-up experiment not retained
+
+A mode-separated guardian-parent header-cache experiment reused the work
+reader's fresh native authentication, exact named/held nanosecond state checks
+and successful-close requirement. Its synthetic regression first failed with
+one repeated header read, then passed with zero; mode separation, mutation,
+denial and failed close remained covered. The combined selection passed 61,
+failed zero and skipped one compressed case because the Node 22 runner lacks
+that zstd capability. This was synthetic orchestration evidence, not physical
+native qualification or a live performance matrix.
+
+No material end-to-end gain was established. The experiment still requires
+native open, path resolution and metadata-database proof, and async wall spans
+can include competing synchronous work. Both source edits and the experimental
+test were removed; their diff and content-free test output are retained only
+as ignored local evidence. No candidate was prepared or loaded for it. This
+avoids presenting a one-read reduction as a fix for the live 50.8-second span.
+The accepted production source remains exactly `95cec576`.

@@ -289,6 +289,36 @@ and all claim limits. Live loading and the complete natural-refresh waiting
 measurement remain pending; the running `2026110803` does not contain these
 repairs. No whole-refresh improvement is inferred from reader or fixture gates.
 
+After the owner's normal quit, `2026110806` loaded and both startup and the
+next automatic pass succeeded with matched accounting generations and zero
+fallback/full rebuild. Startup took 405287.899 ms to snapshot and 495547 ms
+to first passive fresh work; warm automatic took 248454.580/345066 ms. The
+complete waiting objective remains open. Descriptor was 595.733/895.170 ms;
+warm graph 2197.530 ms. Remaining measured costs include work after publication
+(96.612 seconds warm), origin proof (50791.558 ms warm), window shadow
+(56847.499 ms warm) and traversal/stat (27665.147/22363.624 ms). No new work
+timeout was recorded through `2026-11-08T07:52:26.210Z`, a finite observation.
+Keep these live results distinct from earlier same-input reader matrices.
+
+A guardian parent-header cache experiment was not retained. Synthetic evidence
+proved one fewer warm header read under the existing fresh-open/exact-state
+guards, but did not explain the live 50.8-second origin span or establish a
+material total gain. The experimental diff and aggregate test evidence remain
+ignored locally; running and committed source do not contain it. Native open,
+realpath and database proof would still run. Async wall spans may include
+contention, so treating the whole span as physical file I/O is unjustified.
+
+Next measured throughput boundary is the 96.612-second publication-to-work
+gap. The current production work composition does not pass its existing
+`onTiming` observer, so the refresh receipt cannot attribute that gap to
+`work_origins`, Git, SQL, aggregation or response validation. Use the existing
+read-only diagnostic/adapters on a fixed synthetic or protected-copy corpus,
+three fresh and three warm samples, to separate these costs before selecting
+another implementation. Related periods still perform new complete all-period
+reads; safely avoiding them must preserve immutable anchor, changed-publication
+refusal, external-metadata freshness and bounded leases. Do not turn off the
+work-cache freshness exclusion or merely cache by index generation.
+
 `scripts/benchmark-codex-history-cutoff.mjs` compares baseline `a911573f` with
 the current reader. Use `--synthetic --phase cold --run 1|2|3` in three fresh
 processes, then `--synthetic --phase warm --run 1` in a separate process; warm
