@@ -15,7 +15,7 @@ export function parseWorkOriginBenchmarkArguments(argv) {
   if (!Array.isArray(argv) || ![5, 7].includes(argv.length) || argv[0] !== "--allow-live-read"
       || argv[1] !== "--phase" || !["cold", "warm"].includes(argv[2])
       || argv[3] !== "--run" || !/^[1-3]$/u.test(argv[4])
-      || argv.length === 7 && (argv[5] !== "--target" || !["origins", "snapshot", "work"].includes(argv[6]))) {
+      || argv.length === 7 && (argv[5] !== "--target" || !["origins", "snapshot", "work", "descriptor"].includes(argv[6]))) {
     throw new Error("WORK_ORIGIN_BENCHMARK_ARGUMENT_INVALID");
   }
   return { allowLiveRead: true, phase: argv[2], run: Number(argv[4]), target: argv[6] ?? "origins" };
@@ -24,7 +24,7 @@ export function parseWorkOriginBenchmarkArguments(argv) {
 export async function benchmarkWorkOriginReads({ allowLiveRead = false, phase, run, target = "origins" } = {}) {
   if (!allowLiveRead || process.platform !== "win32" || process.arch !== "x64"
       || !["cold", "warm"].includes(phase) || ![1, 2, 3].includes(run)
-      || !["origins", "snapshot", "work"].includes(target)) {
+      || !["origins", "snapshot", "work", "descriptor"].includes(target)) {
     throw new Error("WORK_ORIGIN_BENCHMARK_CONTEXT_INVALID");
   }
   // Import only after the explicit CLI admission. Baseline code stays in
@@ -38,6 +38,50 @@ export async function benchmarkWorkOriginReads({ allowLiveRead = false, phase, r
   const { createLocalRefreshTimer } = await import(new URL("src/local-refresh-timing.js", root));
   const index = join(process.env.APPDATA, "UsageMonitor", "profiles", "stable", "companion-state", "local-index-store-v1.sqlite");
   const codexHome = join(process.env.USERPROFILE, ".codex");
+  if (target === "descriptor") {
+    const sourceFiles = ["src/local-index-backend.js", "src/local-index-companion-source.js",
+      "src/local-index-report.js", "src/local-index-rollup.js", "src/local-index-store.js"];
+    const sourceDigest = async () => {
+      const digest = createHash("sha256");
+      for (const file of sourceFiles) digest.update(await readFile(new URL(file, root)));
+      return digest.digest("hex");
+    };
+    const sourceSha256 = await sourceDigest();
+    const { readLocalIndexCompanionProjection, readLocalIndexGenerationDescriptor,
+      readLocalIndexGenerationIdentity } = await import(new URL("src/local-index-companion-source.js", root));
+    if (sourceSha256 !== await sourceDigest()) throw new Error("WORK_ORIGIN_BENCHMARK_COMPARISON_REFUSED");
+    const nowMs = Number(process.env.RHETRION_PERF_ANCHOR_MS);
+    const expected = Number(process.env.RHETRION_PERF_GENERATION);
+    const identity = readLocalIndexGenerationIdentity({ indexFile: index });
+    if (!Number.isSafeInteger(nowMs) || nowMs < 1 || !Number.isSafeInteger(expected)
+        || identity === null || identity.id !== expected) throw new Error("WORK_ORIGIN_BENCHMARK_CONTEXT_INVALID");
+    const unchanged = () => JSON.stringify(readLocalIndexGenerationIdentity({ indexFile: index })) === JSON.stringify(identity);
+    const measure = async full => {
+      const stages = {}, began = performance.now();
+      const result = full
+        ? (await readLocalIndexCompanionProjection({ indexFile: index, nowMs,
+          declaredSpeedBaselines: [], includeWorkUsage: false,
+          onTiming: ({ stage, wallMs }) => { stages[stage] = (stages[stage] ?? 0) + wallMs; } })).generation
+        : readLocalIndexGenerationDescriptor({ indexFile: index, nowMs });
+      if (result === null || result === undefined) throw new Error("WORK_ORIGIN_BENCHMARK_PROJECTION_UNAVAILABLE");
+      return { semantic: result, metrics: { wallMs: Math.round((performance.now() - began) * 1000) / 1000, stages } };
+    };
+    for (let i = 0; i < (phase === "warm" ? 4 : 1); i++) {
+      if (!unchanged()) throw new Error("WORK_ORIGIN_BENCHMARK_GENERATION_CHANGED");
+      let baseline, candidate;
+      if ((i + run) % 2) { baseline = await measure(true); candidate = await measure(false); }
+      else { candidate = await measure(false); baseline = await measure(true); }
+      const equal = JSON.stringify(baseline.semantic) === JSON.stringify(candidate.semantic);
+      const generationStable = unchanged(), sourceUnchanged = sourceSha256 === await sourceDigest();
+      if (!equal || !generationStable || !sourceUnchanged) throw new Error("WORK_ORIGIN_BENCHMARK_COMPARISON_REFUSED");
+      console.log(JSON.stringify({ schema: "live-generation-descriptor-comparison-v1", runtime: process.versions.node,
+        phase: phase === "warm" && i === 0 ? "warmup" : phase, run: phase === "warm" ? i : run,
+        generation: identity.id, calculationRevision: identity.calculationRevision, nowMs, sourceSha256,
+        equal, generationStable, sourceUnchanged, scope: "descriptor-read-only-default-baselines",
+        baseline: baseline.metrics, candidate: candidate.metrics }));
+    }
+    return;
+  }
   if (target === "work") {
     const { readLocalIndexProjection, createLocalIndexBackend } = await import(new URL("src/local-index-backend.js", root));
     const nowMs = Number(process.env.RHETRION_PERF_ANCHOR_MS);

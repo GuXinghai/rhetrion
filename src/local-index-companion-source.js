@@ -6,6 +6,7 @@ import {
   localIndexToolProvenanceComplete,
   readLocalIndexCoverage,
   readLocalIndexReport,
+  readLocalIndexReportMetadata,
   readLocalIndexReportValidUntil,
 } from "./local-index-report.js";
 import {
@@ -182,6 +183,42 @@ export function readLocalIndexGenerationIdentity({ indexFile } = {}) {
       return { id: commitSeq, fingerprint: identity.fingerprint, calculationRevision: readCalculationRevision(database) };
     });
   } catch {
+    return null;
+  } finally {
+    database.close();
+  }
+}
+
+/** The complete publication descriptor without a discarded presentation report. */
+export function readLocalIndexGenerationDescriptor({
+  indexFile, nowMs = Date.now(), signal = null,
+} = {}) {
+  if (typeof indexFile !== "string" || indexFile.length < 1) {
+    throw new TypeError("indexFile must be a non-empty string");
+  }
+  if (!Number.isFinite(nowMs)) throw new TypeError("nowMs must be a finite epoch timestamp");
+  signal?.throwIfAborted();
+  let database;
+  try {
+    const metadata = lstatSync(indexFile);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return null;
+    database = openLocalIndexStore(indexFile, { readOnly: true });
+  } catch {
+    signal?.throwIfAborted();
+    return null;
+  }
+  try {
+    const generation = withReadSnapshot(database, ({ commitSeq }) => {
+      signal?.throwIfAborted();
+      if (!Number.isSafeInteger(commitSeq) || commitSeq < 1) return null;
+      const report = readLocalIndexReportMetadata(database, { nowMs });
+      signal?.throwIfAborted();
+      return describeLocalIndexGeneration(database, report, commitSeq);
+    });
+    signal?.throwIfAborted();
+    return generation;
+  } catch {
+    signal?.throwIfAborted();
     return null;
   } finally {
     database.close();

@@ -230,10 +230,42 @@ loading and complete overview-plus-work readiness remain unverified.
 Source is committed as `868ec69a`. Unsigned candidate `2026110803` passed
 exact 762-file package verification and isolated native rendering with plain
 and compressed history-base fixtures, five sources and no quarantines.
-The complete local suite passed all 300 tests. The next normal switch still
-requires the owner's normal quit of `2026110802`; no forced exit or manual
-production refresh is used. Observe both startup and the next natural pass:
-the startup must establish proofs before unchanged parents can benefit.
+The complete local suite passed all 300 tests. After the owner's normal quit,
+`2026110803` loaded the repair. Startup snapshot publication succeeded in
+192064.365 ms, generation `25199` matched and fallback/full rebuilds stayed
+zero. Passive fresh work availability was first observed after 311420 ms and
+the rendered work view was subsequently ready. Health still reached 14849 ms;
+the complete waiting target is not closed. No forced exit, direct profile edit
+or manual production refresh was used. The next natural pass succeeded in
+563906.025 ms to snapshot publication, but first fresh work was observed only
+after 734482 ms. One background work timeout occurred. The complete waiting
+target failed despite functional success. Graph was 9646.700 ms while
+walk/stat reached 56416.109/46353.563 ms, descriptor 62779.967 ms, proof
+102101.336 ms and window shadow 106927.865 ms. These changing-input natural
+passes do not establish a causal total speedup or regression. Keep the direct
+reader byte-reduction evidence separate from this failed end-to-end gate.
+
+## Next throughput slice: descriptor without discarded report
+
+`createLocalIndexBackend.describeCurrentGeneration` still calls the full
+companion projection and discards all but its descriptor. Replace that with
+the existing metadata reader and original descriptor builder, inside one read
+snapshot. Preserve rollup-basis admission, committed cursor/future cutoff,
+coverage/tool/issue semantics, calculation revision, null refusal and abort.
+The process-local descriptor cache must also compare calculation revision,
+which can change without advancing commit sequence. Require exact descriptor
+equality against full reports across partial/provisional/future/empty inputs,
+a concurrent-publication fence and same-commit revision changes. This slice
+must show reduced discarded SQL/projection work before another candidate;
+it does not by itself fix work-query or origin-proof costs.
+
+The metadata-only descriptor slice is implemented. Exact synthetic and live
+read-only comparisons, cold/warm samples and validation boundaries are in the
+[descriptor receipt](../receipts/2026-11-08-generation-descriptor-read.md).
+The complete local suite passed 300 tests. Two extra accounting/API-reference
+assertions also fail on the unchanged `870e8634` baseline and remain explicit;
+they are not weakened. Candidate packaging and live loading remain separate
+from the reader's measured improvement.
 
 `scripts/benchmark-codex-history-cutoff.mjs` compares baseline `a911573f` with
 the current reader. Use `--synthetic --phase cold --run 1|2|3` in three fresh
@@ -296,3 +328,13 @@ excludes only metadata's observation-clock field. External thread/repository
 inputs remain live, so equal outputs at one fixed publication do not establish
 a frozen external corpus. Record this narrower scope explicitly rather than
 claiming a controlled full-refresh benchmark. Never publish either result.
+
+The optional `--target descriptor` compares a full companion report's generation
+with the metadata-only descriptor facade. It requires the same fixed anchor
+and expected generation as the work target, additionally checks unchanged
+calculation revision, and compares the complete descriptor exactly. Three
+fresh processes and a separate warmed process use the existing bounded phase/run
+arguments. Its source matrix covers descriptor/backend/report/rollup/store
+owners. It reads only the local index, emits no report rows and publishes no
+result; timings qualify this discarded-report boundary, not work or the complete
+refresh. No native source-reader or account metadata cache hit is implied.

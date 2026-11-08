@@ -918,6 +918,15 @@ accepts no Codex home, salt or work metadata and adds no persisted format;
 existing generation/time-membership cache proofs still control result reuse.
 Backend close aborts and settles its active reads before shutdown continues.
 
+Index-refresh generation description uses the existing metadata-only reader
+and the same descriptor builder inside one SQLite read snapshot. It preserves
+current rollup-basis admission, committed-cursor and future-cutoff counts,
+coverage, tool provenance and issue counts without building a discarded
+presentation report. Descriptor reuse also requires unchanged
+`calculation_revision` alongside commit sequence and fingerprint; revision
+changes within a commit must not return an older descriptor. Missing,
+unreadable or stale-basis stores remain refused, and cancellation propagates.
+
 Independent work queries use the backend's work-only reader, without computing
 and discarding a companion report. It captures `commit_seq` before any
 asynchronous work metadata access and refuses the result if publication changed

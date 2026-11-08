@@ -32,7 +32,7 @@
       ],
       "decision": "retain_as_explicit_read_only_live_diagnostic",
       "provenance": null,
-      "provenanceReason": "Compares pinned origin readers or companion/work projection composition through explicit read-only live admission, fixed publication/anchor checks, no source or profile writes, and aggregate-only output.",
+      "provenanceReason": "Compares pinned origin readers, companion/work projection composition or full-report versus metadata-only generation descriptions through explicit read-only live admission, fixed publication/anchor checks, no source or profile writes, and aggregate-only output.",
       "legacyPaths": []
     },
     {

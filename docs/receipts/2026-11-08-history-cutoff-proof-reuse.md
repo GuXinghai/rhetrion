@@ -145,9 +145,116 @@ does not pass the normal hosted/credential smoke or native general-security
 qualification. The screenshot was inspected; unavailable quota/forecast values
 remained explicit. No real profile was used for the synthetic run.
 
-Authorized automatic live refresh observation remains a separate gate, pending
-the owner's normal exit of the still-running `2026110802`. Whole-refresh validation must include independent
-work readiness, not only snapshot publication. Rollback is a source revert
+# Production loading and startup
+
+After the owner normally exited `2026110802`, no `usage-monitor.exe` process
+remained. The `2026110803` ASAR hash was checked again before normal launch at
+`2026-11-08T05:22:10.4109485Z`. No forced exit, direct profile edit, setting
+change or manual refresh was used. The artifact remains unsigned, uninstalled
+and unpublished.
+
+The startup automatic refresh ran from `05:22:22.812Z` to `05:25:34.875Z` and
+succeeded in 192064.365 ms. Accounting stayed `fast_path`, generation `25199`
+matched, fallback/full rebuilds were zero, and one dirty window was recomputed
+without unavailable/mismatch windows. Quota publication succeeded. The
+overview was subsequently live/available without stale serve; tools retained
+the explicit `typed_tool_history_partial` state.
+
+| Startup phase | Wall time, ms |
+|---|---:|
+| Index refresh | 39180.392 |
+| Discovery / graph | 24011.583 / 18583.565 |
+| Origin proof | 12231.336 |
+| Accounting window shadow | 54096.726 |
+| Accounting fast path / quota within it | 37262.261 / 31623.739 |
+| Snapshot reload / build | 39847.053 / 39495.666 |
+| Snapshot index projection / report | 16426.774 / 13916.924 |
+| Snapshot accounting reads, two calls | 2968.969 |
+| Snapshot collector projection | 3152.534 |
+| Snapshot clone / persist timing | 350.791 / 0.077 |
+
+These spans are inclusive and not additive. Startup establishes proofs; this
+first graph span is not the warm-reuse result. No heavy benchmark or test was
+run concurrently with the production observation.
+
+Passive observation of the renderer's existing work-query responses first
+recorded a fresh available work result for generation `25199` at
+`05:27:34.232Z`, with available metadata and neither retained nor refreshing
+flags. That is 311420 ms after refresh began, versus 192064.365 ms to snapshot
+publication. Read-only DOM inspection confirmed ready/not busy and a hidden
+issue element at `05:27:40.719Z`. The passive response time is an observation
+bound, not a claim about the exact instant the internal build completed.
+The user-facing waiting target therefore remains materially longer than
+snapshot publication. This startup does not establish overall acceleration.
+
+The startup health series had 130 samples, median 8 ms, maximum 14849 ms;
+that slow response ended at snapshot completion. Remaining synchronous work
+is not fixed by cutoff reuse. Diagnostics read at `05:28:00.637Z` contained
+no new `work_usage_timeout` since launch, a finite observation only. Inspection
+retained allowlisted status/timing fields, not private work rows or labels.
+
+# Next natural pass: end-to-end target not met
+
+The next automatic refresh ran from `05:30:35.552Z` to `05:39:59.454Z` and
+succeeded in 563906.025 ms. Accounting generation `25203` matched, with zero
+fallback/full rebuilds, two dirty/recomputed windows and no unavailable or
+mismatch windows. Quota publication succeeded. This functional success is not
+a performance acceptance pass.
+
+| Next automatic phase | Wall time, ms |
+|---|---:|
+| Index refresh | 215407.424 |
+| Discovery / graph | 67409.120 / 9646.700 |
+| Discovery walk / stat within it | 56416.109 / 46353.563 |
+| Index execute / descriptor | 54834.183 / 62779.967 |
+| Origin proof | 102101.336 |
+| Accounting window shadow | 106927.865 |
+| Accounting fast path / quota within it | 49760.030 / 41875.165 |
+| Snapshot reload / build | 73390.873 / 72984.457 |
+| Snapshot index projection / report | 31907.130 / 28769.494 |
+| Snapshot accounting reads, two calls | 3497.772 |
+| Snapshot collector projection | 4322.626 |
+| Snapshot clone / persist timing | 401.682 / 1.937 |
+
+Passive work-response observation first confirmed generation `25203` fresh,
+available, not retained/refreshing, with available metadata at
+`05:42:50.034Z`: 734482 ms (12 minutes 14.482 seconds) after refresh began.
+Read-only DOM inspection at `05:43:25.066Z` confirmed ready/not busy and no
+visible work issue. The intended overview-plus-work waiting target failed.
+This pass had different inputs and timing conditions from earlier passes;
+neither its regression nor a whole-refresh improvement can be causally
+assigned to one code change from these natural observations.
+
+The second health series includes the wait for the natural pass: 332 completed
+reads, median 15 ms, maximum 14067 ms. Several observer reads failed under
+their deadlines, including an additional refresh-status GET that timed out at
+20 seconds. Those failed reads are excluded from the completed-read summary;
+its maximum is not an upper bound on server stalls. Diagnostics read through
+`05:43:25.206Z` recorded one new `work_usage_timeout`, at `05:34:19.646Z`,
+background phase `preload`, stage `validation`, elapsed 70057 ms, configured
+timeout 10000 ms, HTTP status 200. No timeout or stale state was suppressed.
+
+Warm graph was lower than the startup graph, while traversal/stat, origin
+proof, accounting and descriptor work grew. Production timing lacks cutoff
+hit/byte counters, so it does not itself prove every cutoff hit; the controlled
+reader matrix remains the direct repeated-byte evidence. Cold startup took
+311420 ms to first observed fresh work and the next pass 734482 ms. The new
+candidate therefore closes loading and functional publication, **not** the
+end-to-end acceleration or timeout gates.
+
+Source review identified an independent avoidable cost: the backend's
+`describeCurrentGeneration` builds a full companion report and discards all
+but its generation descriptor. The existing `readLocalIndexReportMetadata`
+already computes the descriptor's required evidence without presentation
+pricing/quota/impact projections. A separate descriptor-only repair is being
+prepared and has not been loaded by this artifact. Work still builds default
+four-period/all-history summaries per request; its optimization and related
+generation-identity correctness need their own synthetic gates. No concurrent
+heavy test or benchmark was used to assess this live pass.
+
+# Rollback and remaining boundary
+
+Rollback is a source revert
 and, after normal quit, loading the preserved previous candidate. There is no
 schema migration or durable cache conversion to reverse. No rollback,
 manual live refresh, signing, installation, publication or push was performed.

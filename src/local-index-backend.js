@@ -4,6 +4,7 @@ import { refreshLocalIndexAccountingCache } from "./local-index-accounting-cache
 import { buildLocalIndexCacheDropThreadLinks } from "./local-index-cache-drop-links.js";
 import {
   readLocalIndexCompanionProjection,
+  readLocalIndexGenerationDescriptor,
   readLocalIndexGenerationIdentity,
   readLocalIndexProjectionValidUntil,
   readLocalIndexWorkProjection,
@@ -110,8 +111,8 @@ export function createLocalIndexBackend({
     if (typeof value !== "function") throw new TypeError(`${name} must be a function`);
   }
 
-  // The descriptor needs one full report read; it is reused for as long as the
-  // store's publication identity does not move.
+  // Only descriptor metadata is read. Reuse requires the same publication and
+  // calculation revision; evidence can change without advancing commit_seq.
   let described = null;
   const maintainedAt = new Map();
   const maintenanceRuns = new Map();
@@ -135,18 +136,20 @@ export function createLocalIndexBackend({
     try { return await run; } finally { maintenanceRuns.delete(file); }
   }
 
-  async function describeCurrentGeneration(file) {
+  function describeCurrentGeneration(file, signal) {
+    signal?.throwIfAborted();
     const identity = readLocalIndexGenerationIdentity({ indexFile: file });
     if (identity === null) return null;
     if (described !== null && described.file === file
-        && described.id === identity.id && described.fingerprint === identity.fingerprint) {
+        && described.id === identity.id && described.fingerprint === identity.fingerprint
+        && described.calculationRevision === identity.calculationRevision) {
       return described.generation;
     }
-    const projection = await readLocalIndexCompanionProjection({ indexFile: file, nowMs: now() });
-    const generation = projection.status === "available" ? projection.generation : null;
+    const generation = readLocalIndexGenerationDescriptor({ indexFile: file, nowMs: now(), signal });
     if (generation === null) return null;
     described = {
-      file, id: generation.id, fingerprint: generation.fingerprint, generation,
+      file, id: generation.id, fingerprint: generation.fingerprint,
+      calculationRevision: generation.calculationRevision, generation,
     };
     return generation;
   }
@@ -214,7 +217,7 @@ export function createLocalIndexBackend({
     // First completed refresh in every process (including after a crash), then
     // daily at this idle ingestion boundary. Never run on a report read path.
     const maintenanceResult = await timing.measure("index_maintenance",()=>maintainIfDue(file, signal));
-    const generation = await timing.measure("index_descriptor",()=>describeCurrentGeneration(file));
+    const generation = await timing.measure("index_descriptor",()=>describeCurrentGeneration(file, signal));
     if (generation === null) throw fixedError("local_unified_index_generation_invalid");
     const scanned = count(result.sourcesResumed) + count(result.sourcesRescanned)
       + count(result.sourcesNew);

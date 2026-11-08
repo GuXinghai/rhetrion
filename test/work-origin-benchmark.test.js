@@ -15,5 +15,7 @@ test("live work-origin diagnostics require explicit bounded admission before sta
     "snapshot");
   assert.equal(parseWorkOriginBenchmarkArguments(["--allow-live-read", "--phase", "warm", "--run", "1", "--target", "work"]).target,
     "work");
+  assert.equal(parseWorkOriginBenchmarkArguments(["--allow-live-read", "--phase", "cold", "--run", "3", "--target", "descriptor"]).target,
+    "descriptor");
   await assert.rejects(benchmarkWorkOriginReads({ phase: "warm", run: 1 }), /CONTEXT_INVALID/u);
 });
