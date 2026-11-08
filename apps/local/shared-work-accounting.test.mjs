@@ -22,6 +22,7 @@ function combined(nowMs, marker = 1) {
         scopes: [{ id: "account-a", status: "available" }, { id: "unknown", status: "unavailable" }],
         snapshots: Object.fromEntries(["account-a", "unknown"].map(scope => [scope, {
           status: "available", scope, scopes: [], cells: [], models: [], threadLookup: {}, metadata: {}, marker,
+          generation: { status: "complete", id: 1, commitSeq: 1, usageProvenanceComplete: true },
         }])),
       }]),
     ) },

@@ -13,6 +13,29 @@ const PERIODS = {
 const ID = /^[a-zA-Z0-9:_-]{1,200}$/u;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+// Separate reads allocate separate generation objects. Compare only reviewed
+// publication evidence; an unknown object cannot anchor another period.
+function generationKey(generation) {
+  if (Number.isSafeInteger(generation) && generation > 0)
+    return JSON.stringify(["number", generation]);
+  if (typeof generation === "string" && generation.length > 0 && generation.length <= 200)
+    return JSON.stringify(["string", generation]);
+  if (!generation || typeof generation !== "object" || Array.isArray(generation)) return null;
+  const revision = generation.calculationRevision;
+  if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0)) return null;
+  if (Object.hasOwn(generation, "fingerprint")) {
+    if (typeof generation.fingerprint !== "string" || generation.fingerprint.length < 1
+        || generation.fingerprint.length > 200) return null;
+    return JSON.stringify(["fingerprint", generation.fingerprint, revision ?? null]);
+  }
+  if (generation.status !== "complete" || !Number.isSafeInteger(generation.commitSeq)
+      || generation.commitSeq < 1 || generation.id !== generation.commitSeq
+      || typeof generation.usageProvenanceComplete !== "boolean") return null;
+  return JSON.stringify(["local-index", generation.commitSeq,
+    generation.usageProvenanceComplete, revision ?? null]);
+}
+
 const KEYS = new Set([
   "schemaVersion",
   "action",
@@ -210,7 +233,8 @@ export function createWorkUsageService({
       if (requestedEnd !== null && (requestedEnd > clock()
           || (source && source.toMs !== requestedEnd))) throw workUsageError("work_usage_query_invalid");
       const anchorToMs = requestedEnd ?? source?.toMs ?? null;
-      const expectedGeneration = source?.result?.generation?.fingerprint ?? source?.result?.generation;
+      const expectedGeneration = source ? generationKey(source.result?.generation) : undefined;
+      if (source && expectedGeneration === null) throw workUsageError("work_usage_snapshot_changed");
       let entry = q.snapshotId ? snapshots.get(q.snapshotId) : null;
       if (q.snapshotId && !entry)
         throw workUsageError("work_usage_snapshot_expired");
@@ -253,7 +277,7 @@ export function createWorkUsageService({
           // endAt-only request has no generation identity to compare against.
           if (anchorToMs !== null && (retained?.toMs !== anchorToMs
               || (expectedGeneration !== undefined
-                && (retained?.result.generation?.fingerprint ?? retained?.result.generation) !== expectedGeneration))) retained = null;
+                && generationKey(retained?.result.generation) !== expectedGeneration))) retained = null;
           entry = {
             id: newId(),
             period: q.period,
@@ -288,7 +312,7 @@ export function createWorkUsageService({
             .then((result) => {
               if (!snapshots.has(selected.id)) return;
               if (result.status === "available" && selected.expectedGeneration !== undefined &&
-                  selected.expectedGeneration !== (result.generation?.fingerprint ?? result.generation)) {
+                  selected.expectedGeneration !== generationKey(result.generation)) {
                 throw workUsageError("work_usage_snapshot_changed");
               }
               if (result.status === "available" && (selected.exactWindow || result.toMs !== undefined)) {

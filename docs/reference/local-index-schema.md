@@ -935,6 +935,15 @@ publication boundary and retains the report's current-rollup-basis admission;
 it does not authorize external-metadata cache reuse or
 change reporting anchors, retained states, cancellation or leases.
 
+Related reporting periods compare publication values rather than JavaScript
+object references. For the work reader's fingerprint-free generation, the
+service requires a positive safe commit sequence matching its id, complete
+generation status and explicit usage-provenance evidence. A changed commit or
+provenance is refused; a missing or malformed generation cannot anchor a
+related period. Existing fingerprint identities remain supported, and an
+available calculation revision must match. This comparison is process-local;
+it does not add fields to the generation or a persisted schema/cache format.
+
 The v11 `calculation_revision` advances transactionally for material fact,
 dimension, ownership/order, coverage and diagnostic changes. Metadata-only
 cursor/stat updates may leave it unchanged; the global publication sequence

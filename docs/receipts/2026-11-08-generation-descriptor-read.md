@@ -112,3 +112,32 @@ snapshot publication alone cannot pass it. No manual live refresh, direct
 profile edit, forced termination, installation, signing, publication or push
 is performed by this slice. Rollback is the normal source revert and loading
 the preserved prior candidate after normal quit; no format conversion is needed.
+
+# Candidate 2026110804: descriptor packaged, loading held
+
+Source `8f65baa045951d733593589ddb82ea9fb402f558` was staged and packaged with
+Node `26.2.0`. All 762 staged/archive files matched exactly, including the
+reviewed builder package-manifest transformation. ASAR SHA-256:
+`ca582fa4355747c223238c6e7ae3d1e5de32805092dfa61434dd492f461c1287`.
+The directory artifact is unsigned, uninstalled and unpublished.
+
+The initial disposable-profile probe failed while polling an explicit `all`
+work query alongside the renderer's own background queries. It recorded only
+`SYNTHETIC_WORK_ROUTE_FAILED`, not an HTTP code; the exact refusal is therefore
+unproven. The next passive probe reached rendering but its post-quit inventory
+assertion used the wrong nested JSON path in the diagnostic helper; correcting
+that helper did not change package bytes. The final fresh-profile passive
+probe confirmed a ready overview, fresh available work at generation 5, five
+sources, two history bases, no quarantine and normal quit. The actual packaged
+render was inspected; missing quota remained explicit. Synthetic credentials
+are absent (`app_server_unavailable`), and work metadata remained partial.
+Neither the credential gate nor general native-security qualification passed.
+
+Passive work responses also repeatedly returned `work_usage_snapshot_changed`
+for background related periods. Source inspection and a real-backend synthetic
+regression then reproduced the cause: the service compares separately allocated
+generation objects by reference when the work backend has no fingerprint.
+The candidate is **not loaded live**; the next source slice must fix that
+comparison without relaxing the publication fence, then package a successor.
+This prevents treating the partial functional smoke as complete performance
+acceptance. The running live candidate remains `2026110803` at this observation.

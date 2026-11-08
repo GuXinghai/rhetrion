@@ -682,6 +682,45 @@ test("related reports cannot silently combine different canonical generations", 
   } finally { service.close(); }
 });
 
+test("related reports compare valid publication evidence and refuse unknown or changed evidence", async t => {
+  const local = { status: "complete", id: 9, commitSeq: 9, usageProvenanceComplete: true };
+  const cases = [
+    ["equal local values", local, { ...local }, true],
+    ["equal fingerprints", { fingerprint: "generation-a" }, { fingerprint: "generation-a" }, true],
+    ["different fingerprint", { fingerprint: "generation-a" }, { fingerprint: "generation-b" }, false],
+    ["different revision", { ...local, calculationRevision: 2 }, { ...local, calculationRevision: 3 }, false],
+    ["different provenance", local, { ...local, usageProvenanceComplete: false }, false],
+    ["mismatched commit", local, { ...local, commitSeq: 10 }, false],
+    ["missing provenance", local, { status: "complete", id: 9, commitSeq: 9 }, false],
+    ["coerced commit", local, { ...local, id: "9", commitSeq: "9" }, false],
+    ["unsafe commit", local, { ...local, id: 2 ** 53, commitSeq: 2 ** 53 }, false],
+    ["unknown object", local, {}, false],
+    ["invalid fingerprint", local, { ...local, fingerprint: "" }, false],
+    ["invalid revision", local, { ...local, calculationRevision: null }, false],
+  ];
+  for (const [name, before, after, accepted] of cases) await t.test(name, async () => {
+    let generation = before;
+    const service = createWorkUsageService({ build: async () => availableResult([], { generation }) });
+    try {
+      const source = await waitForAvailable(service, { schemaVersion: WORK_USAGE_SCHEMA, period: "7d" });
+      generation = after;
+      const pending = await service.query({ schemaVersion: WORK_USAGE_SCHEMA, period: "all", sourceSnapshotId: source.snapshotId });
+      await new Promise(resolve => setImmediate(resolve));
+      const related = await service.query({ schemaVersion: WORK_USAGE_SCHEMA, period: "all", snapshotId: pending.snapshotId });
+      assert.equal(related.status, accepted ? "available" : "unavailable");
+      if (!accepted) assert.equal(related.errorCode, "work_usage_snapshot_changed");
+    } finally { await service.close(); }
+  });
+  for (const generation of [undefined, null, {}, { id: 9 }, { ...local, commitSeq: 10 }]) {
+    const service = createWorkUsageService({ build: async () => availableResult([], { generation }) });
+    try {
+      const source = await waitForAvailable(service, { schemaVersion: WORK_USAGE_SCHEMA, period: "7d" });
+      await assert.rejects(service.query({ schemaVersion: WORK_USAGE_SCHEMA, period: "all", sourceSnapshotId: source.snapshotId }),
+        { code: "work_usage_snapshot_changed" });
+    } finally { await service.close(); }
+  }
+});
+
 
 test("complete zero usage needs no model price while uncertain zero stays unpriced", () => {
   const zero = { input_uncached_tokens: 0, input_cache_read_tokens: 0,

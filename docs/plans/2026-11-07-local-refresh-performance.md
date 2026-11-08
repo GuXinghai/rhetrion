@@ -267,6 +267,14 @@ assertions also fail on the unchanged `870e8634` baseline and remain explicit;
 they are not weakened. Candidate packaging and live loading remain separate
 from the reader's measured improvement.
 
+Candidate `2026110804` was packaged and rendered in isolation but held before
+live loading: passive background period requests repeatedly failed with
+`work_usage_snapshot_changed`. A real work-backend regression reproduced
+reference comparison of freshly allocated equal generation objects. The next
+slice compares validated publication values, preserves changed/unknown refusal
+and must show all four packaged background periods settling without a restart
+loop. See the [related-period receipt](../receipts/2026-11-08-work-period-generation-equality.md).
+
 `scripts/benchmark-codex-history-cutoff.mjs` compares baseline `a911573f` with
 the current reader. Use `--synthetic --phase cold --run 1|2|3` in three fresh
 processes, then `--synthetic --phase warm --run 1` in a separate process; warm
