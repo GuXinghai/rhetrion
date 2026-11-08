@@ -282,6 +282,13 @@ reproduced that independent failure. The empty branch now reuses the same
 pass's common metadata and preserves partial coverage; no validator is relaxed.
 The successor must complete the full four-period packaged gate before loading.
 
+Candidate `2026110806`, source `95cec576`, passed exact 762-file packaging,
+passive four-period warming at one generation/end, actual Usage & costs
+rendering and normal isolated quit. Its receipt retains the two held candidates
+and all claim limits. Live loading and the complete natural-refresh waiting
+measurement remain pending; the running `2026110803` does not contain these
+repairs. No whole-refresh improvement is inferred from reader or fixture gates.
+
 `scripts/benchmark-codex-history-cutoff.mjs` compares baseline `a911573f` with
 the current reader. Use `--synthetic --phase cold --run 1|2|3` in three fresh
 processes, then `--synthetic --phase warm --run 1` in a separate process; warm

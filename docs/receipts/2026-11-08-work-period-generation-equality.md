@@ -106,3 +106,31 @@ as the populated period. Wider gates and a new package are recorded separately.
 The complete local suite then passed all 300 tests, the browser work-view file
 passed all 107 tests, architecture passed with zero debt and preflight passed
 all 20 tests. No test timeout, response validator or privacy gate was changed.
+
+# Candidate 2026110806: packaged period and rendered gates passed
+
+Source `95cec57668d80d5bf9775cb0f61801cee12a20df`, Node `26.2.0`, all 762
+staged/archive files exactly verified, ASAR SHA-256:
+`15df1b606006b0a5bef54dd4570e3702a38e66414e14faea9821e87257869cea`.
+The unsigned directory artifact remains uninstalled and unpublished.
+
+A new disposable profile with the same structural fixture completed passive
+7d, empty 24h, 30d and all-history warming at generation 5 and one common
+reporting end. All were fresh, not retained/refreshing; no transitional work
+refusal was recorded in this finite probe. The overview was ready. The owning
+test harness then opened the actual packaged Usage & costs page: visible,
+ready, not busy and without a work issue. Both screenshots were inspected.
+Two complete warming sequences were observed across startup and activation;
+this does not prove all redundant work removed or measure their cost. No
+debugger breakpoints were used in this acceptance run.
+
+After normal synthetic quit, the read-only inventory confirmed five sources,
+two history bases, zero quarantine and generation 5. Quota stayed explicitly
+unavailable without synthetic credentials (`app_server_unavailable`); work
+metadata stayed partial, including the empty period. This does not pass the
+credential or general native-security gates and does not qualify live latency.
+The previous failed probes remain recorded above and in ignored local evidence.
+
+Normal live loading and the overview-plus-requested-work natural refresh
+measurement are still pending. The running `2026110803` has not loaded these
+repairs. No manual live refresh, direct profile edit or forced exit was used.
