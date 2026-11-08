@@ -307,6 +307,17 @@ available. Report median and range, with missing samples explicit. Different
 natural generations/corpora are not controlled A/B inputs; cold-start and
 fixed-input proof remain separate. No old-session value enters the new series.
 
+The fresh series completed three natural automatic runs at generations 25249,
+25250 and 25251, ending `2026-11-08T08:58:44.278Z`. Snapshot median was
+172144.857 ms (170911.191–184456.643); first observed matching fresh work median
+was 261827 ms (259783–283401). All succeeded with fast path, matched generations
+and zero fallback/full rebuild. No old samples were included. The
+[receipt](../receipts/2026-11-08-work-period-generation-equality.md#fresh-natural-refresh-recording-completed)
+contains individual runs, nested phase times, host load and observation limits.
+The recorder stopped after three runs. This is a warm-process natural-input
+series, not a controlled before/after or cold-start claim. Total host CPU
+remained around 52% median and does not attribute competing load.
+
 A guardian parent-header cache experiment was not retained. Synthetic evidence
 proved one fewer warm header read under the existing fresh-open/exact-state
 guards, but did not establish a
