@@ -88,3 +88,6 @@ public APIs, and `native/windows-filesystem` for the Windows security boundary.
 
 The interface supports English, Simplified Chinese and Spanish. For
 troubleshooting, review [support guidance](SUPPORT.md).
+
+Rhetrion is derived from [TiboTattle](https://github.com/adamallcock/tibotattle) and
+licensed under the [MIT License](LICENSE).

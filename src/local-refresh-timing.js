@@ -39,6 +39,12 @@ const REUSE_CODES = new Set([
   "rescan_compressed_changed", "rescan_quarantine_changed", "rescan_shrink", "rescan_boundary_changed",
   "rescan_response_reconciliation", "rescan_model_attribution_recovery", "rescan_segment_mismatch",
   "rescan_dependency_quarantine_changed", "rescan_session_rescan", "rescan_other",
+  "lineage_metadata_missing", "lineage_parent_ambiguous", "lineage_reset_invalid", "lineage_replacement_mode_invalid", "lineage_base_invalid",
+  "lineage_parent_missing", "lineage_cutoff_out_of_bounds", "lineage_cutoff_ordinal_invalid",
+  "lineage_cutoff_truncated", "lineage_cutoff_boundary_invalid", "lineage_cutoff_line_count_mismatch",
+  "lineage_parent_content_invalid", "lineage_physical_cycle", "lineage_logical_cycle", "lineage_dependency_invalid",
+  "lineage_parent_changed", "lineage_parent_short_read", "lineage_parent_open_failed",
+  "lineage_parent_read_failed", "lineage_parent_close_failed",
 ]);
 const ORIGIN_CODES = new Set([
   "requested", "known", "unknown", "thread_row_missing", "thread_row_invalid",
@@ -54,7 +60,8 @@ export function reportLocalRefreshOriginDiagnostic(observer, phase, code, count)
 }
 export function reportLocalRefreshReuseDiagnostic(observer, phase, code) {
   if (phase === "index" && typeof code === "string" && /^rescan_[a-z_]+$/u.test(code) && !REUSE_CODES.has(code)) code = "rescan_other";
-  if (typeof observer !== "function" || !REUSE_PHASES.has(phase) || !REUSE_CODES.has(code)) return;
+  if (typeof observer !== "function" || !REUSE_PHASES.has(phase) || !REUSE_CODES.has(code)
+      || code.startsWith("lineage_") && phase !== "index") return;
   try { Promise.resolve(observer(Object.freeze({ phase, code }))).catch(() => {}); }
   catch { /* Diagnostic observers cannot affect the cache gate. */ }
 }
@@ -129,7 +136,8 @@ export function createLocalRefreshTimingRecorder({ clock = monotonicNow } = {}) 
     record,
     recordReuse(value) {
       if (finished || !value || Object.keys(value).sort().join() !== "code,phase"
-          || !REUSE_PHASES.has(value.phase) || !REUSE_CODES.has(value.code)) return;
+          || !REUSE_PHASES.has(value.phase) || !REUSE_CODES.has(value.code)
+          || value.code.startsWith("lineage_") && value.phase !== "index") return;
       const key = `${value.phase}:${value.code}`;
       const row = reuse.get(key) ?? { phase: value.phase, code: value.code, calls: 0 };
       if (row.calls < Number.MAX_SAFE_INTEGER) row.calls++;

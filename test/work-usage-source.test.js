@@ -17,6 +17,7 @@ import test from "node:test";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import { readLocalIndexWorkUsage } from "../src/local-index-work-usage.js";
 import { openLocalIndexStore } from "../src/local-index-store.js";
+import { createProtectedFixtureTempDirectory, writeInitialProtectedFixtureFile } from "./helpers/windows-owner-only-fixture.js";
 import { createLocalIndexUsageExplainerReaders } from "../src/local-index-usage-explainer.js";
 import { extractRolloutWorkContexts } from "../src/local-index-extract.js";
 import { queryWorkUsageSnapshot } from "../src/reporting/index.js";
@@ -164,7 +165,7 @@ async function modifySourceSameSize(path) {
 }
 
 async function makeFixture({ events, useCustomSecret = false }) {
-  const root = await mkdtemp(join(tmpdir(), "work-usage-source-"));
+  const root = await createProtectedFixtureTempDirectory(join(tmpdir(), "work-usage-source-"));
   const codexHome = join(root, "codex");
   const sessions = join(codexHome, "sessions", "2026", "08", "24");
   const archived = join(codexHome, "archived_sessions");
@@ -235,7 +236,7 @@ async function makeFixture({ events, useCustomSecret = false }) {
   );
   const indexFile = join(root, "index.sqlite");
   if (secretFile !== null) {
-    await writeFile(secretFile, Buffer.alloc(32, 0x5a), { mode: 0o600 });
+    writeInitialProtectedFixtureFile(secretFile, Buffer.alloc(32, 0x5a));
   }
   const buildOptions = {
     codexHome,

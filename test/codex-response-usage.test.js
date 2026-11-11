@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createResponseUsagePlan } from '../src/providers/codex/logs.js';
 import { extractRolloutUsage } from '../src/local-index-extract.js';
-import { localCodexLogScanner } from '../src/local-node-runtime.js';
+import { localCodexLogScanner } from '../src/local-codex-runtime.js';
 import { refreshCodexHome, withReadOnlyStore } from './helpers/local-index-rollout-store.js';
 import { openLocalIndexStore, createLocalIndexWriter, LOCAL_INDEX_PARSER_VERSION } from '../src/local-index-store.js';
 import { assertSameFacts, v2Facts } from './helpers/local-index-facts.js';

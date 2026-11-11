@@ -60,7 +60,7 @@ export async function benchmarkWorkOriginReads({ allowLiveRead = false, phase, r
       const stages = {}, began = performance.now();
       const result = full
         ? (await readLocalIndexCompanionProjection({ indexFile: index, nowMs,
-          declaredSpeedBaselines: [], includeWorkUsage: false,
+          declaredSpeedBaselines: [],
           onTiming: ({ stage, wallMs }) => { stages[stage] = (stages[stage] ?? 0) + wallMs; } })).generation
         : readLocalIndexGenerationDescriptor({ indexFile: index, nowMs });
       if (result === null || result === undefined) throw new Error("WORK_ORIGIN_BENCHMARK_PROJECTION_UNAVAILABLE");
@@ -106,9 +106,9 @@ export async function benchmarkWorkOriginReads({ allowLiveRead = false, phase, r
       const stages = {}, began = performance.now();
       const options = { indexFile: index, codexHome, nowMs, declaredSpeedBaselines: [],
         onTiming: ({ stage, wallMs }) => { stages[stage] = (stages[stage] ?? 0) + wallMs; } };
-      const result = combined
-        ? (await readLocalIndexProjection({ ...options, mode: "full", includeWorkUsage: true })).workUsage
-        : await backend.readWorkUsage(options);
+      // Reproduce the historical extra work here, outside the product reader.
+      if (combined) await readLocalIndexProjection({ ...options, mode: "full" });
+      const result = await backend.readWorkUsage(options);
       if (result?.status !== "available") throw new Error("WORK_ORIGIN_BENCHMARK_PROJECTION_UNAVAILABLE");
       const wallMs = Math.round((performance.now() - began) * 1000) / 1000;
       const semantic = structuredClone(result);
@@ -135,6 +135,7 @@ export async function benchmarkWorkOriginReads({ allowLiveRead = false, phase, r
   }
   if (target === "snapshot") {
     const { readLocalIndexProjection } = await import(new URL("src/local-index-backend.js", root));
+    const { readLocalIndexWorkProjection } = await import(new URL("src/local-index-companion-source.js", root));
     const nowMs = Number(process.env.RHETRION_PERF_ANCHOR_MS ?? Date.now());
     if (!Number.isSafeInteger(nowMs) || nowMs < 1) throw new Error("WORK_ORIGIN_BENCHMARK_CONTEXT_INVALID");
     const readGeneration = () => {
@@ -143,12 +144,15 @@ export async function benchmarkWorkOriginReads({ allowLiveRead = false, phase, r
       finally { db.close(); }
     };
     const generation = readGeneration();
-    const measure = async includeWorkUsage => {
+    const measure = async withWork => {
       const stages = {}, began = performance.now();
       const result = await readLocalIndexProjection({ indexFile: index, codexHome, nowMs,
-        mode: "full", includeWorkUsage, declaredSpeedBaselines: [],
+        mode: "full", declaredSpeedBaselines: [],
         onTiming: ({ stage, wallMs }) => { stages[stage] = (stages[stage] ?? 0) + wallMs; } });
-      const companion = result.companion ?? result;
+      if (withWork) await readLocalIndexWorkProjection({ indexFile: index, codexHome, nowMs,
+        declaredSpeedBaselines: [],
+        onTiming: ({ stage, wallMs }) => { stages[stage] = (stages[stage] ?? 0) + wallMs; } });
+      const companion = result;
       if (companion.status !== "available") throw new Error("WORK_ORIGIN_BENCHMARK_PROJECTION_UNAVAILABLE");
       // readWallMs is the reader's elapsed-time observation, not a figure.
       return { semantic: { ...companion, readWallMs: null },

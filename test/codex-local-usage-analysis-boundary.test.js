@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import * as codexLocalUsageAnalysis from "../src/codex-local-usage-analysis.js";
-import { localCodexLogScanner } from "../src/local-node-runtime.js";
+import { localCodexLogScanner } from "../src/local-codex-runtime.js";
 import { extractEsmImports } from "../scripts/lib/esm-imports.mjs";
 
 const START_AT = "2026-07-30T00:00:00.000Z";

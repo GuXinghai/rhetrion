@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { localCodexLogScanner } from "../src/local-node-runtime.js";
+import { localCodexLogScanner } from "../src/local-codex-runtime.js";
 import { supportsCompressedRollouts } from "../src/platform/index.js";
 import {
   readCodexSelectedRolloutNames,

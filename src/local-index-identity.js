@@ -1,7 +1,8 @@
 import { createHmac, createSecretKey, randomBytes } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readFileSync, writeSync } from "node:fs";
-import { chmod, mkdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { chmod, lstat, mkdir } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
+import { createWindowsFilesystemAdapter, createWindowsProtectedStateStore } from "./platform/index.js";
 
 // Device-local identity for the local index store.
 //
@@ -34,6 +35,23 @@ function ownerOnlyRegularFile(metadata) {
 /** Read the salt, creating it exactly once when the file does not exist. */
 export async function readOrCreateDeviceSalt(secretFile) {
   const path = resolve(secretFile);
+  if (process.platform === "win32") {
+    let store;
+    try {
+      store = createWindowsProtectedStateStore({ adapter: createWindowsFilesystemAdapter(),
+        rootPath: dirname(path), maxBytes: MAX_SECRET_BYTES });
+      // Validate an existing identity before attempting no-clobber creation.
+      try { store.inspect(basename(path)); return readExistingDeviceSalt(path); }
+      catch (error) { if (error?.code !== "windows_protected_state_store_missing") throw error; }
+      const secret = randomBytes(SECRET_BYTES);
+      try { store.create(basename(path), secret); return secret; }
+      catch (error) {
+        secret.fill(0);
+        if (error?.code === "windows_protected_state_store_already_exists") return readExistingDeviceSalt(path);
+        throw error;
+      }
+    } catch { throw fixedError("local_index_secret_unavailable"); }
+  }
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   let descriptor;
   try {
@@ -58,6 +76,22 @@ export async function readOrCreateDeviceSalt(secretFile) {
 /** Read an existing salt without creating or repairing anything. */
 export async function readExistingDeviceSalt(secretFile) {
   const path = resolve(secretFile);
+  if (process.platform === "win32") {
+    try {
+      // Missing reads do not provision a directory or create a new identity.
+      await lstat(dirname(path));
+      const store = createWindowsProtectedStateStore({ adapter: createWindowsFilesystemAdapter(),
+        rootPath: dirname(path), maxBytes: MAX_SECRET_BYTES });
+      const bytes = store.read(basename(path)).data;
+      if (bytes.length < SECRET_BYTES || bytes.length > MAX_SECRET_BYTES) {
+        bytes.fill(0); throw fixedError("local_index_secret_invalid");
+      }
+      return bytes;
+    } catch (error) {
+      if (error?.code === "local_index_secret_invalid") throw error;
+      throw fixedError("local_index_secret_unavailable");
+    }
+  }
   let descriptor;
   try {
     descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));

@@ -19,7 +19,7 @@ import {
 import { readCommitSeq } from "./local-index-store.js";
 import { readWorkProjectionStatuses } from "./local-index-work-projection-backfill.js";
 import { defaultLocalUnifiedIndexSecretPath, localDigest, readExistingDeviceSalt } from "./local-device-salt.js";
-import { createAccountingPricer } from "./replay-safe-accounting-cache.js";
+import { createAccountingPricer } from "./accounting-pricing.js";
 
 // The work breakdown over the local index store.
 //

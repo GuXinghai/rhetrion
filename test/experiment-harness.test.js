@@ -254,6 +254,42 @@ test("a bounded live pilot captures before and after evidence without content", 
   assert.equal(JSON.stringify(result).includes("controller-session-secret"), false);
 });
 
+test("workload failure results retain only fixed codes, never messages, paths or identifier-shaped markers", async t => {
+  const marker = "synthetic_private_workload_marker";
+  for (const [code, expected] of [
+    [undefined, "workload_failed"], [marker, "workload_failed"],
+    ["workload_timeout", "workload_timeout"], ["workload_cleanup_failed", "workload_cleanup_failed"],
+    ["ENOENT", "workload_unavailable"], ["EPERM", "workload_permission_denied"],
+    ["ABORT_ERR", "workload_cancelled"],
+  ]) await t.test(expected + ":" + (code === marker ? "unknown_identifier" : code ?? "untyped"), async () => {
+    let scanCalled = false;
+    const error = Object.assign(new Error(`${marker} C:\\synthetic-private\\session.jsonl`), { code });
+    const result = await runExperiment({
+      manifest: manifest(), executeLive: true, priceCards: PRICE_CARDS,
+      readSnapshot: async () => accountSnapshot(20), readConcurrency: quietConcurrency,
+      executeWorkload: async () => { throw error; },
+      scanUsage: async () => { scanCalled = true; },
+      clock: () => Date.parse("2026-07-23T00:00:00.000Z"),
+    });
+    assert.equal(result.status, "workload_failed");
+    assert.equal(result.controlledState, "unknown");
+    assert.deepEqual(result.stopReasons, [expected]);
+    assert.equal(JSON.stringify(result).includes(marker), false);
+    assert.equal(JSON.stringify(result).includes("synthetic-private"), false);
+    assert.equal(scanCalled, false);
+  });
+  for (const error of [null, { get code() { throw new Error(marker); } },
+    { get message() { assert.fail("raw workload message read"); } }]) {
+    const result = await runExperiment({
+      manifest: manifest(), executeLive: true, priceCards: PRICE_CARDS,
+      readSnapshot: async () => accountSnapshot(20), readConcurrency: quietConcurrency,
+      executeWorkload: async () => { throw error; },
+      clock: () => Date.parse("2026-07-23T00:00:00.000Z"),
+    });
+    assert.deepEqual(result.stopReasons, ["workload_failed"]);
+  }
+});
+
 test("concurrent rollout usage and unexpected tools invalidate controlled state", async () => {
   let reads = 0;
   const times = [

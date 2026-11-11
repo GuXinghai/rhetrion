@@ -1,8 +1,10 @@
 import {
   DEFAULT_EXPORT_RESOURCE_LIMITS,
+  EXPORT_RESOURCE_FAILURE_CODES,
   ExportResourceLimitError,
   createExportResourceGuard,
 } from "../export/index.js";
+export { EXPORT_RESOURCE_FAILURE_CODES };
 
 function requireFunction(value, name) {
   if (typeof value !== "function") {

@@ -16,6 +16,14 @@ coverage is checked against `src/cli.js` by
 `test/cli-reference.test.js`; the CLI's own usage output remains the authority
 for exact flags.
 
+Terminal failures print a fixed reviewed error code or `command_failed`, never
+the raw exception message. Observation reads use `observation_read_failed` or
+`observation_json_invalid`; the latter retains a record ordinal in the internal
+error, without the input path or parser excerpt. Experiment failure results
+use fixed workload failure categories, including timeout, unavailable,
+permission, cancellation and cleanup failures. Unknown upstream codes/text
+become `workload_failed`. Existing experiment result files are not rewritten.
+
 Analysis commands reject input/output/report paths that identify the same file,
 including canonical parent, case, symbolic-link, and hard-link aliases, before
 their first persistent mutation. An explicitly selected independent report may

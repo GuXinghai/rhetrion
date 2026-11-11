@@ -9,7 +9,7 @@ import {
   decompressExportBytes,
   ExportCompressionError,
   EXPORT_GZIP_PROFILE,
-} from "../src/export-compression.js";
+} from "../src/export/index.js";
 import {
   combinedSourcePlanCommitment,
   EXPORT_SET_MANIFEST_VERSION,
@@ -20,7 +20,7 @@ import {
   ExportSetError,
   ExportResourceLimitError,
 } from "../src/export/index.js";
-import { exportSetChunkBasenames, validateExportSetManifest } from "../src/export-set-schema.js";
+import { exportSetChunkBasenames, validateExportSetManifest } from "../src/export/index.js";
 import {
   localExportSetVerification,
   localExportSourcePipeline,

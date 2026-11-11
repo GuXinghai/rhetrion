@@ -36,7 +36,7 @@ import {
   LOCAL_INDEX_PARSER_VERSION,
   readCommitSeq,
 } from "./local-index-store.js";
-import { createAccountingPricer } from "./replay-safe-accounting-cache.js";
+import { createAccountingPricer } from "./accounting-pricing.js";
 
 // The report read over the local index store.
 //
@@ -903,7 +903,7 @@ export function readLocalIndexCoverage(database) {
  * It is computed over every stored fact, committed or not, which can only make
  * the answer earlier, never later. Call inside `withReadSnapshot`.
  */
-export function readLocalIndexReportValidUntil(database, { nowMs, includeWorkUsage = false } = {}) {
+export function readLocalIndexReportValidUntil(database, { nowMs } = {}) {
   if (!Number.isFinite(nowMs)) throw new TypeError("nowMs must be a finite epoch timestamp");
   const boundaries = [];
   const earliestAtOrAfter = (table, thresholdMs, inclusive) => {
@@ -922,10 +922,6 @@ export function readLocalIndexReportValidUntil(database, { nowMs, includeWorkUsa
   for (const table of ["usage_event", "quota_observation"]) {
     const at = earliestAtOrAfter(table, nowMs + FUTURE_SKEW_MS, false);
     if (Number.isSafeInteger(at)) boundaries.push(at - FUTURE_SKEW_MS);
-  }
-  if (includeWorkUsage) {
-    const at = earliestAtOrAfter("usage_event", nowMs, true);
-    if (Number.isSafeInteger(at)) boundaries.push(at + 1);
   }
   const pending = boundaries.filter((value) => value > nowMs);
   return pending.length === 0 ? Number.POSITIVE_INFINITY : Math.min(...pending);

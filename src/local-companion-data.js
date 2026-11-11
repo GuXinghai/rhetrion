@@ -1,3 +1,4 @@
+import { COMPANION_ARTIFACTS as ARTIFACTS } from "./local-companion-snapshot-contract.js";
 import { createHash } from "node:crypto";
 import { createLocalRefreshTimer } from "./local-refresh-timing.js";
 import { lstat, readFile } from "node:fs/promises";
@@ -17,7 +18,6 @@ import {
 import {
   FIVE_HOUR_WINDOW_MINUTES,
   SEVEN_DAY_WINDOW_MINUTES,
-  WORKLOAD_POLICY,
 } from "@app-usagemonitor/quota-analysis";
 import { DEFAULT_UNKNOWN_SPEED_POLICY, validateUnknownSpeedPolicy, unknownSpeedScenario, mixUnknownSpeedUsd } from "./unknown-speed-policy.js";
 import { codexPrimaryAllowanceBasis } from "./codex-primary-allowance-basis.js";
@@ -46,11 +46,12 @@ import {
   readAuthoritativeDashboardSnapshot,
   writeAuthoritativeDashboardSnapshot,
 } from "./local-authoritative-dashboard-snapshot.js";
-import { readLocalIndexProjection, readLocalIndexWorkload, readWorkloadQuotaEvidence, workloadStateStore, workloadState } from "./local-index-backend.js";
+import { readLocalIndexProjection } from "./local-index-backend.js";
+import { buildLocalIndexWorkloadProjection } from "./local-index-workload.js";
 import {
-  decodePlanScopedTimelineRow,
   readReplaySafeAccountingCache,
 } from "./replay-safe-accounting-cache.js";
+import { decodePlanScopedTimelineRow } from "./accounting-calibration.js";
 import {
   LOCAL_ACCOUNTING_FRESHNESS_COMPONENTS,
   LOCAL_ACCOUNTING_FRESHNESS_VERSION,
@@ -191,165 +192,6 @@ export const LOCAL_COMPANION_REPORT_FILES = Object.freeze({
   "/reports/multi-surface": "2026-07-24-codex-work-account-usage-report.html",
 });
 
-const ARTIFACTS = Object.freeze({
-  gradient: Object.freeze({
-    file: "2026-07-24-simple-quota-gradient-artifact.json",
-    datasets: Object.freeze({
-      summary: [
-        "selected_reset_at", "snapshot_intervals", "percentage_transitions", "observed_span_pp",
-        "capacity_usd", "lower_80_usd", "upper_80_usd", "mean_absolute_error_pp",
-        "points_within_80_band_fraction", "usable_reset_series", "recent_three_median_usd",
-        "early_three_median_usd", "early_to_recent_change", "rolling_signed_auc_pp_hours",
-        "rolling_absolute_auc_pp_hours", "rolling_peak_absolute_residual_pp",
-        "july_13_fast_events", "july_13_fast_raw_capacity_usd", "july_13_fast_weighted_capacity_usd",
-        "july_13_reference_capacity_usd", "july_13_one_hour_weighted_mae_pp",
-        "july_13_two_hour_weighted_mae_pp", "july_13_three_hour_weighted_mae_pp",
-        "long_history_first_at", "long_history_last_at", "long_history_reset_series",
-      ],
-      curve: ["api_cost_usd", "quota_consumed_pp", "observed_at", "series"],
-      rolling: [
-        "timestamp", "window_start_utc", "window_end_utc", "window_end_utc_label",
-        "window_end_eastern_label", "rolling_api_cost_usd", "rolling_event_count",
-        "smoothing_hours", "series", "quota_change_pp",
-      ],
-      current_rolling_detail: [
-        "window_end_eastern", "window_end_utc", "observed_quota_change_pp",
-        "expected_quota_change_pp", "residual_pp", "rolling_api_cost_usd", "usage_events",
-      ],
-      rolling_history: [
-        "timestamp", "window_start_utc", "window_end_utc", "window_end_utc_label",
-        "window_end_eastern_label", "rolling_api_cost_usd", "rolling_event_count",
-        "smoothing_hours", "series", "quota_change_pp", "utc_hour", "eastern_hour",
-        "reset_at", "reset_segment", "reset_gradient_usd", "gradient_quality",
-      ],
-      rolling_residual: [
-        "timestamp", "series", "observed_quota_change_pp", "expected_quota_change_pp", "residual_pp",
-      ],
-      fast_hourly: [
-        "timestamp", "hour_start_utc", "hour_end_utc", "hour_end_utc_label",
-        "hour_end_eastern_label", "api_cost_usd", "tier_weighted_cost_usd", "usage_events",
-        "fast_events", "ultrafast_events", "standard_events", "unknown_events", "series", "quota_change_pp",
-      ],
-      fast_two_hour: [
-        "timestamp", "window_end_utc_label", "window_end_eastern_label", "api_cost_usd",
-        "tier_weighted_cost_usd", "usage_events", "fast_events", "series", "quota_change_pp",
-      ],
-      fast_hourly_detail: [
-        "window_end_utc", "window_end_utc_label", "window_end_eastern_label", "window_hours",
-        "observed_quota_change_pp", "raw_expected_quota_change_pp", "weighted_expected_quota_change_pp",
-        "raw_residual_pp", "weighted_residual_pp", "api_cost_usd", "tier_weighted_cost_usd",
-        "usage_events", "fast_events",
-      ],
-      window_sensitivity: [
-        "window_hours", "focal_window", "focal_points", "raw_mae_pp", "weighted_mae_pp",
-        "weighted_mae_reduction_fraction", "raw_peak_absolute_residual_pp",
-        "weighted_peak_absolute_residual_pp",
-      ],
-      fast_segments: [
-        "segment", "first_observed_at", "last_observed_at", "speed_evidence", "quota_change_pp",
-        "standard_api_cost_usd", "weighted_api_equivalent_usd", "raw_implied_capacity_usd",
-        "weighted_implied_capacity_usd",
-      ],
-      slot_semantics: [
-        "slot", "window_minutes", "window_label", "transitions", "first_observed_at", "last_observed_at",
-      ],
-      reset_calendar: ["announced_at_utc", "announced_at_et", "event_type", "propagation_note"],
-      reset_trend: [
-        "first_observed_at", "reset_at", "reset_key", "eligible_transitions",
-        "observed_span_pp", "series", "capacity_usd",
-      ],
-      reset_table: [
-        "first_observed_at", "reset_at", "slot", "capacity_usd", "lower_80_usd",
-        "upper_80_usd", "eligible_transitions", "observed_span_pp",
-      ],
-    }),
-  }),
-  weekly: Object.freeze({
-    file: "2026-07-24-weekly-7-day-calibration-artifact.json",
-    datasets: Object.freeze({
-      summary: [
-        "median_weekly_value_usd", "lower_80_across_resets_usd", "upper_80_across_resets_usd",
-        "qualifying_resets", "selected_holdout_mae_pp", "standard_holdout_mae_pp",
-        "holdout_improvement_fraction", "prior_reset_mae_pp", "prior_reset_bias_pp",
-        "prior_reset_scored_resets", "prior_reset_scored_points", "prior_reset_p80_absolute_error_pp",
-        "selected_forecast_common_mae_pp", "selected_forecast_common_bias_pp", "online_update_status",
-      ],
-      candidates: [
-        "accounting_basis", "selected", "qualifying_resets", "holdout_points",
-        "median_reset_holdout_mae_pp", "pooled_holdout_mae_pp", "pooled_holdout_bias_pp",
-        "median_in_sample_mae_pp",
-      ],
-      weekly_values: [
-        "sequence", "first_observed_at", "last_observed_at", "reset_due_at", "slot",
-        "displayed_span_pp", "value_usd", "pairwise_p10_usd", "pairwise_p90_usd",
-        "holdout_observed_movement_pp", "holdout_predicted_movement_pp", "holdout_mae_pp",
-        "holdout_bias_pp", "prior_forecast_value_usd", "prior_prediction_mae_pp",
-        "prior_prediction_bias_pp", "known_speed_fraction", "fast_fraction_of_known",
-        "eligible_transitions", "unique_percentage_boundaries",
-      ],
-      value_series: [
-        "sequence", "first_observed_at", "last_observed_at", "reset_due_at", "slot",
-        "displayed_span_pp", "value_usd", "pairwise_p10_usd", "pairwise_p90_usd",
-        "holdout_observed_movement_pp", "holdout_predicted_movement_pp", "holdout_mae_pp",
-        "holdout_bias_pp", "prior_forecast_value_usd", "prior_prediction_mae_pp",
-        "prior_prediction_bias_pp", "known_speed_fraction", "fast_fraction_of_known",
-        "eligible_transitions", "unique_percentage_boundaries", "series", "value_series_usd",
-      ],
-      holdout_series: [
-        "sequence", "first_observed_at", "last_observed_at", "reset_due_at", "slot",
-        "displayed_span_pp", "value_usd", "pairwise_p10_usd", "pairwise_p90_usd",
-        "holdout_observed_movement_pp", "holdout_predicted_movement_pp", "holdout_mae_pp",
-        "holdout_bias_pp", "prior_forecast_value_usd", "prior_prediction_mae_pp",
-        "prior_prediction_bias_pp", "known_speed_fraction", "fast_fraction_of_known",
-        "eligible_transitions", "unique_percentage_boundaries", "series", "movement_pp",
-      ],
-      error_concentration: [
-        "first_observed_date", "reset_due_at", "share_of_absolute_error",
-        "holdout_absolute_error_pp", "holdout_mae_pp", "holdout_bias_pp",
-        "speed_known_fraction", "fast_fraction_of_known",
-      ],
-      lag_candidates: [
-        "candidate", "selected", "qualifying_resets", "holdout_points", "pooled_mae_pp", "pooled_bias_pp",
-      ],
-      forecast_candidates: [
-        "forecast_rule", "selected", "common_resets", "common_points",
-        "pooled_mae_pp", "pooled_bias_pp", "regime_forecasts",
-      ],
-      online_checkpoints: [
-        "checkpoint_display_pp", "comparable_resets", "corrected_online_mae_pp",
-        "prior_forecast_mae_pp", "improvement_fraction", "accepted",
-      ],
-      provider_epochs: [
-        "epoch", "start_date", "end_date", "comparable_days", "local_to_provider_token_ratio",
-        "local_api_priced_usd", "provider_only_days", "evidence_status",
-      ],
-      experiment_status: ["status", "attempts", "controlled_results", "unknown_results", "stop_reasons"],
-      high_error_surfaces: [
-        "first_observed_date", "surface", "events", "event_share", "total_tokens",
-        "token_share", "standard_api_priced_usd", "cost_share",
-      ],
-    }),
-  }),
-  quality: Object.freeze({
-    file: "2026-07-24-monitoring-quality-artifact.json",
-    datasets: Object.freeze({
-      summary: [
-        "collector_age_hours", "collector_age_seconds", "app_server_age_hours",
-        "dominant_snapshot_intervals", "fit_eligible_fraction", "known_speed_fraction",
-        "flat_interval_fraction", "fixed_reset_exact_groups", "fixed_reset_clusters",
-        "moving_reset_groups", "prospective_account_scoped_usage_records",
-      ],
-      coverage: ["dimension", "coverage_fraction"],
-      signals: ["signal", "intervals", "fraction"],
-      reset_families: [
-        "limit", "window_minutes", "exact_reset_groups", "clusters_within_120s",
-        "singleton_groups", "groups_with_transitions", "dominant_cluster_share", "behavior",
-      ],
-      opportunities: ["action", "evidence", "id", "priority", "title"],
-      priority_counts: ["priority", "improvements"],
-    }),
-  }),
-});
 
 function fixedError(code) {
   const error = new Error(code);
@@ -2905,36 +2747,17 @@ export async function buildLocalCompanionSnapshot({
       : unifiedAccountingWithheld
         ? "insufficient_evidence"
         : "collector_projection_unverified";
-  let storedWorkloadState=null,workloadStateError=null;
-  const workloadScope=localCollectorQuotaPublicationScope(collector);
-  const workloadAccountScope=workloadScope?.observedAt===quota.observedAt?workloadScope.scopeToken:null;
-  const workloadStore=workloadStateStore(unifiedIndexFile);
-  try{storedWorkloadState=await workloadStore.read(workloadAccountScope);}catch{workloadStateError="workload_state_read_failed";}
-  let quotaEvidence;
-  try{quotaEvidence=await timing.measure("snapshot_workload_quota",()=>readWorkloadQuotaEvidence({stateFile:collectorStateFile,signal,
-    fromMs:workloadLiveSinceMs??nowMs,nowMs,
-    historyFromMs:Math.max(0,nowMs-WORKLOAD_POLICY.historyMs-WORKLOAD_POLICY.comparisonWindowMs
-      -WORKLOAD_POLICY.comparisonDeadlineUncertaintyMs)}));}
-  catch(error){if(signal?.aborted)throw error;quotaEvidence={errorCode:["quota_history_too_large","quota_history_invalid"].includes(error?.code)?error.code:"quota_history_read_failed"};}
-  const workload = timing.measureSync("snapshot_workload",()=>readLocalIndexWorkload({ indexFile: unifiedIndexFile, nowMs,
-    signal,
-    quotaEvidence,
-    accountScopeToken:workloadAccountScope,previousAccountScopeToken:previousWorkloadScope,
-    storedState: storedWorkloadState,
-    declaredSpeedBaselines: codexSpeedBaselines,
-    quotaWindows: quota.windows.map((window) => ({ ...window, observedAt: quota.observedAt })),
-    capacity: { ...allowanceCapacity, computedAt: replaySafeCache?.generatedAt }, previous: previousWorkload,
-    liveSinceMs: workloadLiveSinceMs ?? nowMs,
-    sourceFresh: workloadSourceFresh }));
-  if(workloadSourceFresh&&["available","partial"].includes(workload.status)){
-    try{await workloadStore.write(workloadAccountScope,workloadState(workload));}catch{workloadStateError="workload_state_write_failed";}
-  }
-  if(workloadStateError){workload.errors.push({code:workloadStateError,stage:"publish"});if(workload.status==="available")workload.status="partial";}
-  for(const error of workloadErrors){
-    if(["quota_read_failed","index_refresh_failed"].includes(error?.code)||/^runtime_evidence_[a-z_]{1,60}$/u.test(error?.code??''))workload.errors.push({code:error.code,stage:error.stage});
-    if(/^runtime_evidence_[a-z_]{1,60}$/u.test(error?.code??'')&&workload.pricingDetails?.capture)workload.pricingDetails.capture.status='failed';
-  }
-  if(workloadErrors.length&&workload.status==="available")workload.status="partial";
+  const workloadScope = localCollectorQuotaPublicationScope(collector);
+  const workloadAccountScope = workloadScope?.observedAt === quota.observedAt ? workloadScope.scopeToken : null;
+  const workload = await buildLocalIndexWorkloadProjection({
+    indexFile: unifiedIndexFile, stateFile: collectorStateFile, nowMs,
+    accountScopeToken: workloadAccountScope, previousAccountScopeToken: previousWorkloadScope,
+    previous: previousWorkload, liveSinceMs: workloadLiveSinceMs ?? nowMs,
+    sourceFresh: workloadSourceFresh, declaredSpeedBaselines: codexSpeedBaselines,
+    quotaWindows: quota.windows.map(window => ({ ...window, observedAt: quota.observedAt })),
+    capacity: { ...allowanceCapacity, computedAt: replaySafeCache?.generatedAt },
+    errors: workloadErrors, signal, onTiming, monotonicClock,
+  });
   const snapshot = {
     schemaVersion: LOCAL_COMPANION_SCHEMA_VERSION,
     mode: "real_local_evidence",

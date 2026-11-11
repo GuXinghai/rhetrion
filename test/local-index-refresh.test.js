@@ -242,7 +242,7 @@ test("an unchanged corpus is discovered from the catalog without header reads", 
       workerCount: 1,
     };
     await refreshLocalIndex(options);
-    const { localCodexLogScanner } = await import("../src/local-node-runtime.js");
+    const { localCodexLogScanner } = await import("../src/local-codex-runtime.js");
     let hits = 0;
     let misses = 0;
     const second = await refreshLocalIndex({

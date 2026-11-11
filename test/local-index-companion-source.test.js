@@ -62,7 +62,7 @@ test("the v2 projection carries the snapshot envelope and a complete generation"
   }
 });
 
-test("the work breakdown rides beside the projection and names the same publication", async () => {
+test("the companion projection contains only dashboard figures and needs no work metadata", async () => {
   const workspace = createWorkspace({ files: 12, events: 400, days: 5, seed: 22 });
   try {
     const v2File = join(workspace.state, "v2.sqlite");
@@ -71,15 +71,12 @@ test("the work breakdown rides beside the projection and names the same publicat
       workerCount: 1,
     });
     const result = await readLocalIndexCompanionProjection({
-      indexFile: v2File, nowMs: END_MS + 3_600_000, includeWorkUsage: true,
-      codexHome: workspace.codexHome, secretFile: workspace.secretFile,
+      indexFile: v2File, nowMs: END_MS + 3_600_000,
     });
-    assert.equal(result.companion.status, "available");
-    assert.ok(["available", "unavailable"].includes(result.workUsage.status));
-    await assert.rejects(
-      readLocalIndexCompanionProjection({ indexFile: v2File, includeWorkUsage: true }),
-      TypeError,
-    );
+    assert.equal(result.status, "available");
+    assert.equal(Object.hasOwn(result, "companion"), false);
+    assert.equal(Object.hasOwn(result, "workUsage"), false);
+    assert.ok(result.generation.id > 0);
   } finally {
     workspace.cleanup();
   }

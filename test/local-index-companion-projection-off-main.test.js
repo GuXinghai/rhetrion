@@ -93,7 +93,7 @@ test("missing and invalid stores retain direct outcomes; deferred reads spawn no
   } finally { workspace.cleanup(); }
 });
 
-test("companion worker input is narrowed and refuses work, malformed baselines and controls", async () => {
+test("companion worker input is narrowed and refuses malformed baselines and controls", async () => {
   const result = await missingResult();
   let captured;
   class CapturingWorker extends EventEmitter {
@@ -110,7 +110,7 @@ test("companion worker input is narrowed and refuses work, malformed baselines a
   assert.deepEqual(captured.options.workerData.options, OPTIONS);
   assert.equal(JSON.stringify(captured.options).includes(CANARY), false);
   for (const options of [
-    { ...OPTIONS, includeWorkUsage: true }, { ...OPTIONS, onTiming: 1 },
+    { ...OPTIONS, onTiming: 1 },
     { ...OPTIONS, nowMs: NaN }, { ...OPTIONS, mode: "unreviewed" },
     { ...OPTIONS, monotonicClock: 1 },
     { ...OPTIONS, declaredSpeedBaselines: [{ mode: "standard", firstSeenAt: "bad", lastSeenAt: "bad" }] },

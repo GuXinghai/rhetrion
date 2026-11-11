@@ -5,7 +5,7 @@ import {
   compressExportBytes,
   decompressExportBytes,
   EXPORT_GZIP_PROFILE,
-} from "../src/export-compression.js";
+} from "../src/export/index.js";
 
 const LIMITS = Object.freeze({
   maximumDecodedBytes: 1024 * 1024,

@@ -1,12 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { REPLAY_SAFE_CALIBRATION_INTERNALS as I } from "../src/replay-safe-accounting-cache.js";
+import { createAccountingPricer, projectAccountingUsageEvent as eventProjection } from "../src/accounting-pricing.js";
+import {
+  projectAccountingTransitionUsage as transitionUsageProjection,
+  projectAccountingQuotaSnapshot as weeklyRateLimitProjection,
+  fitCompositionFromCorpusStream,
+  fitHistoricalPlanTimelines,
+  fitPlanCompositionsFromCorpus,
+} from "../src/accounting-calibration.js";
 
 const start = Date.parse("2026-07-20T00:00:00Z");
 const plans = ["plus", "pro", "prolite"];
 
 function fixture() {
-  const price = I.createAccountingPricer();
+  const price = createAccountingPricer();
   const rows = [];
   const weeklyRateLimitSnapshots = [];
   for (let index = 0; index < 72; index += 1) {
@@ -21,8 +28,8 @@ function fixture() {
       planAttribution: { basis: index === 25 ? "conflicted" : "same_record", planType: index === 25 ? null : planType },
       usageIntervalStartedAt: new Date(ms - 5 * 60_000).toISOString(),
     };
-    rows.push(I.transitionUsageProjection(raw, I.eventProjection(raw, price)));
-    weeklyRateLimitSnapshots.push(I.weeklyRateLimitProjection({ timestamp: raw.timestamp, timestampMs: ms,
+    rows.push(transitionUsageProjection(raw, eventProjection(raw, price)));
+    weeklyRateLimitSnapshots.push(weeklyRateLimitProjection({ timestamp: raw.timestamp, timestampMs: ms,
       window: { provider: "openai_codex", limitId: "codex", slot: "primary", planType,
         windowDurationMins: 10080, resetsAt: (start + 7 * 86_400_000) / 1000, usedPercent: index % 24 } }));
   }
@@ -33,10 +40,10 @@ function fixture() {
 test("shared calibration traversal preserves complete independent plan results and visits rows once", async () => {
   const { rows, options } = fixture();
   const forEachUsageRow = async consume => { for (const row of rows) await consume(row); };
-  const current = await I.fitCompositionFromCorpusStream({ ...options, forEachUsageRow, selectedPlanType: "prolite" });
-  const historical = await I.fitHistoricalPlanTimelines({ ...options, forEachUsageRow }, plans, "prolite");
+  const current = await fitCompositionFromCorpusStream({ ...options, forEachUsageRow, selectedPlanType: "prolite" });
+  const historical = await fitHistoricalPlanTimelines({ ...options, forEachUsageRow }, plans, "prolite");
   let passes = 0, visits = 0;
-  const shared = await I.fitPlanCompositionsFromCorpus({ ...options, forEachUsageRow: async consume => {
+  const shared = await fitPlanCompositionsFromCorpus({ ...options, forEachUsageRow: async consume => {
     passes += 1;
     for (const row of rows) { visits += 1; await consume(row); }
   } }, plans, "prolite");
@@ -55,7 +62,7 @@ test("a single consumer failure does not remove valid historical plan results", 
     if (once) { once = false; throw Object.assign(new Error("synthetic"), { code: "accounting_transition_memory_budget_exceeded" }); }
     return rows[0][0];
   } });
-  const result = await I.fitPlanCompositionsFromCorpus({ ...options, forEachUsageRow: async consume => {
+  const result = await fitPlanCompositionsFromCorpus({ ...options, forEachUsageRow: async consume => {
     await consume(poisoned);
     for (const row of rows.slice(1)) await consume(row);
   } }, plans, "prolite");
@@ -66,7 +73,7 @@ test("a single consumer failure does not remove valid historical plan results", 
 
 test("a shared read failure leaves all unfinished fits failed rather than partial successes", async () => {
   const { rows, options } = fixture();
-  const result = await I.fitPlanCompositionsFromCorpus({ ...options, forEachUsageRow: async consume => {
+  const result = await fitPlanCompositionsFromCorpus({ ...options, forEachUsageRow: async consume => {
     await consume(rows[0]);
     throw Object.assign(new Error("synthetic"), { code: "accounting_calibration_corpus_unavailable" });
   } }, plans, "prolite");
@@ -77,16 +84,16 @@ test("a shared read failure leaves all unfinished fits failed rather than partia
 
 test("shared traversal preserves plan limits, cancellation and global memory checks", async () => {
   const { rows, options } = fixture();
-  await assert.rejects(I.fitPlanCompositionsFromCorpus(options, Array(17).fill("pro"), "pro"), { code: "accounting_transition_derivation_limit_exceeded" });
+  await assert.rejects(fitPlanCompositionsFromCorpus(options, Array(17).fill("pro"), "pro"), { code: "accounting_transition_derivation_limit_exceeded" });
   const controller = new AbortController();
-  await assert.rejects(I.fitPlanCompositionsFromCorpus({ ...options, signal: controller.signal,
+  await assert.rejects(fitPlanCompositionsFromCorpus({ ...options, signal: controller.signal,
     forEachUsageRow: async consume => { controller.abort(); await consume(rows[0]); },
   }, plans, "prolite"), { name: "AbortError" });
-  await assert.rejects(I.fitPlanCompositionsFromCorpus({ ...options,
+  await assert.rejects(fitPlanCompositionsFromCorpus({ ...options,
     checkRuntimeMemory: () => { throw Object.assign(new Error("synthetic"), { code: "accounting_transition_rss_limit_exceeded" }); },
   }, plans, "prolite"), { code: "accounting_transition_rss_limit_exceeded" });
   let checks = 0;
-  await assert.rejects(I.fitPlanCompositionsFromCorpus({ ...options,
+  await assert.rejects(fitPlanCompositionsFromCorpus({ ...options,
     checkRuntimeMemory: () => {
       if (++checks > 1) throw Object.assign(new Error("synthetic"), { code: "accounting_transition_rss_limit_exceeded" });
     },

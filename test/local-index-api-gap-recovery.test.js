@@ -8,7 +8,7 @@ import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import { createLocalIndexWriter, openLocalIndexStore, LOCAL_INDEX_PARSER_VERSION } from "../src/local-index-store.js";
 import { readLocalIndexWorkload } from "../src/local-index-workload.js";
 import { readLocalIndexWorkUsage } from "../src/local-index-work-usage.js";
-import { localCodexLogScanner } from "../src/local-node-runtime.js";
+import { localCodexLogScanner } from "../src/local-codex-runtime.js";
 
 const at = Date.parse("2026-09-01T00:00:00Z");
 const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];

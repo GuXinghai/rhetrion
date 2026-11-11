@@ -5,7 +5,7 @@ import test from "node:test";
 import { readLegacyOrdinalMap } from "../src/local-index-cutover.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import { appendSyntheticCodexEvents } from "../src/synthetic-codex-rollout-corpus.js";
-import { localCodexLogScanner } from "../src/local-node-runtime.js";
+import { localCodexLogScanner } from "../src/local-codex-runtime.js";
 import { createWorkspace } from "./helpers/local-index-facts.js";
 
 // A synthetic legacy ordinal table exercises the migration input: source

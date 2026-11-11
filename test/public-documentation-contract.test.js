@@ -6,12 +6,19 @@ import identity from "../config/application-identity.cjs";
 
 const text = path => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
-test("maintained product guidance identifies an unpublished local Windows product", async () => {
+test("maintained entry points describe the subscription product and release boundary", async () => {
   const [readme, contribution, status, support] = await Promise.all([
     text("README.md"), text("CONTRIBUTING.md"), text("docs/current-status.md"), text("SUPPORT.md"),
   ]);
   for (const source of [readme, contribution, status, support]) assert.match(source, /Windows x64/u);
-  assert.match(readme, /has not been published/u);
+  assert.match(readme, /local usage dashboard for Codex subscription users on\s+Windows x64/u);
+  assert.match(readme, /The project is in development/u);
+  assert.match(readme, /## Develop and verify/u);
+  assert.ok(readme.includes("pnpm run product:local"));
+  for (const target of ["docs/current-status.md", "docs/user-guide.md", "docs/README.md",
+    "docs/reference/local-data-and-privacy.md", "CONTRIBUTING.md"]) {
+    assert.ok(readme.includes(`](${target})`), target);
+  }
   assert.match(status, /unpublished/u);
   assert.match(support, /No external support, download or private reporting/u);
   assert.equal(distribution.PRODUCTION_ELECTRON_UPDATE_ORIGIN, null);
@@ -19,11 +26,11 @@ test("maintained product guidance identifies an unpublished local Windows produc
 });
 
 test("maintained guidance enforces Codex-only provider scope without touching legacy state", async () => {
-  const [readme, guide, index, decision] = await Promise.all([
-    text("README.md"), text("docs/user-guide.md"), text("docs/README.md"),
+  const [guide, index, decision] = await Promise.all([
+    text("docs/user-guide.md"), text("docs/README.md"),
     text("docs/decisions/2026-10-27-codex-only-product.md"),
   ]);
-  for (const source of [readme, guide, decision]) {
+  for (const source of [guide, decision]) {
     assert.match(source, /Codex is the only supported usage provider/u);
   }
   assert.ok(index.includes("2026-10-27-codex-only-product.md"));
@@ -51,12 +58,13 @@ test("R7 evidence stays frozen historical readback with generation retired", asy
 });
 
 test("documented machine identity stays separate from presentation and migration", async () => {
-  const [readme, architecture, plan] = await Promise.all([
-    text("README.md"), text("docs/reference/system-architecture.md"),
+  const [architecture, plan] = await Promise.all([
+    text("docs/reference/system-architecture.md"),
     text("docs/plans/2026-10-23-rhetrion-brand-identity-and-local-state-cutover.md"),
   ]);
-  assert.ok(readme.includes(identity.APPLICATION_IDENTITY.executableName + ".exe"));
-  assert.ok(readme.includes(identity.APPLICATION_PROFILES.stable.appId));
+  assert.ok(architecture.includes("config/application-identity.cjs"));
+  assert.ok(architecture.includes(identity.APPLICATION_IDENTITY.executableName + ".exe"));
+  assert.ok(architecture.includes(identity.APPLICATION_PROFILES.stable.appId));
   assert.match(architecture, /display names\s+never select a credential, profile or production permission/u);
   assert.match(architecture, /before Electron readiness/u);
   assert.match(plan, /prepared → backed_up → converted → verified → activated → accepted/u);
@@ -64,14 +72,18 @@ test("documented machine identity stays separate from presentation and migration
 });
 
 test("source collection and content-free boundaries stay disclosed", async () => {
-  const readme = await text("README.md");
-  for (const marker of ["sessions", "archived_sessions", "state_5.sqlite", "config.toml",
-    "account/read", "account/rateLimits/read", "account/usage/read"]) assert.ok(readme.includes(marker), marker);
-  const security = await text("SECURITY.md");
+  const [guide, privacy, security] = await Promise.all([
+    text("docs/user-guide.md"), text("docs/reference/local-data-and-privacy.md"), text("SECURITY.md"),
+  ]);
+  for (const source of [guide, privacy]) {
+    for (const marker of ["sessions", "archived_sessions", "state_5.sqlite", "config.toml",
+      "account/read", "account/rateLimits/read", "account/usage/read"]) assert.ok(source.includes(marker), marker);
+  }
   assert.match(security, /local usage data/u);
   assert.match(security, /private paths|source paths/u);
   assert.match(security, /prompts, responses/u);
-  assert.match(readme, /Display windows do not delete retained history/u);
+  assert.match(guide, /Changing the display period does not delete accumulated evidence/u);
+  assert.match(privacy, /30-day UI horizon is not retention/u);
 });
 
 test("recovery guidance preserves original state and separates evidence gates", async () => {

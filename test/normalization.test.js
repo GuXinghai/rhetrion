@@ -28,7 +28,7 @@ import {
   extractToolObservations,
   normalizeTokenUsage,
 } from "../src/providers/codex/logs.js";
-import { localCodexLogScanner } from "../src/local-node-runtime.js";
+import { localCodexLogScanner } from "../src/local-codex-runtime.js";
 
 const {
   appendedRolloutSourcesAreAfterEnd,

@@ -9,6 +9,7 @@ import { LocalCompanionClient } from "../public/data-client.js";
 import { LocalCompanionRefreshController } from "../../../src/local-companion-refresh.js";
 import { createDomHelpers } from "../public/ui-format.js";
 import { createElectronRefreshLease } from "../public/electron-refresh-lifecycle.js";
+import { createRefreshCoordinator } from "../public/refresh-coordinator.js";
 import { createLocalProgressEvents } from "../public/local-progress-events.js";
 
 const source = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
@@ -100,21 +101,10 @@ function refreshHarness({
     dashboard: priorDashboard,
     localActionBusy: false,
     accountingRebuildDeferral: null,
-    localRefreshInProgress: false,
     localRefreshPaused: false,
     localRefreshPauseReady: true,
-    localRefreshSubmissionPending: false,
-    localRefreshObserverActive: false,
-    localRefreshStatusVersion: 0,
-    lastObservedRefreshPublication: null, lastOverviewScheduleError: null,
-    overviewPublicationReadPending: false,
-    overviewPublicationPollingStarted: false,
-    localRefreshCancelRequested: false,
-    localRefreshObservationWait: null,
     sidebarRefreshSummaryTimer: null,
     sidebarRefreshSummaryVersion: 0,
-    reindexAutoContinuations: 0,
-    lastReindexProgressReceipt: null,
     activeLocalDashboardLoad: null,
     nativeEvidenceReloadPending: false,
     dashboardReadFailed: false,
@@ -175,8 +165,6 @@ function refreshHarness({
       wait: async () => {},
     },
     createRefreshPollingBudget: () => ({ hasTime: () => true, remainingMs: () => 60_000 }),
-    historyProgressReceipt: () => "prior-generation",
-    currentHistoryContinuationDecision: () => ({ terminalGap: false }),
     localAnalysisAllowed: () => true,
     allowancePage: {setLoadState() {}},
     runsInsideNativeDashboard: () => native,
@@ -199,8 +187,6 @@ function refreshHarness({
       clearTimeout() {},
     },
     showConnectionNotice: (notice) => notices.push(notice),
-    refreshNeedsContinuation: () => false,
-    scheduleReindexAutoContinuation: () => calls.push("continuation-check"),
     loadLocalDashboard: async () => calls.push("reload"),
     loadQuickResultDashboard: async () => calls.push("quick-reload"),
     describeFailure: async () => { calls.push("diagnostic"); return { text: "An update could not be started." }; },
@@ -239,17 +225,189 @@ function refreshHarness({
   runInContext(productionFunction("renderCurrentObservationConnectionState"), context);
   runInContext(productionFunction("publishRefreshResultNotice"), context);
   runInContext(productionFunction("loadLocalDashboardSecondaryState"), context);
-  runInContext(productionFunction("requestRefresh"), context);
-  runInContext(productionFunction("observeOverviewPublication"), context);
+  const coordinator = createRefreshCoordinator({
+    client: {
+      refresh: (...args) => context.localClient.refresh(...args),
+      recalculateDetailedAccounting: (...args) => context.localClient.recalculateDetailedAccounting(...args),
+      refreshStatus: (...args) => context.localClient.refreshStatus(...args),
+      cancelRefresh: (...args) => context.localClient.cancelRefresh(...args),
+    },
+    events: {
+      cursor: () => context.localProgressEvents.cursor(),
+      connection: () => context.localProgressEvents.connection(),
+      current: () => context.localProgressEvents.current(),
+      wait: (...args) => context.localProgressEvents.wait(...args),
+    },
+    view: {
+      context: () => ({ dashboard: context.dashboard, globalState: context.globalState, dashboardReadFailed: context.dashboardReadFailed }),
+      isBusy: () => context.localActionBusy,
+      setBusy: value => { context.localActionBusy = value; },
+      canSubmit: () => !context.localRefreshPaused && context.localRefreshPauseReady,
+      analysisAllowed: () => context.localAnalysisAllowed(),
+      notice: notice => context.showConnectionNotice(notice),
+      actions: () => context.updateLocalActionButtons(),
+      submitting() {
+        const button = context.$("#refresh-button");
+        if (button.getAttribute("data-sidebar-refresh") === "true") context.setSidebarRefreshSummary("refresh.progress.submitting");
+        else context.setLocalizedText(button, "refresh.progress.submitting");
+      },
+      progress: (...args) => context.renderRefreshProgress(context.$("#refresh-button"), ...args),
+      startProgress: (...args) => context.startRefreshProgressClock(context.$("#refresh-button"), ...args),
+      summary: (...args) => context.setSidebarRefreshSummary(...args),
+      setGlobalState: (...args) => context.setGlobalState(...args),
+      presentation: data => context.dashboardObservationPresentation(data, context.observationRecency(data)),
+      reload: () => context.loadLocalDashboard(),
+      quickReload: () => context.loadQuickResultDashboard(),
+      publishResult: refresh => context.publishRefreshResultNotice(refresh),
+      describeFailure: options => context.describeFailure(options),
+      translate: (...args) => context.t(...args),
+      afterSettlement() { if (context.nativeEvidenceReloadPending) void context.reloadLocalEvidenceAfterNativeRefresh(); },
+      statusObserved(refresh) { context.accountingRebuildDeferral = refresh?.result?.accountingRebuildDeferred ?? null; },
+      foreground() {},
+    },
+    desktop: {
+      enabled: () => context.runsInsideElectronDashboard(),
+      bridge: () => context.usageMonitorDesktop,
+      onState: next => { context.electronRefreshLifecycleState = next; },
+      refreshHealth: () => context.refreshElectronCadenceHealth(),
+    },
+    lifecycle: { documentRef: document, windowRef: context.window },
+    pollingBudgetFactory: () => context.createRefreshPollingBudget(),
+    leaseFactory: options => context.createElectronRefreshLease(options),
+    setTimeoutRef: (...args) => context.window.setTimeout(...args),
+    clearTimeoutRef: (...args) => context.window.clearTimeout(...args),
+  });
+  context.refreshCoordinator = coordinator;
+  context.requestRefresh = coordinator.requestRefresh;
+  context.observeOverviewPublication = coordinator.observeOverviewPublication;
+  context.cancelLocalAnalysis = coordinator.cancelLocalAnalysis;
+  // UI-only tests can render a fixed state without exposing coordinator mutators.
+  context.setRefreshUiState = state => {
+    context.refreshCoordinator = { state: () => ({ ...coordinator.state(), ...state }) };
+  };
   runInContext(productionFunction("handleElectronAutomaticRefresh"), context);
   return { context, calls, routes, notices, timers, buttons, priorDashboard, progressFrames, globalStates };
 }
 
+function historyContinuationHarness() {
+  const harness = refreshHarness();
+  const { context } = harness;
+  const timers = new Map();
+  let timerId = 0;
+  context.window.setTimeout = (callback, delay) => {
+    const id = ++timerId;
+    timers.set(id, { callback, delay });
+    return id;
+  };
+  context.window.clearTimeout = id => timers.delete(id);
+  context.dashboard.accounting.historyCoverage = {
+    status: "indexing", phase: "rollout_index", sourceCount: 100,
+    indexedSourceCount: 0, sourceBytes: 1_000, indexedBytes: 0,
+  };
+  context.dashboard.accounting.generation = 1;
+  return {
+    ...harness,
+    continuationTimers: () => [...timers].filter(([, timer]) => timer.delay === 1_500),
+    async continueOnce() {
+      const [id, timer] = this.continuationTimers()[0];
+      timers.delete(id);
+      timer.callback();
+      await new Promise(setImmediate);
+    },
+    advanceHistory() {
+      context.dashboard.accounting.generation += 1;
+      context.dashboard.accounting.historyCoverage.indexedSourceCount += 1;
+      context.dashboard.accounting.historyCoverage.indexedBytes += 10;
+    },
+  };
+}
+
+test("refresh state is a frozen snapshot and submission cannot mutate an earlier view", async () => {
+  const { context } = refreshHarness();
+  const coordinator = context.refreshCoordinator;
+  const before = coordinator.state();
+  assert.equal(Object.isFrozen(before), true);
+  assert.throws(() => { before.running = true; }, TypeError);
+  const acceptance = Promise.withResolvers();
+  context.localClient.refresh = () => acceptance.promise;
+  const operation = coordinator.requestRefresh();
+  assert.equal(before.submitting, false);
+  assert.equal(coordinator.state().submitting, true);
+  acceptance.resolve();
+  await operation;
+  assert.equal(coordinator.state().submitting, false);
+});
+
+test("detailed history continuation requires advancing evidence and stops at the same receipt", async () => {
+  const harness = historyContinuationHarness();
+  let reloads = 0;
+  harness.context.loadLocalDashboard = async () => {
+    reloads += 1;
+    if (reloads === 1) harness.advanceHistory();
+  };
+  await harness.context.requestRefresh({ detailed: true });
+  assert.equal(harness.continuationTimers().length, 1);
+  assert.equal(harness.context.refreshCoordinator.state().continuationPending, true);
+  await harness.continueOnce();
+  assert.deepEqual(harness.routes, ["/api/local/refresh", "/api/local/refresh"]);
+  assert.equal(reloads, 2);
+  assert.equal(harness.continuationTimers().length, 0, "unchanged receipt stops immediately");
+  assert.equal(harness.context.refreshCoordinator.state().continuationPending, false);
+});
+
+test("overview, observation, terminal gaps and completed history never start automatic detailed work", async () => {
+  for (const scenario of ["overview", "observation", "terminal", "complete"]) {
+    const harness = historyContinuationHarness();
+    harness.context.loadLocalDashboard = async () => {
+      harness.advanceHistory();
+      if (scenario === "terminal") Object.assign(harness.context.dashboard.accounting.historyCoverage,
+        { status: "partial", phase: "partial_terminal" });
+      if (scenario === "complete") harness.context.dashboard.accounting.historyCoverage.status = "complete";
+    };
+    await harness.context.requestRefresh({
+      detailed: scenario !== "overview", observeOnly: scenario === "observation",
+    });
+    assert.equal(harness.continuationTimers().length, 0, scenario);
+    assert.equal(harness.context.refreshCoordinator.state().continuationPending, false, scenario);
+    assert.equal(harness.routes.length, scenario === "observation" ? 0 : 1, scenario);
+  }
+});
+
+test("history continuation remains bounded, resets on explicit refresh and can be stopped by pause", async () => {
+  const harness = historyContinuationHarness();
+  harness.context.loadLocalDashboard = async () => { harness.advanceHistory(); };
+  await harness.context.requestRefresh({ detailed: true });
+  for (let pass = 0; pass < 40; pass += 1) await harness.continueOnce();
+  assert.equal(harness.routes.length, 41, "one manual pass plus at most forty continuations");
+  assert.equal(harness.context.refreshCoordinator.state().continuations, 40);
+  assert.equal(harness.continuationTimers().length, 0);
+  await harness.context.requestRefresh({ detailed: true });
+  assert.equal(harness.context.refreshCoordinator.state().continuations, 0);
+  assert.equal(harness.continuationTimers().length, 1);
+  harness.context.localRefreshPaused = true;
+  harness.context.refreshCoordinator.stopContinuation();
+  assert.equal(harness.continuationTimers().length, 0);
+  assert.equal(harness.context.refreshCoordinator.state().continuationPending, false);
+  await harness.context.requestRefresh({ detailed: true });
+  assert.equal(harness.routes.length, 42, "paused submission cannot restart the chain");
+});
+
+test("a shared busy action stops history continuation without submitting work", async () => {
+  const harness = historyContinuationHarness();
+  harness.context.loadLocalDashboard = async () => { harness.advanceHistory(); };
+  await harness.context.requestRefresh({ detailed: true });
+  harness.context.localActionBusy = true;
+  await harness.continueOnce();
+  assert.equal(harness.routes.length, 1);
+  assert.equal(harness.context.refreshCoordinator.state().continuations, 0);
+  assert.equal(harness.context.refreshCoordinator.state().continuationPending, false);
+});
+
 test("allowance loading follows the existing primary-read and refresh owners through failure and retry", () => {
   const { context } = refreshHarness({ sidebar: true });
   const states=[];context.allowancePage.setLoadState=state=>states.push(state);
-  context.localRefreshInProgress=true;context.updateLocalActionButtons();
-  context.localRefreshInProgress=false;context.dashboardReadFailed=true;context.updateLocalActionButtons();
+  context.setRefreshUiState({ ...context.refreshCoordinator.state(), running: true });context.updateLocalActionButtons();
+  context.setRefreshUiState({ ...context.refreshCoordinator.state(), running: false });context.dashboardReadFailed=true;context.updateLocalActionButtons();
   context.activeLocalDashboardLoad={pending:true};context.updateLocalActionButtons();
   context.activeLocalDashboardLoad=null;context.dashboardReadFailed=false;context.updateLocalActionButtons();
   assert.deepEqual(states,['loading','error','loading','ready']);
@@ -272,7 +430,7 @@ test("sidebar refresh keeps its icon and cancellability while showing only the p
   const button = context.$("#refresh-button");
   const icon = refreshElement("svg");
   button.append(icon);
-  context.localRefreshInProgress = true;
+  context.setRefreshUiState({ ...context.refreshCoordinator.state(), running: true });
   context.localActionBusy = true;
   context.renderRefreshProgress(button, "Scanning local history…", { processed: 9, selected: 100, elapsedSeconds: 12 });
   context.updateLocalActionButtons();
@@ -281,7 +439,7 @@ test("sidebar refresh keeps its icon and cancellability while showing only the p
   assert.equal(button.disabled, false, "the same icon must remain available for safe cancellation");
   assert.equal(context.$("#sidebar-refresh-summary").textContent, "Scanning local history…");
   assert.equal(context.$("#cancel-refresh").hidden, true, "there is no duplicate cancel button");
-  context.localRefreshCancelRequested = true;
+  context.setRefreshUiState({ ...context.refreshCoordinator.state(), cancelling: true });
   context.updateLocalActionButtons();
   assert.equal(button.disabled, true, "only one cancellation request is sent");
 });
@@ -333,7 +491,7 @@ test("dynamic progress and idle actions follow the selected language", () => {
   context.t = (key, values = {}) => translate(key, values, locale);
   const button = context.$("#refresh-button");
   context.localActionBusy = true;
-  context.localRefreshInProgress = true;
+  context.setRefreshUiState({ ...context.refreshCoordinator.state(), running: true });
   for (const nextLocale of ["zh-Hans", "en-US", "es", "zh-Hans"]) {
     locale = nextLocale;
     context.renderRefreshProgress(button, "Analyzing files…", {
@@ -344,7 +502,7 @@ test("dynamic progress and idle actions follow the selected language", () => {
     assert.equal(button.getAttribute("aria-label"), `${phase} · 9/100 · 1:00`);
   }
   context.localActionBusy = false;
-  context.localRefreshInProgress = false;
+  context.setRefreshUiState({ ...context.refreshCoordinator.state(), running: false });
   context.updateLocalActionButtons();
   assert.match(button.textContent, /[\u4e00-\u9fff]/u);
   assert.equal(button.getAttribute("aria-label"), null);
@@ -354,7 +512,7 @@ test("refresh progress reserves distinct count and timer slots and clears them w
   const harness = refreshHarness();
   const button = harness.context.$("#refresh-button");
   harness.context.localActionBusy = true;
-  harness.context.localRefreshInProgress = true;
+  harness.context.setRefreshUiState({ ...harness.context.refreshCoordinator.state(), running: true });
   harness.context.renderRefreshProgress(button, "Starting detailed analysis…");
   assert.deepEqual(button.children.map((child) => child.textContent), [
     "Starting detailed analysis…", "", "",
@@ -375,7 +533,7 @@ test("refresh progress reserves distinct count and timer slots and clears them w
   }
   assert.equal(button.classList.contains("refresh-progress"), true);
   harness.context.localActionBusy = false;
-  harness.context.localRefreshInProgress = false;
+  harness.context.setRefreshUiState({ ...harness.context.refreshCoordinator.state(), running: false });
   harness.context.updateLocalActionButtons();
   assert.equal(button.classList.contains("refresh-progress"), false);
   assert.equal(button.getAttribute("aria-label"), null);
@@ -443,7 +601,7 @@ test("an active refresh keeps its progress affordance and cancellation action af
   const button = harness.context.$("#refresh-button");
   button.textContent = "Update local usage";
   harness.context.localActionBusy = false;
-  harness.context.localRefreshInProgress = true;
+  harness.context.setRefreshUiState({ ...harness.context.refreshCoordinator.state(), running: true });
 
   harness.context.updateLocalActionButtons();
 
@@ -466,7 +624,7 @@ test("a terminal refresh restores the last dashboard status after showing Runnin
     { state: "stale", companionReachable: true },
   ]);
   assert.equal(harness.context.localActionBusy, false);
-  assert.equal(harness.context.localRefreshInProgress, false);
+  assert.equal(harness.context.refreshCoordinator.state().running, false);
   assert.equal(harness.context.$("#refresh-button").textContent, "Update local usage");
 });
 
@@ -500,7 +658,7 @@ test("refresh events preserve counted indexing and count-free accounting phases"
   assert.equal(accounting.slots[1], "", "accounting cannot inherit an earlier source count");
   assert.match(accounting.slots[2], /^\d+:\d{2}$/u);
   assert.equal(accounting.description, `Preparing usage statistics · ${accounting.slots[2]}`);
-  assert.deepEqual(harness.calls, ["detailed", "status", "status", "status", "reload", "continuation-check"]);
+  assert.deepEqual(harness.calls, ["detailed", "status", "status", "status", "reload"]);
   assert.deepEqual(harness.notices, []);
 });
 
@@ -613,7 +771,7 @@ test("history publication failures explain the fixed cause in every language and
       assert.equal(notice.kind, "error");
       assert.equal(noticeCopy(harness, notice), `${translate(copyKey, { code }, locale)} ${translate("refresh.quota.appServerUnavailableCopy", {}, locale)}`);
       assert.ok(noticeCopy(harness, notice).includes(code), locale);
-      assert.equal(harness.calls.includes("continuation-check"), false,
+      assert.equal(harness.context.refreshCoordinator.state().continuationPending, false,
         "presenting a failure does not change the retry policy");
       harness.context.renderObservationConnectionState({ mode: "local", state: "stale" }, { status: "stale" });
       assert.equal(harness.notices.at(-1), notice, "a stale tick preserves the specific history error");
@@ -741,10 +899,10 @@ test("global refresh uses the bounded overview path while setup retains explicit
       // A DOM event cannot accidentally supply the quick/default options.
       harness.buttons.get(selector).click({ type: "click", detailed: false });
       await new Promise(setImmediate);
-      assert.deepEqual(harness.calls, selector==="#refresh-button" ? ["overview","status","reload"] : ["detailed", "status", "reload", "continuation-check"]);
+      assert.deepEqual(harness.calls, selector==="#refresh-button" ? ["overview","status","reload"] : ["detailed", "status", "reload"]);
       assert.deepEqual(harness.routes, [selector==="#refresh-button" ? "/api/local/refresh/overview" : "/api/local/refresh"]);
       assert.equal(harness.context.localActionBusy, false);
-      assert.equal(harness.context.localRefreshInProgress, false);
+      assert.equal(harness.context.refreshCoordinator.state().running, false);
       assert.equal(harness.context.dashboard, harness.priorDashboard,
         "refresh does not clear the last-good result while replacing evidence");
     });
@@ -783,7 +941,7 @@ test("an automatically started run owns busy state and quota publication before 
   harness.context.loadQuickResultDashboard = async () => { harness.calls.push("quick-reload"); await loaded; };
   const observation = harness.context.observeOverviewPublication();
   await new Promise(setImmediate);
-  assert.equal(harness.context.localRefreshInProgress, true);
+  assert.equal(harness.context.refreshCoordinator.state().running, true);
   assert.equal(harness.buttons.get("#refresh-button").classList.contains("is-refreshing"), true);
   assert.equal(harness.buttons.get("#refresh-button").getAttribute("aria-busy"), "true");
   assert.deepEqual(harness.routes, []);
@@ -793,7 +951,7 @@ test("an automatically started run owns busy state and quota publication before 
   release();
   await observation;
   assert.deepEqual(harness.calls, ["status", "quick-reload", "status", "reload"]);
-  assert.equal(harness.context.localRefreshInProgress, false);
+  assert.equal(harness.context.refreshCoordinator.state().running, false);
   await harness.context.observeOverviewPublication();
   assert.equal(harness.calls.filter(call => call === "reload").length, 1, "the final receipt is consumed once");
 });
@@ -803,13 +961,13 @@ test("submission pending is not a running controller and cannot be cancelled", a
   let release;
   harness.context.localClient.refresh = () => new Promise(resolve => { release = resolve; });
   const submission = harness.context.requestRefresh();
-  assert.equal(harness.context.localRefreshSubmissionPending, true);
-  assert.equal(harness.context.localRefreshInProgress, false);
+  assert.equal(harness.context.refreshCoordinator.state().submitting, true);
+  assert.equal(harness.context.refreshCoordinator.state().running, false);
   assert.equal(harness.buttons.get("#refresh-button").classList.contains("is-refreshing"), false);
   assert.equal(harness.buttons.get("#refresh-button").disabled, true);
   release();
   await submission;
-  assert.equal(harness.context.localRefreshSubmissionPending, false);
+  assert.equal(harness.context.refreshCoordinator.state().submitting, false);
 });
 
 test("accepted Electron refreshes acquire and settle the main-process lease", async () => {
@@ -902,7 +1060,7 @@ test("an initial controller conflict is informational and cannot queue detailed 
   assert.match(noticeCopy(harness, harness.notices[0]), /choose Refresh again if detailed accounting still needs updating/u);
   assert.equal(harness.context.dashboard, harness.priorDashboard);
   assert.equal(harness.context.localActionBusy, false);
-  assert.equal(harness.context.localRefreshInProgress, false);
+  assert.equal(harness.context.refreshCoordinator.state().running, false);
 });
 
 test("a non-conflict request failure remains a failure and a busy page makes no request", async () => {
@@ -989,14 +1147,14 @@ test("lost status transport retains last confirmed busy state and reconnects wit
   };
   await harness.context.requestRefresh({ observeOnly: true,
     initialRefresh: { refreshId: "refresh-reconnect", status: "running", running: true } });
-  assert.equal(harness.context.localRefreshInProgress, true);
-  assert.equal(harness.context.localRefreshObserverActive, false);
+  assert.equal(harness.context.refreshCoordinator.state().running, true);
+  assert.equal(harness.context.refreshCoordinator.state().observing, false);
   assert.equal(harness.context.localActionBusy, false);
   assert.equal(harness.buttons.get("#refresh-button").classList.contains("is-refreshing"), true);
   assert.equal(harness.buttons.get("#sidebar-refresh-summary").textContent, translate("refresh.stage.reconnecting", {}, "en-US"));
   assert.deepEqual(harness.notices, [], "unreadable status is not evidence of backend failure");
   await harness.context.observeOverviewPublication();
-  assert.equal(harness.context.localRefreshInProgress, false);
+  assert.equal(harness.context.refreshCoordinator.state().running, false);
   assert.deepEqual(harness.routes, []);
   assert.equal(harness.calls.filter(call => call === "reload").length, 1);
 });
@@ -1020,7 +1178,7 @@ test("event observation waits through disconnection and publication before reloa
   signal('disconnected');
   await new Promise(setImmediate);
   assert.equal(reads, 0);
-  assert.equal(harness.context.localRefreshInProgress, true);
+  assert.equal(harness.context.refreshCoordinator.state().running, true);
   assert.equal(harness.buttons.get('#sidebar-refresh-summary').textContent, translate('refresh.stage.reconnecting', {}, 'en-US'));
   status = { refreshId: 'task', status: 'succeeded', running: false };
   signal('connected', { ...status, publication: 'running', pending: null });
@@ -1047,8 +1205,8 @@ test("closing the event stream ends observation without cancelling the refresh",
   await new Promise(setImmediate);
   state = 'closed'; wake();
   await operation;
-  assert.equal(harness.context.localRefreshObserverActive, false);
-  assert.equal(harness.context.localRefreshInProgress, true);
+  assert.equal(harness.context.refreshCoordinator.state().observing, false);
+  assert.equal(harness.context.refreshCoordinator.state().running, true);
   assert.deepEqual(harness.routes, []);
   assert.deepEqual(harness.notices, []);
 });
@@ -1089,14 +1247,14 @@ test('silent disconnected observation expires at the full budget without declari
   assert.equal([...stream.timers.values()][0].delay, 241 * 60_000);
   stream.advance(241 * 60_000 - 1);
   await new Promise(setImmediate);
-  assert.equal(harness.context.localRefreshObserverActive, true);
+  assert.equal(harness.context.refreshCoordinator.state().observing, true);
   stream.advance(1);
   await operation;
   assert.equal(stream.timers.size, 0);
   assert.equal(harness.context.localActionBusy, false);
-  assert.equal(harness.context.localRefreshObserverActive, false);
-  assert.equal(harness.context.localRefreshInProgress, true);
-  assert.equal(harness.context.localRefreshObservationWait, null);
+  assert.equal(harness.context.refreshCoordinator.state().observing, false);
+  assert.equal(harness.context.refreshCoordinator.state().running, true);
+  assert.equal(harness.context.refreshCoordinator.state().waiting, false);
   assert.equal(harness.buttons.get('#sidebar-refresh-summary').textContent, translate('refresh.stage.observationStopped', {}, 'en-US'));
   assert.deepEqual(harness.routes, []);
   assert.deepEqual(harness.notices, []);
@@ -1114,12 +1272,12 @@ test('timeout settlement uses 30 seconds even if no further event arrives', asyn
   assert.equal([...stream.timers.values()][0].delay, 30_000);
   stream.advance(29_999);
   await new Promise(setImmediate);
-  assert.equal(harness.context.localRefreshObserverActive, true);
+  assert.equal(harness.context.refreshCoordinator.state().observing, true);
   stream.advance(1);
   await operation;
   assert.equal(harness.context.localActionBusy, false);
-  assert.equal(harness.context.localRefreshObserverActive, false);
-  assert.equal(harness.context.localRefreshInProgress, true);
+  assert.equal(harness.context.refreshCoordinator.state().observing, false);
+  assert.equal(harness.context.refreshCoordinator.state().running, true);
   assert.deepEqual(harness.notices, []);
   assert.equal(stream.timers.size, 0);
   stream.bus.close();
@@ -1134,7 +1292,6 @@ test('cancel immediately wakes observation and still invokes the companion cance
   const cancellation = Promise.withResolvers();
   let calls = 0;
   harness.context.localClient.cancelRefresh = () => { calls++; return cancellation.promise; };
-  runInContext(productionFunction('cancelLocalAnalysis'), harness.context);
   const operation = harness.context.requestRefresh({ observeOnly: true,
     initialRefresh: { refreshId: 'task', status: 'running', running: true } });
   await new Promise(setImmediate);
@@ -1144,12 +1301,12 @@ test('cancel immediately wakes observation and still invokes the companion cance
   await new Promise(setImmediate);
   assert.equal(stream.timers.has(oldTimer), false, 'the cancelled wait is released immediately');
   assert.equal(stream.timers.size, 1, 'observation remains bounded while awaiting backend evidence');
-  assert.equal(harness.context.localRefreshInProgress, true);
+  assert.equal(harness.context.refreshCoordinator.state().running, true);
   cancellation.resolve(); await cancel;
   stream.advance(241 * 60_000);
   await operation;
-  assert.equal(harness.context.localRefreshObserverActive, false);
-  assert.equal(harness.context.localRefreshInProgress, true);
+  assert.equal(harness.context.refreshCoordinator.state().observing, false);
+  assert.equal(harness.context.refreshCoordinator.state().running, true);
   assert.equal(harness.notices.some(notice => notice.kind === 'error'), false);
   stream.bus.close();
 });
@@ -1176,7 +1333,7 @@ test("partial quota publication does not hide a later failed usage phase", async
   ] });
   await harness.context.requestRefresh({ observeOnly: true, initialRefresh: initial });
   assert.deepEqual(harness.calls, ["quick-reload", "status", "diagnostic"]);
-  assert.equal(harness.context.localRefreshInProgress, false);
+  assert.equal(harness.context.refreshCoordinator.state().running, false);
   assert.equal(harness.buttons.get("#sidebar-refresh-summary").textContent, "Refresh failed");
   assert.equal(harness.notices.at(-1).title, translate("refresh.failedTitle", {}, "en-US"));
 });
@@ -1191,11 +1348,37 @@ test("optional status reads started before a manual request cannot overwrite its
   harness.context.scheduleLocalReadinessPoll = () => {};
   const secondary = harness.context.loadLocalDashboardSecondaryState({ isCurrent: () => true });
   await new Promise(setImmediate);
-  harness.context.localRefreshStatusVersion += 1;
+  const accepted = Promise.withResolvers();
+  harness.context.localClient.refresh = () => accepted.promise;
+  const manual = harness.context.requestRefresh();
+  assert.equal(harness.context.refreshCoordinator.state().version, 1);
   release({ refresh: { refreshId: "old", status: "succeeded", result: {
     quotaRefresh: { attempted: true, recordWritten: false, errorCode: "temporary_disconnect" } } } });
   await secondary;
   assert.deepEqual(harness.notices, []);
+  accepted.reject(Object.assign(new Error("synthetic safe conflict"), { status: 409 }));
+  await manual;
+});
+
+test("a publication read started before submission cannot clear the newer observer", async () => {
+  const harness = refreshHarness();
+  const oldStatus = Promise.withResolvers();
+  const acceptance = Promise.withResolvers();
+  harness.context.localClient.refreshStatus = () => oldStatus.promise;
+  const publication = harness.context.observeOverviewPublication();
+  harness.context.localClient.refresh = () => acceptance.promise;
+  const manual = harness.context.requestRefresh();
+  oldStatus.resolve({ refresh: { refreshId: "older", status: "failed", running: false,
+    finishedAt: "2026-10-21T00:00:01.000Z" } });
+  await publication;
+  assert.equal(harness.context.refreshCoordinator.state().submitting, true);
+  assert.equal(harness.context.refreshCoordinator.state().observing, true);
+  assert.equal(harness.context.refreshCoordinator.state().lastPublication, null);
+  assert.deepEqual(harness.notices, []);
+  assert.deepEqual(harness.calls, [], "old publication cannot reload evidence under the manual request");
+  acceptance.reject(Object.assign(new Error("synthetic safe conflict"), { status: 409 }));
+  await manual;
+  assert.equal(harness.context.refreshCoordinator.state().observing, false);
 });
 
 
@@ -1227,9 +1410,9 @@ test("a pending detailed request observes its follow-up instead of completing at
     request: { started: false, joined: true, pending: true }, refresh: weak,
   });
   await harness.context.requestRefresh({ detailed: true });
-  assert.deepEqual(harness.calls, ["status", "status", "quick-reload", "status", "reload", "continuation-check"]);
-  assert.equal(harness.context.lastObservedRefreshPublication, "refresh-detail::2026-10-21T00:00:03.000Z");
-  assert.equal(harness.context.localRefreshInProgress, false);
+  assert.deepEqual(harness.calls, ["status", "status", "quick-reload", "status", "reload"]);
+  assert.equal(harness.context.refreshCoordinator.state().lastPublication, "refresh-detail::2026-10-21T00:00:03.000Z");
+  assert.equal(harness.context.refreshCoordinator.state().running, false);
   assert.equal(harness.buttons.get("#sidebar-refresh-summary").textContent, "Update complete");
 });
 
@@ -1331,7 +1514,6 @@ test("real controller timeout ends observation only after its writer settles", a
   let submissions = 0;
   let statusReads = 0;
   harness.context.createRefreshPollingBudget = createRefreshPollingBudget;
-  harness.context.refreshNeedsContinuation = refreshNeedsContinuation;
   harness.context.localClient.recalculateDetailedAccounting = async () => {
     submissions += 1;
     return { request: { started: accepted.started, joined: accepted.joined, pending: accepted.pending }, refresh: accepted.refresh };
@@ -1347,7 +1529,7 @@ test("real controller timeout ends observation only after its writer settles", a
       return { refresh: timedOut };
     }
     if (statusReads === 2) {
-      assert.equal(harness.context.localRefreshInProgress, true);
+      assert.equal(harness.context.refreshCoordinator.state().running, true);
       assert.equal(harness.context.$("#refresh-button").classList.contains("is-refreshing"), true);
       work.resolve();
       await controller.whenSettled();
@@ -1364,8 +1546,8 @@ test("real controller timeout ends observation only after its writer settles", a
     assert.equal(statusReads, 2, "an actual terminal receipt ends observation without another polling budget");
     assert.equal(submissions, 1, "the failed weak run cannot trigger a replacement detailed request");
     assert.equal(runs, 1, "the companion did not run the revoked pending work");
-    assert.equal(harness.context.localRefreshInProgress, false);
-    assert.equal(harness.context.localRefreshObserverActive, false);
+    assert.equal(harness.context.refreshCoordinator.state().running, false);
+    assert.equal(harness.context.refreshCoordinator.state().observing, false);
     assert.equal(harness.context.$("#sidebar-refresh-summary").textContent, "Refresh failed");
     assert.equal(harness.notices.at(-1).title, translate("refresh.failedTitle", {}, "en-US"));
   } finally {
@@ -1401,7 +1583,6 @@ test("real bounded timeout waits for settlement and a joined continuation does n
   const harness = refreshHarness({ sidebar: true });
   const budget = createRefreshPollingBudget({ now: () => 0 });
   harness.context.createRefreshPollingBudget = () => budget;
-  harness.context.refreshNeedsContinuation = refreshNeedsContinuation;
   let submissions = 0;
   let statusReads = 0;
   harness.context.localClient.recalculateDetailedAccounting = async () => {
@@ -1430,7 +1611,7 @@ test("real bounded timeout waits for settlement and a joined continuation does n
     assert.equal(statusReads, 3);
     assert.equal(submissions, 2);
     assert.equal(budget.continuations, 0, "HTTP 200 joined is observation of existing work, not a started continuation");
-    assert.equal(harness.context.localRefreshInProgress, false);
+    assert.equal(harness.context.refreshCoordinator.state().running, false);
     assert.equal(harness.context.$("#sidebar-refresh-summary").textContent, "Update complete");
   } finally {
     firstWork.resolve(); secondWork.resolve(); await controller.whenSettled();

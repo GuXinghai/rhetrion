@@ -143,3 +143,18 @@ test("detailed startup diagnostics retain only fixed stage and reason codes", ()
   assert.deepEqual(recorder.snapshot().reuse.map(row => row.code),
     ["rescan_response_reconciliation", "rescan_same_size_changed", "inputs_revision_changed"]);
 });
+
+test("lineage subcodes survive process-local refresh status without private details", () => {
+  const recorder = createLocalRefreshTimingRecorder();
+  const codes = ["lineage_metadata_missing", "lineage_parent_ambiguous", "lineage_reset_invalid", "lineage_replacement_mode_invalid", "lineage_base_invalid",
+    "lineage_parent_missing", "lineage_cutoff_out_of_bounds", "lineage_cutoff_ordinal_invalid", "lineage_cutoff_truncated",
+    "lineage_cutoff_boundary_invalid", "lineage_cutoff_line_count_mismatch", "lineage_parent_content_invalid",
+    "lineage_physical_cycle", "lineage_logical_cycle", "lineage_dependency_invalid", "lineage_parent_changed",
+    "lineage_parent_short_read", "lineage_parent_open_failed", "lineage_parent_read_failed", "lineage_parent_close_failed"];
+  for (const code of codes) reportLocalRefreshReuseDiagnostic(recorder.recordReuse, "index", code);
+  reportLocalRefreshReuseDiagnostic(recorder.recordReuse, "index", "lineage_private-path");
+  reportLocalRefreshReuseDiagnostic(recorder.recordReuse, "lookup", "lineage_parent_changed");
+  recorder.recordReuse({ phase: "lookup", code: "lineage_parent_changed" });
+  recorder.recordReuse({ phase: "index", code: "lineage_parent_changed", path: "synthetic-private" });
+  assert.deepEqual(recorder.snapshot().reuse, codes.map(code => ({ phase: "index", code, calls: 1 })));
+});

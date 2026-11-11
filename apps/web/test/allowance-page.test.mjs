@@ -70,7 +70,7 @@ test('native publication signals coalesce while busy and a failed reread is visi
   const fn=source.match(/^async function reloadLocalEvidenceAfterNativeRefresh\(\) \{[\s\S]*?^\}/mu)[0];
   let reads=0,release;const notices=[];
   const context=createContext({nativeEvidenceReloadInFlight:false,nativeEvidenceReloadPending:false,dashboardReadFailed:false,
-    localActionBusy:true,localRefreshInProgress:false,
+    localActionBusy:true,refreshCoordinator:{state:()=>({running:false})},
     dashboardReadFailure,
     loadQuickResultDashboard:()=>{reads++;return new Promise((resolve,reject)=>{release=reject;});},
     showConnectionNotice:value=>notices.push(value),diagnosticErrorCode:()=> 'report_invalid',

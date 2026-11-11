@@ -1,6 +1,10 @@
 import {
+  ACCOUNTING_CACHE_MAX_BYTES as MAX_CACHE_BYTES,
+  accountingError as fixedError,
+  throwIfAccountingAborted as throwIfAborted,
+} from "./accounting-values.js";
+import {
   REPLAY_SAFE_ACCOUNTING_SCHEMA_VERSION,
-  REPLAY_SAFE_CALIBRATION_INTERNALS,
   assertReplaySafeAccountingCache,
   projectReplaySafeAccountingRetainedSlices,
 } from "./replay-safe-accounting-cache.js";
@@ -13,12 +17,6 @@ import {
 } from "./local-accounting-freshness.js";
 
 export { LOCAL_ACCOUNTING_FRESHNESS_VERSION } from "./local-accounting-freshness.js";
-
-const {
-  MAX_CACHE_BYTES,
-  fixedError,
-  throwIfAborted,
-} = REPLAY_SAFE_CALIBRATION_INTERNALS;
 
 export const LOCAL_ACCOUNTING_FAST_PATH_VERSION =
   "local-accounting-fast-path-v1";

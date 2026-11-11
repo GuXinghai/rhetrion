@@ -679,6 +679,8 @@ export function createCodexLogSources({ filesystem, lineReader }) {
     // source again. Absent, discovery inspects every file as before.
     inspectionCache = null,
     diagnosticTimer = null,
+    // Fixed, content-free subcodes only. Observers never affect discovery.
+    onLineageDiagnostic = null,
     excludeApiSessions = false,
   }) {
     if (!validAbortSignal(signal)) throw new TypeError("signal must be an AbortSignal or null");
@@ -686,6 +688,13 @@ export function createCodexLogSources({ filesystem, lineReader }) {
     if (inspectionCache !== null && typeof inspectionCache !== "function") {
       throw new TypeError("inspectionCache must be a function or null");
     }
+    if (onLineageDiagnostic !== null && typeof onLineageDiagnostic !== "function") {
+      throw new TypeError("onLineageDiagnostic must be a function or null");
+    }
+    const reportLineage = code => {
+      try { Promise.resolve(onLineageDiagnostic?.(code)).catch(() => {}); }
+      catch { /* Optional diagnostics cannot change proof or quarantine. */ }
+    };
     throwIfAborted(signal);
     if (selectedRolloutNames === undefined) {
       selectedRolloutNames = diagnosticTimer ? await diagnosticTimer.measure("discovery_selected",()=>filesystem.readSelectedRolloutNames(codexHome)) : await filesystem.readSelectedRolloutNames(codexHome);
@@ -879,6 +888,11 @@ export function createCodexLogSources({ filesystem, lineReader }) {
     // window. Invalid old groups are remembered locally but do not poison an
     // unrelated recent request: only selected groups enter the receipt below.
     const invalidGroupReason = new Map();
+    const invalidLineageDetail = new Map();
+    function invalidateLineage(groupKey, detail) {
+      invalidGroupReason.set(groupKey, "codex_rollout_lineage_invalid");
+      invalidLineageDetail.set(groupKey, detail);
+    }
     const groupKeyFor = (info) => info.threadId
       ?? info.lineage?.sessionId
       ?? `source:${info.rolloutKey}`;
@@ -901,10 +915,7 @@ export function createCodexLogSources({ filesystem, lineReader }) {
         );
       } else if (typeof info.lineage?.sessionId !== "string"
           || info.lineage.sessionId.length === 0) {
-        invalidGroupReason.set(
-          groupKey,
-          "codex_rollout_lineage_invalid",
-        );
+        invalidateLineage(groupKey, "lineage_metadata_missing");
       }
     }
     // Canonical filename mismatches are grouped by the filename's thread id so
@@ -1068,10 +1079,7 @@ export function createCodexLogSources({ filesystem, lineReader }) {
       const parents = logicalParentMembers(info.lineage.parentId);
       if (parents.length > 1
           && !parents.some((parent) => parent.resolvedHead === true)) {
-        invalidGroupReason.set(
-          groupKeyFor(info),
-          "codex_rollout_lineage_invalid",
-        );
+        invalidateLineage(groupKeyFor(info), "lineage_parent_ambiguous");
       }
     }
 
@@ -1113,9 +1121,10 @@ export function createCodexLogSources({ filesystem, lineReader }) {
         || base.endByteOffset < 0;
     }
     // Preserve the original within-pass bound for rejected shared cutoffs.
-    // Failures never survive discovery, and this set cannot authorize success.
-    const rejectedHistoryCutoffs = new Set();
-    async function historyCutoffValid(parent, base) {
+    // Failures never survive discovery. Retain their cause for shared parents;
+    // a rejected proof can never authorize success.
+    const rejectedHistoryCutoffs = new Map();
+    async function historyCutoffFailure(parent, base) {
       const startOrdinal = Number(parent.lineage?.startOrdinal ?? 0);
       const key = JSON.stringify(["history-cutoff-v1", codexHome, parent.path,
         parent.compressed === true, parent.size, parent.physicalSize ?? parent.size, startOrdinal,
@@ -1126,17 +1135,24 @@ export function createCodexLogSources({ filesystem, lineReader }) {
       let before = null;
       let openedState = null;
       let proof = null;
+      let failure = null;
+      let readFailure = "lineage_parent_open_failed";
+      let changedCode = null;
+      let pendingError = null;
+      const changed = code => { changedCode = code; sourceChanged(); };
       try {
         throwIfAborted(signal);
         resourceGuard?.checkRuntime();
-        if (rejectedHistoryCutoffs.has(key)) return false;
+        if (rejectedHistoryCutoffs.has(key)) return rejectedHistoryCutoffs.get(key);
         handle = await filesystem.openReadOnlyNoFollow(parent.path);
+        readFailure = "lineage_parent_read_failed";
         const stats = await handle.stat();
         assertActiveSourceStats(stats, parent);
         openedState = stats;
-        if (stats.size !== (parent.physicalSize ?? parent.size)) sourceChanged();
+        if (stats.size !== (parent.physicalSize ?? parent.size)) changed("lineage_parent_changed");
         if (base.endByteOffset > parent.size) {
           historyCutoffProofs.delete(key);
+          failure = "lineage_cutoff_out_of_bounds";
         }
         before = cacheable ? await readExactCutoffState(handle, parent.path) : null;
         const cached = before === null ? null : historyCutoffProofs.get(key);
@@ -1176,7 +1192,7 @@ export function createCodexLogSources({ filesystem, lineReader }) {
               resourceGuard?.checkRuntime();
               const length = Math.min(buffer.length, base.endByteOffset - bytes);
               const read = await handle.read(buffer, 0, length, bytes);
-              if (read.bytesRead !== length) sourceChanged();
+              if (read.bytesRead !== length) changed("lineage_parent_short_read");
               let from = 0;
               for (;;) {
                 const newline = buffer.indexOf(0x0a, from);
@@ -1193,6 +1209,13 @@ export function createCodexLogSources({ filesystem, lineReader }) {
             && bytes === base.endByteOffset
             && lines === base.endOrdinalExclusive - startOrdinal
             && (bytes === 0 || lastByte === 0x0a);
+          if (!valid) {
+            failure = !Number.isSafeInteger(startOrdinal) || base.endOrdinalExclusive <= startOrdinal
+              ? "lineage_cutoff_ordinal_invalid"
+              : bytes !== base.endByteOffset ? "lineage_cutoff_truncated"
+                : bytes > 0 && lastByte !== 0x0a ? "lineage_cutoff_boundary_invalid"
+                  : "lineage_cutoff_line_count_mismatch";
+          }
           if (valid && before !== null) proof = { state: before, bytes, lines, lastByte };
         }
         if (before !== null && await readExactCutoffState(handle, parent.path) !== before) sourceChanged();
@@ -1205,28 +1228,49 @@ export function createCodexLogSources({ filesystem, lineReader }) {
         resourceGuard?.checkRuntime();
       } catch (error) {
         historyCutoffProofs.delete(key);
+        pendingError = error;
         rethrowScannerControlError(error);
         // An unreadable or changing dependency is not proof of invalid lineage.
         // Refuse this discovery pass before any writer can quarantine its child.
         if (error?.code === "codex_rollout_content_invalid" && openedState !== null) {
-          if (before !== null) {
-            if (await readExactCutoffState(handle, parent.path) !== before) sourceChanged();
-          } else {
-            const settled = await handle.stat();
-            const named = await statActiveSourcePath(parent.path, openedState);
-            if (!sameSourceState(openedState, settled) || !sameSourceState(settled, named)) sourceChanged();
+          try {
+            if (before !== null) {
+              if (await readExactCutoffState(handle, parent.path) !== before) sourceChanged();
+            } else {
+              const settled = await handle.stat();
+              const named = await statActiveSourcePath(parent.path, openedState);
+              if (!sameSourceState(openedState, settled) || !sameSourceState(settled, named)) sourceChanged();
+            }
+          } catch (verificationError) {
+            pendingError = verificationError;
+            rethrowScannerControlError(verificationError);
+            reportLineage(verificationError?.code === "codex_log_source_changed"
+              ? "lineage_parent_changed" : "lineage_parent_read_failed");
+            sourceChanged();
           }
           valid = false;
-        } else sourceChanged();
+          failure = "lineage_parent_content_invalid";
+        } else {
+          reportLineage(changedCode ?? (["codex_log_source_changed", "codex_rollout_source_changed"].includes(error?.code)
+            ? "lineage_parent_changed" : readFailure));
+          sourceChanged();
+        }
       } finally {
         try { await handle?.close(); }
-        catch { historyCutoffProofs.delete(key); throwIfAborted(signal); sourceChanged(); }
-        if (!valid) rejectedHistoryCutoffs.add(key);
+        catch (error) {
+          historyCutoffProofs.delete(key);
+          rethrowScannerControlError(pendingError);
+          rethrowScannerControlError(error);
+          throwIfAborted(signal);
+          reportLineage("lineage_parent_close_failed");
+          sourceChanged();
+        }
+        if (!valid && failure !== null) rejectedHistoryCutoffs.set(key, failure);
         if (signal?.aborted) { historyCutoffProofs.delete(key); throwIfAborted(signal); }
       }
       if (valid && proof !== null) retainHistoryCutoffProof(key, proof);
       else historyCutoffProofs.delete(key);
-      return valid;
+      return failure;
     }
     for (const info of physical) {
       if (!validationCandidates.has(info)) continue;
@@ -1241,19 +1285,18 @@ export function createCodexLogSources({ filesystem, lineReader }) {
             || (base === null
               ? !noBaseSegmentReset
               : invalidBaseShape(base)))) {
-        invalidGroupReason.set(groupKey, "codex_rollout_lineage_invalid");
+        invalidateLineage(groupKey, info.lineage?.historyMode !== "paginated"
+          ? "lineage_replacement_mode_invalid" : base === null ? "lineage_reset_invalid" : "lineage_base_invalid");
         continue;
       }
       if (base === null) continue;
       if (invalidBaseShape(base)) {
-        invalidGroupReason.set(groupKey, "codex_rollout_lineage_invalid");
+        invalidateLineage(groupKey, "lineage_base_invalid");
         continue;
       }
       const parent = byRolloutId.get(base.rolloutId);
-      if (parent === undefined
-          || !await historyCutoffValid(parent, base)) {
-        invalidGroupReason.set(groupKey, "codex_rollout_lineage_invalid");
-      }
+      const failure = parent === undefined ? "lineage_parent_missing" : await historyCutoffFailure(parent, base);
+      if (failure !== null) invalidateLineage(groupKey, failure);
     }
 
     // Physical-history cycles can cross logical thread groups (a paginated
@@ -1274,10 +1317,7 @@ export function createCodexLogSources({ filesystem, lineReader }) {
       }
       if (current !== null && current !== undefined && position.has(current)) {
         for (const member of chain.slice(position.get(current))) {
-          invalidGroupReason.set(
-            groupKeyFor(member),
-            "codex_rollout_lineage_invalid",
-          );
+          invalidateLineage(groupKeyFor(member), "lineage_physical_cycle");
         }
       }
       for (const member of chain) visited.add(member);
@@ -1321,7 +1361,7 @@ export function createCodexLogSources({ filesystem, lineReader }) {
     }
     for (const [groupKey, remaining] of pendingLogicalDependencies) {
       if (remaining > 0 && !invalidGroupReason.has(groupKey)) {
-        invalidGroupReason.set(groupKey, "codex_rollout_lineage_invalid");
+        invalidateLineage(groupKey, "lineage_logical_cycle");
       }
     }
 
@@ -1361,7 +1401,7 @@ export function createCodexLogSources({ filesystem, lineReader }) {
       const invalidGroup = invalidLineageQueue[index];
       for (const dependent of lineageDependents.get(invalidGroup) ?? []) {
         if (invalidGroupReason.has(dependent)) continue;
-        invalidGroupReason.set(dependent, "codex_rollout_lineage_invalid");
+        invalidateLineage(dependent, "lineage_dependency_invalid");
         invalidLineageQueue.push(dependent);
       }
     }
@@ -1479,6 +1519,7 @@ export function createCodexLogSources({ filesystem, lineReader }) {
     for (const [groupKey, members] of quarantinedByGroup) {
       const reason = invalidGroupReason.get(groupKey);
       if (!DISCOVERY_REASON_CODES.has(reason)) continue;
+      if (reason === "codex_rollout_lineage_invalid") reportLineage(invalidLineageDetail.get(groupKey));
       reasonCounts[reason] = (reasonCounts[reason] ?? 0) + 1;
       diagnosticGroups.push(Object.freeze({
         groupLocal: hashString(groupKey),

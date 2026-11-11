@@ -20,7 +20,7 @@ import {
   validateExportWorkspaceDiscardJournal,
   validateExportWorkspaceDiscardPreflight,
   validateExportWorkspaceDiscardReceipt,
-} from "../src/export-workspace-discard-schema.js";
+} from "../src/export/index.js";
 
 function journal() {
   const firstEvidence = "B".repeat(52);

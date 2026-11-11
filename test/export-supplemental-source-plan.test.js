@@ -13,7 +13,7 @@ import {
   ExportSupplementalSourcePlanError,
   normalizeSupplementalSourcePlan,
   summarizeSupplementalSourcePlan,
-} from "../src/export-supplemental-source-plan.js";
+} from "../src/export/index.js";
 import { localCodexCheckpointState, localExportWorkspace } from
   "../src/local-node-runtime.js";
 import { stableJson } from "../src/storage.js";

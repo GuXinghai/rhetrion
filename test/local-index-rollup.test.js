@@ -15,7 +15,7 @@ import {
   usageProjection,
 } from "../src/local-companion-usage-model.js";
 import { readLocalIndexUsage } from "../src/local-index-report.js";
-import { createAccountingPricer } from "../src/replay-safe-accounting-cache.js";
+import { createAccountingPricer } from "../src/accounting-pricing.js";
 import { compareProjections } from "./helpers/local-index-report-diff.js";
 import { auditWorkRollups, pruneEmptyWorkRollups } from "../src/local-index-work-rollup.js";
 import {

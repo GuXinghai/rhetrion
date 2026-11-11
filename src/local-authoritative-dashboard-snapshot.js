@@ -1,5 +1,6 @@
 import { createValidatedSnapshotStore } from "./platform/index.js";
 import { validWeeklyApiIntervals } from "./weekly-api-intervals.js";
+import { isClosedLocalCompanionSnapshot } from "./local-companion-snapshot-contract.js";
 
 export const AUTHORITATIVE_DASHBOARD_SNAPSHOT_SCHEMA_VERSION =
   "local-authoritative-dashboard-snapshot-v1";
@@ -104,7 +105,7 @@ function snapshotForPersistence(snapshot) {
  * failed/partial projection produces.
  */
 export function isAuthoritativeDashboardSnapshot(snapshot) {
-  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+  if (!isClosedLocalCompanionSnapshot(snapshot)) {
     return false;
   }
   if (Object.keys(snapshot).sort().join("\0")

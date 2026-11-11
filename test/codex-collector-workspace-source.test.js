@@ -27,7 +27,7 @@ import { exportCompatibilityTuple } from "../src/export-contract.js";
 import { deriveParticipantId } from "../src/export-identity.js";
 import { createExportResourceGuard, ExportResourceLimitError } from "../src/export-resource-policy.js";
 import { createCodexExportSourcePlan } from "../src/export-source-plan.js";
-import { createEmptySupplementalSourcePlan } from "../src/export-supplemental-source-plan.js";
+import { createEmptySupplementalSourcePlan } from "../src/export/index.js";
 import { localExportSourcePipeline, localExportWorkspace } from
   "../src/local-node-runtime.js";
 const {

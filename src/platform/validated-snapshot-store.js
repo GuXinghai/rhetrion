@@ -18,6 +18,8 @@ import {
   parse,
   resolve,
 } from "node:path";
+import { createOwnerOnlyAtomicFilePublisher } from "./owner-only-atomic-file-storage.js";
+import { loadWindowsReleaseOperationBinding, loadWindowsSourceReadBinding } from "./windows-filesystem.js";
 
 const DEFAULT_MAXIMUM_SNAPSHOT_BYTES = 16 * 1024 * 1024;
 const STALE_SNAPSHOT_TEMP_AGE_MS = 24 * 60 * 60 * 1_000;
@@ -234,6 +236,42 @@ export function createValidatedSnapshotStore({
     && schemaVersion.length > 0 && schemaVersion.length <= 200
     && typeof validate === "function"
     && Number.isSafeInteger(maximumBytes) && maximumBytes >= 2;
+  const publish = createOwnerOnlyAtomicFilePublisher();
+
+  // Reuse the existing native root/child leases rather than widening the 1 MiB
+  // protected-record API or reopening an ACL-checked path through Node. The
+  // snapshot's own byte bound remains authoritative for these chunked reads.
+  function readWindowsSnapshot() {
+    const security = loadWindowsReleaseOperationBinding();
+    const source = loadWindowsSourceReadBinding();
+    let root, child, lease;
+    try {
+      root = security.acquireProtectedDirectoryGuard(dirname(selected));
+      child = security.acquireProtectedChildGuard(dirname(selected), root.identity, basename(selected));
+      // The ACL lease pins the checked child against replacement. Read through
+      // the separately reviewed source lease; the two native capabilities have
+      // different guard types and neither may impersonate the other.
+      lease = source.openSourceFile(selected);
+      const before = source.statSourceFile(lease);
+      if (!Number.isSafeInteger(before.size) || before.size < 2 || before.size > maximumBytes) return null;
+      const bytes = Buffer.alloc(before.size);
+      for (let offset = 0; offset < bytes.length;) {
+        const requested = Math.min(65_536, bytes.length - offset);
+        const chunk = source.readSourceFile(lease, offset, requested);
+        if (!Buffer.isBuffer(chunk) || chunk.length !== requested) return null;
+        bytes.set(chunk, offset); offset += chunk.length;
+      }
+      const after = source.statSourceFile(lease);
+      if (["dev", "ino", "size", "birthtimeMs", "mtimeMs", "ctimeMs"].some(key => before[key] !== after[key])) return null;
+      return decode(bytes.toString("utf8"), schemaVersion, validate);
+    } finally {
+      try { if (lease) source.closeSourceFile(lease); }
+      finally {
+        try { if (child) security.releaseCredentialAuditFileGuard(child.guard); }
+        finally { if (root) security.releaseProtectedDirectoryGuard(root.guard); }
+      }
+    }
+  }
 
   async function read() {
     if (!configured) return null;
@@ -243,6 +281,10 @@ export function createValidatedSnapshotStore({
       metadata = await lstat(selected);
     } catch (error) {
       return error?.code === "ENOENT" ? null : reject("snapshot_read_failed");
+    }
+    if (process.platform === "win32") {
+      try { return readWindowsSnapshot() ?? reject("snapshot_invalid"); }
+      catch { return reject("snapshot_read_failed"); }
     }
     if (!ownerOnlyFile(metadata)
         || !Number.isSafeInteger(metadata.size)
@@ -282,8 +324,7 @@ export function createValidatedSnapshotStore({
   }
 
   async function write(snapshot) {
-    if (!configured || typeof now !== "function"
-        || !validSnapshot(snapshot, validate)) return false;
+    if (!configured || typeof now !== "function") return false;
     let nowMs;
     let savedAt;
     try {
@@ -293,8 +334,15 @@ export function createValidatedSnapshotStore({
     } catch {
       return false;
     }
+    // Caller ports run before the final admission check. No callback or await
+    // may change the DTO between validation and synchronous encoding.
+    if (!validSnapshot(snapshot, validate)) return false;
     const payload = encode(snapshot, savedAt, schemaVersion, maximumBytes);
     if (payload === null) return false;
+    if (process.platform === "win32") {
+      try { await publish(selected, payload); return true; }
+      catch { return false; }
+    }
     const directory = dirname(selected);
     try {
       await mkdir(directory, { recursive: true, mode: 0o700 });

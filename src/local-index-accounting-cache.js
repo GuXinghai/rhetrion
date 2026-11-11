@@ -1,3 +1,7 @@
+import {
+  accountingError as fixedError,
+  throwIfAccountingAborted as throwIfAborted,
+} from "./accounting-values.js";
 import { describeLocalIndexGeneration } from "./local-index-companion-source.js";
 import { openLocalIndexCalibrationCorpus } from "./local-index-calibration.js";
 import { iterateLocalIndexUsageGroups, readLocalIndexReportMetadata } from "./local-index-report.js";
@@ -11,7 +15,6 @@ import {
 } from "./local-index-store.js";
 import { projectRecordedTokenComponents } from "./reporting/index.js";
 import {
-  REPLAY_SAFE_CALIBRATION_INTERNALS,
   buildReplaySafeAccountingCache,
   refreshReplaySafeAccountingCache,
   projectReplaySafeAccountingTime,
@@ -24,8 +27,6 @@ import {
 // supplies that builder with a scan over the store's committed facts and a
 // calibration corpus from Layer C, both read under one commit sequence, so the
 // cache is bound to exactly the generation the companion projection names.
-
-const { fixedError, throwIfAborted } = REPLAY_SAFE_CALIBRATION_INTERNALS;
 
 export const LOCAL_INDEX_ACCOUNTING_SOURCE_VERSION = "local-index-accounting-source-v1";
 const CONTRACT_VERSION = "local-index-v2";

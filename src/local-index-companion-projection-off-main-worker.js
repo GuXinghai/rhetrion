@@ -83,7 +83,6 @@ export async function runLocalIndexCompanionProjectionWorkerThread({
     const timings = [];
     const result = await readLocalIndexCompanionProjection({
       ...data.options,
-      includeWorkUsage: false,
       onTiming(span) {
         if (timings.length >= MAXIMUM_TIMING_SPANS
             || !validLocalIndexCompanionWorkerTimings([span])) return;

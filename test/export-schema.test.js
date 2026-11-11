@@ -5,7 +5,7 @@ import fc from "fast-check";
 import {
   LOCAL_EXPORT_PROVIDER_IDS, exportModelProvider, exportRegistrySnapshot, recognizedExportModelId,
 } from "../src/export/index.js";
-import { exportSchemas, validateExportRecord } from "../src/export-schema.js";
+import { exportSchemas, validateExportRecord } from "../src/export/bundle-verification.js";
 import { exportCompatibilityTuple } from "../src/export-contract.js";
 
 function usageEvent() {

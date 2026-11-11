@@ -17,7 +17,7 @@ import {
   usageProjection,
   validObservedAt,
 } from "./local-companion-usage-model.js";
-import { createAccountingPricer } from "./replay-safe-accounting-cache.js";
+import { createAccountingPricer } from "./accounting-pricing.js";
 import {
   forEachLocalCollectorRecord,
   readLocalCollectorRecordSummary,

@@ -29,7 +29,7 @@ import {
   validateExportWorkspaceDiscardJournal,
   validateExportWorkspaceDiscardPreflight,
   validateExportWorkspaceDiscardReceipt,
-} from "../src/export-workspace-discard-schema.js";
+} from "../src/export/index.js";
 import { stableJson } from "../src/storage.js";
 import {
   assertWindowsOwnerOnly,
@@ -905,7 +905,7 @@ test("workspace discard implementation contains no recursive deletion primitive"
   const files = [
     "src/export-workspace-discard.js",
     "src/export-workspace-discard-executor.js",
-    "src/export-workspace-discard-schema.js",
+    "src/export/workspace-discard-schema.js",
     "src/application/local-export-workspace-discard.js",
     "src/local-node-runtime.js",
     "src/platform/owner-only-export-workspace-discard-preflight.js",

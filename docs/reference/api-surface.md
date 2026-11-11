@@ -21,6 +21,14 @@ release. There is no hosted Worker, public site, remote relay or cloud runtime.
 
 `POST /api/local/diagnostics/note` still requires the local header, same-origin
 checks and the four existing fields (`reference`, `surface`, `code`, `requestId`).
+`code` must belong to the closed caller vocabulary; arbitrary identifier-shaped
+strings are rejected. The browser maps unknown codes to `unknown`. An optional
+`detail` admits only the existing closed export-resource failure vocabulary.
+Server-minted terminal/deferred notes use the refresh owner's reviewed failure
+codes, and the final log sink reconstructs its allowed fields. HTTP refresh
+failure details use the same closed vocabulary, without raw error messages.
+Startup health also restricts failure codes to its reviewed startup vocabulary;
+an unrecognized code becomes `snapshot_unavailable` before teardown.
 For the closed `work_usage_*` failure vocabulary on `local_refresh`, it also
 accepts an optional, closed `workUsage` object. Its seven required fields are:
 
@@ -93,6 +101,13 @@ an assertion of available accounting or refresh success. Clients must replace
 the scan counter for that stage; only a terminal refresh receipt establishes
 the outcome. Unknown progress kinds, extra fields, and arbitrary server prose
 are not admitted by the native projection.
+
+`GET /api/local/refresh` exposes content-free lineage subcodes in the existing
+process-local `timing.reuse` list (`phase: "index"`, fixed `code`, aggregate
+`calls`). They distinguish stable structural failures from retryable parent
+I/O or state changes. The [local index reference](local-index-schema.md)
+defines their vocabulary and retry semantics; persisted quarantine reasons
+and discovery receipt fingerprints are unchanged.
 
 The switch- and cache-continuity impact projections distinguish whole-period
 totals from the priced comparisons that remain usable when coverage is partial.

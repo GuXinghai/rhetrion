@@ -384,7 +384,9 @@ export async function readObservations(path) {
     text = await readFile(path, "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return [];
-    throw error;
+    throw Object.assign(new Error("Observation records could not be read"), {
+      code: "observation_read_failed",
+    });
   }
   return text
     .split("\n")
@@ -392,8 +394,13 @@ export async function readObservations(path) {
     .map((line, index) => {
       try {
         return JSON.parse(line);
-      } catch (error) {
-        throw new Error(`Invalid JSON on ${path} line ${index + 1}: ${error.message}`);
+      } catch {
+        // Parser messages may quote input bytes. Neither those bytes nor the
+        // private source path belong to an error/report boundary.
+        throw Object.assign(new Error("Observation record is invalid JSON"), {
+          code: "observation_json_invalid",
+          recordOrdinal: index + 1,
+        });
       }
     });
 }

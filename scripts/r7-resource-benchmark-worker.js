@@ -5,7 +5,7 @@ import { BundleVerificationError } from "../src/bundle-verifier.js";
 import { ExportSourcePlanError } from "../src/export-source-plan.js";
 import { ExportSourcePlanBundleError } from "../src/export-source-plan-bundle.js";
 import { CodexCollectorExportSourceError } from "../src/codex-collector-export-source.js";
-import { ExportCompressionError } from "../src/export-compression.js";
+import { ExportCompressionError } from "../src/export/index.js";
 import { ExportResourceLimitError } from "../src/export-resource-policy.js";
 import {
   ExportSetError,

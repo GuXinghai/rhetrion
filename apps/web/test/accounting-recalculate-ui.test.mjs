@@ -10,6 +10,8 @@ const appSource = await readFile(
   "utf8",
 );
 
+const coordinatorSource = await readFile(new URL("../public/refresh-coordinator.js", import.meta.url), "utf8");
+
 test("the repair entry and confirmation dialog are present and start hidden", () => {
   assert.match(
     html,
@@ -22,7 +24,7 @@ test("the repair entry and confirmation dialog are present and start hidden", ()
   assert.match(appSource, /accountingRepairStage = repair\.scope === "window" \? "range" : "full"/u);
   assert.match(appSource, /anchorDayStartMs/u);
   assert.match(appSource, /ACCOUNTING_REPAIR_WINDOW_DAYS/u);
-  assert.match(appSource, /accounting\?\.repair\?\.status === "unavailable"/u);
+  assert.match(coordinatorSource, /accounting\?\.repair\?\.status === "unavailable"/u);
   assert.match(appSource, /scope: "full"/u);
 });
 

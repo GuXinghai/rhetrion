@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { LocalCompanionClient } from "../web/public/data-client.js";
+import { LOCAL_DIAGNOSTIC_NOTE_CODES as BROWSER_DIAGNOSTIC_NOTE_CODES,
+  LOCAL_DIAGNOSTIC_RESOURCE_DETAILS as BROWSER_DIAGNOSTIC_RESOURCE_DETAILS } from "../web/public/data-client.js";
 import { once } from "node:events";
 import { createWindowsProcessExitObserver } from "../../test/helpers/windows-process-exit-observer.js";
 import { request as httpRequest } from "node:http";
@@ -25,7 +27,8 @@ import { join, resolve } from "node:path";
 import {
   LOCAL_COMPANION_SCHEMA_VERSION,
 } from "../../src/local-companion-data.js";
-import { readLocalIndexProjection, readLocalIndexWorkload } from "../../src/local-index-backend.js";
+import { readLocalIndexProjection } from "../../src/local-index-backend.js";
+import { readLocalIndexWorkload } from "../../src/local-index-workload.js";
 import { commitLocalCollectorState, prepareLocalCollectorState } from "../../src/local-collector-state.js";
 import { localCompanionStatePaths } from "../../src/local-installation-diagnostics.js";
 import {
@@ -41,8 +44,16 @@ import {
   createLocalCompanionServer,
   LOCAL_STARTUP_DIAGNOSTIC_DETAILS,
   LOCAL_STARTUP_DIAGNOSTIC_STEPS,
+  LOCAL_DIAGNOSTIC_NOTE_CODES,
+  LOCAL_DIAGNOSTIC_RESOURCE_DETAILS,
   startLocalCompanionServer,
 } from "./server.js";
+
+test("browser diagnostic note vocabularies mirror the companion's closed caller contract", () => {
+  assert.deepEqual(BROWSER_DIAGNOSTIC_NOTE_CODES, LOCAL_DIAGNOSTIC_NOTE_CODES);
+  assert.deepEqual(BROWSER_DIAGNOSTIC_RESOURCE_DETAILS, LOCAL_DIAGNOSTIC_RESOURCE_DETAILS);
+  assert.equal(new Set(LOCAL_DIAGNOSTIC_NOTE_CODES).size, LOCAL_DIAGNOSTIC_NOTE_CODES.length);
+});
 
 test("unchanged unified projections reuse only within exact generation, time, and baseline bounds", async () => {
   const generationA = `generation-v2-${"a".repeat(64)}`;
@@ -158,78 +169,6 @@ test("unchanged unified projections reuse only within exact generation, time, an
     (error) => error?.code === "local_unified_companion_projection_aborted",
   );
   assert.equal(reads, 6);
-});
-
-test("work usage rereads external metadata for ordinary and exact-window projections", async () => {
-  const fingerprint = `generation-v2-${"a".repeat(64)}`;
-  for (const exactWindow of [false, true]) {
-    let external = { project: "synthetic-project-a", family: "synthetic-family-a", autoReview: false };
-    let reads = 0;
-    const reader = createCachedLocalUnifiedProjectionReader({
-      reader: async () => {
-        reads += 1;
-        return { companion: { status: "available", generation: { fingerprint } },
-          workUsage: { status: "available", metadata: { ...external } } };
-      },
-      readGeneration: async () => fingerprint,
-      validUntil: async () => assert.fail("database membership cannot prove external metadata"),
-    });
-    try {
-      const options = { indexFile: "synthetic-index", mode: "full", nowMs: 100,
-        includeWorkUsage: true, exactWindow };
-      const first = await reader(options);
-      external = { project: "synthetic-project-b", family: "synthetic-family-b", autoReview: true };
-      // Even the exact same reporting instant cannot prove external metadata.
-      const second = await reader({ ...options, nowMs: exactWindow ? 100 : 101 });
-      assert.equal(reads, 2);
-      assert.equal(first.workUsage.metadata.autoReview, false);
-      assert.deepEqual(second.workUsage.metadata, external);
-      external = { project: null, family: null, autoReview: false };
-      const deferred = await reader({ ...options, mode: "deferred", nowMs: 102 });
-      assert.equal(reads, 3);
-      assert.deepEqual(deferred.workUsage.metadata, external);
-    } finally { await reader.close(); }
-  }
-});
-
-test("work usage shares only in-flight builds and preserves subscriber cancellation", async () => {
-  const fingerprint = `generation-v2-${"a".repeat(64)}`;
-  const builds = [];
-  const reader = createCachedLocalUnifiedProjectionReader({
-    reader: async (_options, { signal }) => new Promise((resolve, reject) => {
-      signal.addEventListener("abort", () => reject(new Error("synthetic_build_aborted")), { once: true });
-      builds.push({ signal, resolve });
-    }),
-    readGeneration: async () => fingerprint,
-    validUntil: async () => assert.fail("work usage has no completed-cache proof"),
-  });
-  const options = { indexFile: "synthetic-index", mode: "full", nowMs: 100, includeWorkUsage: true };
-  const result = { companion: { status: "available", generation: { fingerprint } },
-    workUsage: { status: "available", metadata: { autoReview: true } } };
-  try {
-    const cancelled = new AbortController();
-    const first = reader(options, { signal: cancelled.signal });
-    const rejected = assert.rejects(first, { code: "local_unified_companion_projection_aborted" });
-    const second = reader(options);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(builds.length, 1);
-    cancelled.abort();
-    await rejected;
-    assert.equal(builds[0].signal.aborted, false);
-    builds[0].resolve(result);
-    const delivered = await second;
-    assert.deepEqual(delivered, result);
-    delivered.workUsage.metadata.autoReview = false;
-    assert.equal(result.workUsage.metadata.autoReview, true);
-    const last = new AbortController();
-    const third = reader(options, { signal: last.signal });
-    const lastRejected = assert.rejects(third, { code: "local_unified_companion_projection_aborted" });
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(builds.length, 2);
-    last.abort();
-    await lastRejected;
-    assert.equal(builds[1].signal.aborted, true);
-  } finally { await reader.close(); }
 });
 
 test("semantic open target is stable by default and accepts only reviewed identities", () => {
@@ -1460,6 +1399,45 @@ test("a startup snapshot failure files one content-free server diagnostic note",
   }
 });
 
+test("startup health exposes only reviewed failure codes before teardown", async t => {
+  for (const [code, expected] of [
+    ["synthetic_private_startup_marker", "snapshot_unavailable"],
+    ["collector_invalid_size", "collector_invalid_size"],
+  ]) await t.test(code, async () => {
+    const files = await fixture();
+    const failure = Object.assign(new Error("synthetic private failure"), { code });
+    let releaseInitialization;
+    const initialized = new Promise(resolve => { releaseInitialization = resolve; });
+    let app;
+    let healthChecks = 0;
+    try {
+      app = await startLocalCompanionServer({
+        resourceRoot: files.resourceRoot, stateRoot: files.stateRoot,
+        codexHome: files.codexHome, staticRoot: files.staticRoot,
+        dataStore: { ...fakeStore(), async initialize() { await initialized; throw failure; } },
+        refreshRunner: async () => ({}),
+        diagnosticReferenceFactory: () => "TT-4HJ7M2",
+        diagnosticNoteRecorder: async () => {
+          const response = await fetch(`http://127.0.0.1:${app.port}/api/local/health`);
+          assert.equal(response.status, 200);
+          const body = await response.json();
+          assert.deepEqual(body.snapshot, { status: "failed", errorCode: expected });
+          assert.equal(JSON.stringify(body).includes("synthetic_private_startup_marker"), false);
+          healthChecks += 1;
+        },
+        port: 0,
+      });
+      releaseInitialization();
+      await assert.rejects(app.snapshotReady, error => error === failure);
+      assert.equal(healthChecks, 1);
+    } finally {
+      releaseInitialization();
+      await app?.close();
+      await rm(files.root, { recursive: true });
+    }
+  });
+});
+
 test("a failed startup diagnostic recorder preserves the original error and shutdown", async () => {
   const files = await fixture();
   const initializationError = new Error("private source startup failure");
@@ -1815,13 +1793,13 @@ test("startup defers history while full and overview refreshes publish the compl
         },
       },
       sharedProjectionReader: async (options, controls) => {
-        assert.equal(options.includeWorkUsage, false);
+        assert.equal(Object.hasOwn(options, "includeWorkUsage"), false);
         projectionModes.push(options.mode);
         if (options.mode === "full" && !fullRefreshRequested) {
           throw new Error("startup_must_not_build_full_projection");
         }
         const result = await readLocalIndexProjection(options, controls);
-        return controls.selectProjection(result);
+        return result;
       },
       refreshRunner: async () => ({}),
       port: 0,
@@ -2933,6 +2911,10 @@ test("diagnostic notes are bounded, fixed-vocabulary, and land in a local log", 
       { ...note, reference: "TT-ILLEGAL" },
       { ...note, reference: "not-a-reference" },
       { ...note, code: "Failed reading /Users/private/state.json" },
+      { ...note, code: "synthetic_private_marker" },
+      { ...note, code: "SYNTHETIC_PRIVATE_MARKER" },
+      { ...note, code: "accounting_private_marker" },
+      { ...note, detail: "export_resource_private_marker" },
       { ...note, requestId: "not-a-uuid" },
       { ...note, extra: "unexpected" },
     ]) {
@@ -2953,11 +2935,51 @@ test("diagnostic notes are bounded, fixed-vocabulary, and land in a local log", 
     const recordedText = await readFile(diagnosticsLogFile, "utf8");
     assert.equal(recordedText.includes("/Users/private"), false);
     assert.equal(recordedText.includes("arbitrary_journey"), false);
+    assert.equal(recordedText.includes("private_marker"), false);
     assert.equal(recordedText.split("\n").filter(Boolean).length, 2);
   } finally {
     await app.close();
     await rm(files.root, { recursive: true });
   }
+});
+
+test("resource details survive the browser and real loopback diagnostic boundary", async () => {
+  const files = await fixture();
+  const diagnosticsLogFile = join(files.stateRoot, "diagnostics-v0.1.log");
+  const app = await startLocalCompanionServer({ ...files, dataStore: fakeStore(),
+    refreshRunner: async () => ({}), diagnosticsLogFile, port: 0 });
+  try {
+    const base = `http://127.0.0.1:${app.port}`;
+    const client = new LocalCompanionClient({ fetchImpl: (url, options) => fetch(`${base}${url}`, {
+      ...options, headers: { ...options.headers, Origin: base },
+    }) });
+    await client.recordDiagnosticNote({ reference: "TT-7QF3K2", surface: "local_refresh",
+      code: "export_too_large", detail: "export_resource_expanded_record_bytes" });
+    const note = JSON.parse((await readFile(diagnosticsLogFile, "utf8")).trim());
+    assert.equal(note.code, "export_too_large");
+    assert.equal(note.detail, "export_resource_expanded_record_bytes");
+  } finally { await app.close(); await rm(files.root, { recursive: true }); }
+});
+
+test("unknown identifier-shaped terminal failures cannot enter status or diagnostic recorder", async () => {
+  const files = await fixture(), notes = [];
+  const app = await startLocalCompanionServer({ ...files, dataStore: fakeStore(),
+    refreshRunner: async () => { throw Object.assign(new Error("synthetic private payload"), {
+      code: "synthetic_private_marker", refreshStep: "accounting",
+    }); }, diagnosticNoteRecorder: note => notes.push(note), port: 0 });
+  try {
+    await app.snapshotReady;
+    const base = `http://127.0.0.1:${app.port}`;
+    const response = await fetch(`${base}/api/local/refresh`, { method: "POST", body: "{}",
+      headers: { "Content-Type": "application/json", "X-Usage-Monitor-Local": "1", Origin: base } });
+    assert.equal(response.status, 202);
+    await waitFor(async () => (await fetch(`${base}/api/local/refresh`).then(r => r.json())).refresh.status === "failed");
+    await waitFor(() => notes.length === 1);
+    assert.equal(notes[0].code, "refresh_failed");
+    assert.equal(notes[0].detail, undefined);
+    const status = await fetch(`${base}/api/local/refresh`).then(r => r.json());
+    assert.equal(JSON.stringify([status, notes]).includes("synthetic_private"), false);
+  } finally { await app.close(); await rm(files.root, { recursive: true }); }
 });
 
 test("a degraded index failure keeps its fixed HTTP code and a bounded rate-limited diagnostic note", async () => {

@@ -11,6 +11,7 @@ export {
 } from "./subscription-speed-sensitivity.js";
 export {
   createLocalExportResourceContext,
+  EXPORT_RESOURCE_FAILURE_CODES,
 } from "./local-export-resource-context.js";
 export {
   createLocalMetadataBundleVerificationContext,

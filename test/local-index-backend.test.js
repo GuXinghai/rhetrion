@@ -19,6 +19,7 @@ import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import { readLocalIndexWindowBreakdown } from "../src/local-index-window-breakdown.js";
 import { appendSyntheticCodexEvents } from "../src/synthetic-codex-rollout-corpus.js";
 import { createWorkspace } from "./helpers/local-index-facts.js";
+import { writeInitialProtectedFixtureFile } from "./helpers/windows-owner-only-fixture.js";
 
 const END_MS = Date.parse("2026-09-01T00:00:00.000Z");
 const NOW_MS = END_MS + 3_600_000;
@@ -39,12 +40,12 @@ test("work-only projection preserves every period without constructing a compani
     await backend.refreshUnifiedIndex({ codexHome: workspace.codexHome });
     const options = { indexFile, codexHome: workspace.codexHome, secretFile: workspace.secretFile,
       nowMs: NOW_MS, declaredSpeedBaselines: [] };
-    const combined = await readLocalIndexCompanionProjection({ ...options, includeWorkUsage: true });
+    const standalone = await readLocalIndexWorkProjection(options);
     const stages = [];
     const { secretFile: _secretFile, ...backendOptions } = options;
     const work = await backend.readWorkUsage({ ...backendOptions, onTiming: span => stages.push(span.stage) });
     assert.equal(work.status, "available");
-    assert.deepEqual(comparableWorkProjection(work), comparableWorkProjection(combined.workUsage));
+    assert.deepEqual(comparableWorkProjection(work), comparableWorkProjection(standalone));
     assert.ok(stages.includes("projection_work"));
     assert.equal(stages.includes("projection_report"), false);
 
@@ -90,9 +91,9 @@ test("work-only projection refuses publication changes and propagates cancellati
     const writer = new DatabaseSync(indexFile);
     try { writer.exec("INSERT INTO rollup_context_start(start_tokens) VALUES (123456789)"); }
     finally { writer.close(); }
-    const combined = await readLocalIndexCompanionProjection({ ...options, includeWorkUsage: true });
-    assert.equal(combined.companion.status, "unavailable");
-    assert.equal(combined.companion.errorCode, "local_index_rollup_basis_stale");
+    const companion = await readLocalIndexCompanionProjection(options);
+    assert.equal(companion.status, "unavailable");
+    assert.equal(companion.errorCode, "local_index_rollup_basis_stale");
     assert.equal((await readLocalIndexWorkProjection(options)).status, "unavailable");
   } finally { workspace.cleanup(); }
 });
@@ -256,7 +257,7 @@ test("ordinals are seeded from the previous index only while the store is empty"
     const legacy = join(workspace.state, "legacy.sqlite");
     writeFileSync(legacy, "");
     // An existing installation's identity is required for ordinal carry.
-    writeFileSync(workspace.secretFile, Buffer.alloc(32, 43), { mode: 0o600 });
+    writeInitialProtectedFixtureFile(workspace.secretFile, Buffer.alloc(32, 43));
     const legacyOrdinals = new Map([["ab".repeat(32), 7]]);
     const readOrdinalMap = () => ({ ordinalSeed: legacyOrdinals });
     const indexFile = join(workspace.state, "v2.sqlite");
@@ -328,21 +329,20 @@ test("the projection reader callbacks plug into the cached reader and honour the
       NOW_MS,
     );
     const validUntil = readLocalIndexProjectionValidUntil({
-      indexFile, generationFingerprint: identity.fingerprint, nowMs: NOW_MS, includeWorkUsage: true,
+      indexFile, generationFingerprint: identity.fingerprint, nowMs: NOW_MS,
     });
     assert.ok(validUntil > NOW_MS);
 
     const cached = createCachedLocalUnifiedProjectionReader(backend.projectionReader);
     try {
       const options = {
-        mode: "full", indexFile, nowMs: NOW_MS, includeWorkUsage: true,
-        codexHome: workspace.codexHome, secretFile: workspace.secretFile,
+        mode: "full", indexFile, nowMs: NOW_MS,
       };
       const first = await cached(options);
-      assert.equal(first.companion.status, "available");
-      assert.equal(first.companion.generation.fingerprint, identity.fingerprint);
+      assert.equal(first.status, "available");
+      assert.equal(first.generation.fingerprint, identity.fingerprint);
       const second = await cached(options);
-      assert.deepEqual(second.companion.generation, first.companion.generation);
+      assert.deepEqual(second.generation, first.generation);
     } finally {
       await cached.close();
     }

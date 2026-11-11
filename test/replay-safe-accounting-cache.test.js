@@ -1,3 +1,11 @@
+import { createAccountingPricer, projectAccountingUsageEvent as eventProjection } from "../src/accounting-pricing.js";
+import {
+  projectAccountingQuotaSnapshot as weeklyRateLimitProjection,
+  projectAccountingTransitionUsage as transitionUsageProjection,
+  fitCompositionFromCorpusStream,
+  fitHistoricalPlanTimelines,
+  decodePlanScopedTimelineRow,
+} from "../src/accounting-calibration.js";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -10,8 +18,6 @@ import {
   assertReplaySafeAccountingCache,
   buildReplaySafeAccountingCache as buildReplaySafeAccountingCacheImpl,
   buildReplaySafeAccountingPeriod,
-  createAccountingPricer,
-  decodePlanScopedTimelineRow,
   readReplaySafeAccountingCache as readReplaySafeAccountingCacheImpl,
   refreshReplaySafeAccountingCache as refreshReplaySafeAccountingCacheImpl,
 } from "../src/replay-safe-accounting-cache.js";
@@ -1662,8 +1668,6 @@ test("a mix-varied corpus yields a fitted per-model composition that survives th
   assert.deepEqual(read.cache.weeklyCalibration.composition, composition);
 });
 
-
-
 test("compact plan buckets preserve event-summed tokens and reject malformed evidence", () => {
   const compact = [Date.parse("2026-08-10T00:00:00Z"), 2, 1, 2, 3, 4, 5, 6,
     .5, 1, 2, 1, 0, 1, 1, 21, 1];
@@ -1678,7 +1682,6 @@ test("compact plan buckets preserve event-summed tokens and reject malformed evi
     assert.equal(decodePlanScopedTimelineRow(invalid), null);
   }
 });
-
 
 test("a composition fit that trips the RSS ceiling mid-way fails soft into a completed v0.7 cache", async () => {
   const directory = await mkdtemp(join(tmpdir(), "usage-monitor-fit-fail-soft-"));
@@ -1765,7 +1768,6 @@ test("a composition fit that trips the RSS ceiling mid-way fails soft into a com
     (error) => error?.code === "cache_invalid",
   );
 });
-
 
 // Standing owner rule (2026-08-08): with a unified index covering N months,
 // the calibration corpus spans all N months. The fixture resets sit MORE than
@@ -1881,7 +1883,6 @@ test("the exact-ledger fast lane reproduces the decimal-string fold to the digit
   }
   assert.equal(Object.getOwnPropertySymbols(period.period).length, 0);
 });
-
 
 test("convenience-sized scan windows are rejected outright", async () => {
   for (const windowDays of [31, 93, 364]) {
@@ -3539,7 +3540,6 @@ test("a stored cache built from the retired legacy source is never served as cur
   }
 });
 
-
 test("historical plan comparisons preserve both upgrade directions, exclude only uncertain intervals and conserve accounting", async () => {
   const start=Date.parse("2026-07-20T00:00:00Z"), plans=["plus","prolite","plus","prolite"];
   const events=[],snapshots=[];
@@ -3589,36 +3589,34 @@ test("historical plan comparisons preserve both upgrade directions, exclude only
   ]) {const invalid=structuredClone(cache);change(invalid);assert.throws(()=>assertReplaySafeAccountingCache(invalid));}
 });
 
-
 test("a failed historical lane preserves other plan results, cancellation and bounded work", async () => {
-  const {REPLAY_SAFE_CALIBRATION_INTERNALS:I}=await import("../src/replay-safe-accounting-cache.js");
+
   let passes=0;
   const options={endMs:NOW,weeklyRateLimitSnapshots:[],forEachUsageRow:async()=>{
     if(++passes===1)throw Object.assign(new Error("synthetic"),{code:"accounting_transition_memory_budget_exceeded"});
   }};
-  const results=await I.fitHistoricalPlanTimelines(options,["prolite","pro","plus"],"prolite");
+  const results=await fitHistoricalPlanTimelines(options,["prolite","pro","plus"],"prolite");
   assert.deepEqual(results.map(r=>r.planType),["plus","pro"]);
   assert.equal(results[0].failure,"accounting_transition_memory_budget_exceeded");
   assert.equal(results[0].draft,null);
   assert.equal(results[1].failure,null);assert.equal(results[1].draft.planType,"pro");
-  await assert.rejects(I.fitHistoricalPlanTimelines(options,Array(17).fill("plus"),"prolite"),{code:"accounting_transition_derivation_limit_exceeded"});
+  await assert.rejects(fitHistoricalPlanTimelines(options,Array(17).fill("plus"),"prolite"),{code:"accounting_transition_derivation_limit_exceeded"});
   const controller=new AbortController();controller.abort();
-  await assert.rejects(I.fitHistoricalPlanTimelines({...options,signal:controller.signal},["plus"],"prolite"),{name:"AbortError"});
+  await assert.rejects(fitHistoricalPlanTimelines({...options,signal:controller.signal},["plus"],"prolite"),{name:"AbortError"});
 });
 
-
 test("an ambiguous historical bucket removes only that interval, retaining surrounding valid usage", async () => {
-  const {REPLAY_SAFE_CALIBRATION_INTERNALS:I}=await import("../src/replay-safe-accounting-cache.js");
-  const start=Date.parse("2026-07-20T00:00:00Z"),price=I.createAccountingPricer();
+
+  const start=Date.parse("2026-07-20T00:00:00Z"),price=createAccountingPricer();
   const rows=[30,60,65,90].map((minute,i)=>{
     const raw={...usageEvent({timestamp:new Date(start+minute*60_000).toISOString(),speed:"standard",components:{input_uncached_tokens:1_000_000}}),
       planAttribution:{basis:i===2?"conflicted":"same_record",planType:i===2?null:"plus"},
       usageIntervalStartedAt:new Date(start+(minute-5)*60_000).toISOString()};
-    return I.transitionUsageProjection(raw,I.eventProjection(raw,price));
+    return transitionUsageProjection(raw,eventProjection(raw,price));
   });
-  const snapshots=[0,30,60,90,120,180].map(minute=>I.weeklyRateLimitProjection(weeklySnapshot({
+  const snapshots=[0,30,60,90,120,180].map(minute=>weeklyRateLimitProjection(weeklySnapshot({
     timestamp:new Date(start+minute*60_000).toISOString(),planType:"plus",usedPercent:minute/30,resetsAt:(start+7*86_400_000)/1000})));
-  const result=await I.fitCompositionFromCorpusStream({forEachUsageRow:async consume=>{for(const row of rows)await consume(row);},
+  const result=await fitCompositionFromCorpusStream({forEachUsageRow:async consume=>{for(const row of rows)await consume(row);},
     weeklyRateLimitSnapshots:snapshots,selectedPlanType:"plus",endMs:start+4*3_600_000});
   const lane=result.planScopedTimeline;
   assert.equal(lane.diagnostics.admittedEvents,2);
@@ -3628,7 +3626,6 @@ test("an ambiguous historical bucket removes only that interval, retaining surro
   assert.ok(lane.comparisonIntervals.some(([a,b])=>a<=start+30*60_000&&b>=start+45*60_000));
   assert.ok(lane.comparisonIntervals.some(([a,b])=>a<=start+90*60_000&&b>=start+105*60_000));
 });
-
 
 test("research plan quota observations survive replay-safe cache construction", async () => {
   for (const planType of ["sci", "sci_plus"]) {

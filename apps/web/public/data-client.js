@@ -59,6 +59,25 @@ export function isSparkQuotaLimitId(value) {
 export const LOCAL_ONBOARDING_SCHEMA_VERSION = "local-onboarding-v0.2";
 export const LOCAL_COMPANION_SCHEMA_VERSION = "local-companion-v0.1";
 export const LOCAL_DIAGNOSTIC_NOTE_SCHEMA_VERSION = "local-diagnostic-note-v0.1";
+// Mirrors the companion's caller vocabulary; integration tests enforce parity.
+export const LOCAL_DIAGNOSTIC_NOTE_CODES = Object.freeze([
+  "unknown", "INTERNAL_ERROR", "snapshot_unavailable", "unsupported_media_type", "request_too_large",
+  "invalid_json", "invalid_request", "refresh_in_progress", "refresh_not_authorized",
+  "refresh_cancel_not_authorized", "refresh_not_running", "app_record_checkpoint_unavailable",
+  "diagnostic_note_not_authorized", "diagnostic_note_not_recorded", "loopback_required", "host_not_allowed",
+  "method_not_allowed", "not_found", "internal_error", "request_failed", "refresh_failed", "refresh_timed_out",
+  "refresh_cancelled", "refresh_degraded", "refresh_resource_limited", "export_too_large",
+  "work_usage_timeout", "work_usage_invalid_response", "work_usage_expired", "work_usage_unavailable",
+  "work_usage_permission", "work_usage_capacity", "work_usage_network",
+]);
+export const LOCAL_DIAGNOSTIC_RESOURCE_DETAILS = Object.freeze([
+  "export_resource_canonical_bundle_bytes", "export_resource_chunk_count", "export_resource_covered_duration",
+  "export_resource_directory_entries", "export_resource_elapsed_time", "export_resource_encoded_artifact_bytes",
+  "export_resource_expanded_record_bytes", "export_resource_export_set_decoded_bytes",
+  "export_resource_export_set_encoded_bytes", "export_resource_line_bytes", "export_resource_manifest_bytes",
+  "export_resource_output_records", "export_resource_rss", "export_resource_source_bytes",
+  "export_resource_source_files", "export_resource_workspace_bytes",
+]);
 const MAXIMUM_ONBOARDING_ROLLOUT_FILES = 100;
 const DIAGNOSTIC_REFERENCE_PATTERN = /^TT-[0-9A-HJKMNP-TV-Z]{6}$/u;
 const SAFE_ERROR_CODE_PATTERN =
@@ -4390,10 +4409,7 @@ export class LocalCompanionClient {
         || !/^work_usage_(?:timeout|invalid_response|expired|unavailable|permission|capacity|network)$/u.test(code))) {
       throw new TypeError("Diagnostic note inputs are invalid.");
     }
-    const detailCode = typeof detail === "string"
-        && SAFE_ERROR_CODE_PATTERN.test(detail)
-      ? detail
-      : null;
+    const detailCode = LOCAL_DIAGNOSTIC_RESOURCE_DETAILS.includes(detail) ? detail : null;
     const response = await this.fetchImpl(`${LOCAL_ROOT}/diagnostics/note`, {
       method: "POST",
       headers: {
@@ -4404,7 +4420,7 @@ export class LocalCompanionClient {
       body: JSON.stringify({
         reference,
         surface,
-        code: SAFE_ERROR_CODE_PATTERN.test(code) ? code : "unknown",
+        code: LOCAL_DIAGNOSTIC_NOTE_CODES.includes(code) ? code : "unknown",
         ...(detailCode === null ? {} : { detail: detailCode }),
         requestId: SERVICE_REQUEST_ID_PATTERN.test(requestId) ? requestId : "",
         ...(context === undefined ? {} : { workUsage: context })

@@ -14,6 +14,7 @@ import {
   createDeferredAccountingRebuildRecorder,
   createLocalCollectorRefreshRunner,
   createTerminalRefreshFailureRecorder,
+  normalizeLocalRefreshDiagnosticCode,
   LOCAL_COMPANION_FRESH_INDEX_REFRESH_TIMEOUT_MS,
   LOCAL_COMPANION_REFRESH_CANCEL_SETTLEMENT_MS,
   LOCAL_COMPANION_REFRESH_TIMEOUT_MAX_MS,
@@ -24,6 +25,29 @@ import {
 import {
   localCompanionStatePaths,
 } from "../src/local-installation-diagnostics.js";
+
+test("refresh diagnostic vocabularies reject identifier-shaped private strings at every sink", async () => {
+  for (const code of ["accounting_transition_rss_limit_exceeded", "codex_response_usage_legacy_conflict",
+    "accounting_unified_generation_changed", "export_resource_source_bytes", "app_server_unavailable"]) {
+    assert.equal(normalizeLocalRefreshDiagnosticCode(code), code);
+  }
+  for (const code of ["synthetic_private_marker", "accounting_private_marker", "export_resource_private_marker",
+    "collector_resource_private_marker", "codex_log_discovery_private_marker", "SYNTHETIC_PRIVATE_MARKER", null, {}]) {
+    assert.equal(normalizeLocalRefreshDiagnosticCode(code), null);
+  }
+  const notes = [];
+  const terminal = createTerminalRefreshFailureRecorder({ recordNote: note => notes.push(note) });
+  await terminal({ errorCode: "synthetic_private_marker", failureCode: "accounting_private_marker" });
+  assert.equal(notes[0].code, "refresh_failed");
+  assert.equal(notes[0].detail, undefined);
+  const deferred = createDeferredAccountingRebuildRecorder({ recordNote: note => notes.push(note) });
+  await deferred({ reason: "accounting_private_marker" });
+  assert.equal(notes[1].code, "accounting_rebuild_deferred");
+  assert.equal(notes[1].detail, undefined);
+  assert.equal(publicRefreshResult({ accountingRebuildDeferred: { reason: "accounting_private_marker" } })
+    .accountingRebuildDeferred.reason, "accounting_rebuild_deferred");
+  assert.equal(JSON.stringify(notes).includes("private_marker"), false);
+});
 import {
   readLocalCollectorAccountingCache,
   readLocalCollectorCheckpoint,
@@ -813,11 +837,11 @@ test("local refresh routes collector, credential lock, and accounting writes ben
       },
       refreshAccounting: async ({
         stateFile,
-        unifiedIndexFile,
+        indexFile,
         expectedGeneration,
       }) => {
         assert.equal(stateFile, paths.collectorStateFile);
-        assert.equal(unifiedIndexFile, paths.unifiedIndexFile);
+        assert.equal(indexFile, paths.unifiedIndexFile);
         assert.equal(expectedGeneration.id, UNIFIED_GENERATION.id);
         return {
           generatedAt: "2026-07-23T12:00:00.000Z",
@@ -905,10 +929,10 @@ test("unified accounting mode never advances the legacy archive and passes expli
 
   const result = await runner();
   assert.deepEqual(order, ["unified", "accounting"]);
-  assert.equal(accountingOptions.sourceMode, "unified");
+  assert.equal(Object.hasOwn(accountingOptions, "sourceMode"), false);
   assert.equal(accountingOptions.contextBehavior, "source_native");
   assert.equal(
-    accountingOptions.unifiedIndexFile,
+    accountingOptions.indexFile,
     "/private/local-unified-index-v1.sqlite",
   );
   assert.equal(result.archiveIndex, undefined);
@@ -1821,7 +1845,7 @@ test("unified accounting reader errors stay unavailable without legacy fallback"
     }),
     refreshAccounting: async (options) => {
       accountingCalls += 1;
-      assert.equal(options.sourceMode, "unified");
+      assert.equal(Object.hasOwn(options, "sourceMode"), false);
       assert.equal(options.contextBehavior, "source_native");
       assert.equal(options.expectedGeneration.id, expectedGeneration.id);
       assert.equal(
@@ -2677,7 +2701,7 @@ test("local refresh forwards its AbortSignal into replay-safe accounting", async
   // index is present, so the rebuild also receives the index path.
   assert.equal(accountingOptions.windowDays, 365);
   assert.equal(
-    accountingOptions.unifiedIndexFile,
+    accountingOptions.indexFile,
     "/private/local-unified-index-v1.sqlite",
   );
   assert.equal(accountingOptions.signal, controller.signal);

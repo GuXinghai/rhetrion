@@ -28,7 +28,7 @@ function result(tokens = 20) {
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "saved-work-usage-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const options = { snapshotFile: join(root, "snapshot.json"), codexHome: join(root, "codex"), indexFile: join(root, "index.sqlite") };
+  const options = { snapshotFile: join(root, "private", "snapshot.json"), codexHome: join(root, "codex"), indexFile: join(root, "index.sqlite") };
   return { options, store: createWorkUsageSnapshotStore(options) };
 }
 async function completed(service, request) {

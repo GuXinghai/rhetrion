@@ -15,13 +15,11 @@ import {
   LocalCompanionDataStore,
   RETAINED_EVIDENCE_RELABELED_WARNINGS,
   RETAINED_PROJECTION_SURFACE_PATHS,
-  buildLocalCompanionSnapshot,
+  buildLocalCompanionSnapshot as buildUncheckedLocalCompanionSnapshot,
   isInformationalTerminalHistoryGap,
   projectAccountingFreshness,
 } from "../src/local-companion-data.js";
-import {
-  createAccountingPricer,
-} from "../src/replay-safe-accounting-cache.js";
+import { createAccountingPricer } from "../src/accounting-pricing.js";
 import { openLocalIndexStore } from "../src/local-index-store.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import {
@@ -32,6 +30,14 @@ import { usageProjection } from "../src/local-companion-usage-model.js";
 import { readLocalIndexWindowBreakdown } from "../src/local-index-window-breakdown.js";
 import { refreshLocalIndexAccountingCache } from "../src/local-index-accounting-cache.js";
 import { createProtectedFixtureDirectory, writeInitialProtectedFixtureFile } from "./helpers/windows-owner-only-fixture.js";
+import { isClosedLocalCompanionSnapshot } from "../src/local-companion-snapshot-contract.js";
+
+async function buildLocalCompanionSnapshot(options) {
+  const snapshot = await buildUncheckedLocalCompanionSnapshot(options);
+  assert.equal(isClosedLocalCompanionSnapshot(snapshot), true,
+    "production synthetic snapshots must satisfy the retained DTO contract");
+  return snapshot;
+}
 
 async function createFixtureStateDirectory(root) {
   const path = join(root, ".usage-monitor");
@@ -366,6 +372,7 @@ test("local companion reconstructs reset kinds and prefers prospective banked ev
       "durable reset events remain available beyond the 31-day chart cache",
     );
     const serialized = JSON.stringify(snapshot);
+
     assert.equal(serialized.includes("reset-credit-id"), false);
     assert.equal(serialized.includes("availableCount"), false);
   } finally {
@@ -1391,6 +1398,19 @@ test("closed v2 real-data projection exposes no session, account, path or filena
     // Positive control: the projection really read this workspace, so the
     // absence checks below are not vacuous.
     assert.ok(serialized.includes("gpt-6.1-sol"));
+    const paths = [];
+    const visit = (value, path = []) => {
+      if (!value || typeof value !== "object") return;
+      if (!Array.isArray(value)) paths.push(path);
+      for (const [key, child] of Object.entries(value)) visit(child, [...path, key]);
+    };
+    visit(snapshot);
+    assert.ok(paths.length > 100, "exercise populated production DTOs, including model and cache-impact rows");
+    for (const path of paths) {
+      const candidate = structuredClone(snapshot);
+      path.reduce((value, key) => value[key], candidate).unexpected = "synthetic-private-marker";
+      assert.equal(isClosedLocalCompanionSnapshot(candidate), false, path.join("."));
+    }
     for (const value of privateValues) {
       assert.equal(serialized.includes(value), false, "projection must not expose private identifiers or paths");
     }

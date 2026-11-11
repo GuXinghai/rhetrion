@@ -9,7 +9,7 @@ import {
   readCodexLocalThreadAncestry,
   readCodexLocalThreadMetadata,
 } from "../src/platform/index.js";
-import { localCodexLogScanner } from "../src/local-node-runtime.js";
+import { localCodexLogScanner } from "../src/local-codex-runtime.js";
 import { readCodexSelectedRolloutNames } from "../src/platform/local-codex-thread-store.js";
 import { createWindowsSyntheticOwnedSource } from "../scripts/lib/windows-synthetic-source-owner.mjs";
 

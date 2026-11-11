@@ -26,7 +26,6 @@ const validSignal = signal => signal === null || signal !== null && typeof signa
 
 function selectOptions(options) {
   if (!options || typeof options !== "object" || Array.isArray(options)
-      || options.includeWorkUsage === true
       || options.monotonicClock !== undefined && typeof options.monotonicClock !== "function"
       || options.onTiming !== undefined && options.onTiming !== null && typeof options.onTiming !== "function") {
     throw new TypeError("companion projection options are invalid");
@@ -56,7 +55,7 @@ export async function readLocalIndexCompanionProjectionOffMain(options = {}, {
   }
   if (signal?.aborted) throw abortError();
   if (selected.mode === "deferred") {
-    return readLocalIndexCompanionProjection({ ...selected, includeWorkUsage: false, signal });
+    return readLocalIndexCompanionProjection({ ...selected, signal });
   }
   let worker;
   try {

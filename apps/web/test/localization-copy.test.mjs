@@ -30,7 +30,8 @@ test("every explicit dashboard translation key resolves through the browser cata
 });
 
 test("dynamic setup, refresh and diagnostic messages exist in every locale", async () => {
-  const source = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const source = (await Promise.all(["app.js", "refresh-coordinator.js"].map(name =>
+    readFile(new URL(`../public/${name}`, import.meta.url), "utf8")))).join("\n");
   const keys = new Set([...source.matchAll(/"((?:setup\.(?:source|state|check|note|location)|page\.(?:analysis|observation|dataSource)|refresh\.(?:progress|error|diagnostic))\.[^"]+)"/gu)]
     .map(match => match[1]));
   assert.ok(keys.size > 60, "cover dynamic messages beyond markup-only keys");

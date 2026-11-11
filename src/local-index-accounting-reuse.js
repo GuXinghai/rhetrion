@@ -1,3 +1,8 @@
+import {
+  ACCOUNTING_CACHE_MAX_BYTES as MAX_CACHE_BYTES,
+  throwIfAccountingAborted as throwIfAborted,
+  accountingDiagnosticSummary as publicDiagnostics,
+} from "./accounting-values.js";
 import { createHash } from "node:crypto";
 import { DEFAULT_UNKNOWN_SPEED_POLICY, unknownSpeedCalculationIdentity } from "./unknown-speed-policy.js";
 import { createLocalRefreshTimer, reportLocalRefreshReuseDiagnostic, reportLocalRefreshOriginDiagnostic } from "./local-refresh-timing.js";
@@ -8,9 +13,8 @@ import { readLocalIndexCoverage } from "./local-index-report.js";
 import { openLocalIndexStore, readCalculationRevision, withReadSnapshot } from "./local-index-store.js";
 import { createOriginEvidenceCache, readLocalOriginMetadataIdentity } from "./local-origin-evidence-cache.js";
 import { readLocalCollectorAccountingReuse, serializeLocalCollectorAccountingCache, writeLocalCollectorAccountingCache } from "./local-collector-state.js";
-import { assertReplaySafeAccountingCache, REPLAY_SAFE_CALIBRATION_INTERNALS } from "./replay-safe-accounting-cache.js";
+import { assertReplaySafeAccountingCache } from "./replay-safe-accounting-cache.js";
 
-const { throwIfAborted } = REPLAY_SAFE_CALIBRATION_INTERNALS;
 // Bump when historical calculation semantics change without another input revision.
 const CALCULATION_VERSION = "local-accounting-calculation-v1";
 const PROOF_VERSION = "local-accounting-reuse-proof-v1";
@@ -184,7 +188,7 @@ export function createLocalIndexAccountingReuse({
       }
     } catch { report("cache_invalid"); return; }
     if (Buffer.byteLength(serializeLocalCollectorAccountingCache(cache))
-        > REPLAY_SAFE_CALIBRATION_INTERNALS.MAX_CACHE_BYTES) { report("cache_oversize"); return; }
+        > MAX_CACHE_BYTES) { report("cache_oversize"); return; }
     // A private clone prevents mutation by a consumer from corrupting the proof.
     retained = { cache: structuredClone(cache), proof: after };
     report("retained");
@@ -283,7 +287,6 @@ export function createLocalIndexAccountingReuse({
       });
     }
     Object.assign(cache.weeklyApiIntervals, { sourceGeneration: String(proof.id), sourceFingerprint: proof.fingerprint });
-    const { publicDiagnostics, MAX_CACHE_BYTES } = REPLAY_SAFE_CALIBRATION_INTERNALS;
     cache.diagnostics = publicDiagnostics(proof.diagnostics);
     assertReplaySafeAccountingCache(cache);
     if (Buffer.byteLength(serializeLocalCollectorAccountingCache(cache)) > MAX_CACHE_BYTES) { report("cache_oversize"); return null; }

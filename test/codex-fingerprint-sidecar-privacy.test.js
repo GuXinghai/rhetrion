@@ -8,7 +8,7 @@ import {
   selectCacheValidationBaseline,
   validateLocalHistoryCacheProvenance,
 } from "../src/cli.js";
-import { localCodexLogScanner } from "../src/local-node-runtime.js";
+import { localCodexLogScanner } from "../src/local-codex-runtime.js";
 import { writeJsonOwnerOnlyAtomic } from "../src/storage.js";
 import { createProtectedFixtureDirectory } from "./helpers/windows-owner-only-fixture.js";
 

@@ -1,22 +1,20 @@
+import { accountingError as fixedError } from "../../src/accounting-values.js";
+import { createAccountingPricer, projectAccountingUsageEvent as eventProjection } from "../../src/accounting-pricing.js";
+import {
+  ALLOWANCE_HISTORY_WINDOW_MINUTES,
+  STREAMED_USAGE_MEMO_BYTES,
+  STREAMED_USAGE_STAMP_BYTES,
+  calibrationPlanEvidence,
+  projectAccountingTransitionUsage as transitionUsageProjection,
+  projectAccountingQuotaSnapshot as weeklyRateLimitProjection,
+} from "../../src/accounting-calibration.js";
 // Test seam for the calibration corpus the accounting build takes from its
 // `calibrationSource`. A plain scanner's usage and rate-limit facts are held
 // resident here and projected with the same production projections the
 // shipping corpus uses, so a test can drive the build with an ordinary scan
 // and still exercise the real fold. The scan's result is shaped as a complete
 // unified-reader result, which the build now requires.
-import { REPLAY_SAFE_CALIBRATION_INTERNALS as internals, createAccountingPricer } from "../../src/replay-safe-accounting-cache.js";
 import { declaredSpeedModeAt } from "../../src/codex-speed-baseline.js";
-
-const {
-  ALLOWANCE_HISTORY_WINDOW_MINUTES,
-  STREAMED_USAGE_MEMO_BYTES,
-  STREAMED_USAGE_STAMP_BYTES,
-  calibrationPlanEvidence,
-  eventProjection,
-  fixedError,
-  transitionUsageProjection,
-  weeklyRateLimitProjection,
-} = internals;
 
 export const TEST_GENERATION = "generation-test-1";
 export const TEST_GENERATION_FINGERPRINT = "generation-fingerprint-test-1";

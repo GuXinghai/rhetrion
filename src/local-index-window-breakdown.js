@@ -8,7 +8,7 @@ import {
 } from "./local-companion-usage-model.js";
 import { committedPredicate } from "./local-index-rollup.js";
 import { openLocalIndexStore } from "./local-index-store.js";
-import { createAccountingPricer } from "./replay-safe-accounting-cache.js";
+import { createAccountingPricer } from "./accounting-pricing.js";
 
 // Windowed per-model / per-speed repricing over the local index store.
 //

@@ -16,7 +16,7 @@ import {
   exportSetManifestSchema,
   isCompressedExportSetManifestVersion,
   validateExportSetManifest,
-} from "../src/export-set-schema.js";
+} from "../src/export/index.js";
 
 function recordCounts(usageEvents, quotaSnapshots = 0, activityMarkers = 0) {
   return { usageEvents, quotaSnapshots, activityMarkers };

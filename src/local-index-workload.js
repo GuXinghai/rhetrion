@@ -6,11 +6,12 @@ import { readWorkProjectionStatuses } from "./local-index-work-projection-backfi
 import { quotaWindowProjection, usageProjection } from "./local-companion-usage-model.js";
 import { forEachLocalCollectorRecord } from "./local-collector-state.js";
 import { setImmediate } from "node:timers/promises";
-import { createAccountingPricer } from "./replay-safe-accounting-cache.js";
+import { createAccountingPricer } from "./accounting-pricing.js";
 import {createWorkloadAccountStateStore,validateWorkloadAccountState} from './local-index-workload-account-state.js';
 import { declaredSpeedModeAt } from "./codex-speed-baseline.js";
 import { readRuntimeModelEvidenceStatus } from './local-index-runtime-model-evidence.js';
 import { localCollectorQuotaRecordScopeToken } from './local-collector-projection.js';
+import { createLocalRefreshTimer } from "./local-refresh-timing.js";
 
 // Identity is private transport metadata, never part of the evidence DTO.
 const quotaContexts=new WeakMap();
@@ -100,10 +101,60 @@ function validBaseline(b){return b===null||b&&Object.keys(b).length===5
   &&Number.isFinite(b.usedPercent)&&b.usedPercent>=0&&b.usedPercent<=100
   &&/^[a-z0-9_]{1,64}$/u.test(b.planType)&&b.limitId==="codex";}
 const validState=validateWorkloadAccountState;
-export const workloadStateStore=createWorkloadAccountStateStore;
 export function workloadState(result){return{schemaVersion:STATE_SCHEMA,
   comparison:{startedAtMs:result.comparison.startedAtMs,capacityUsd:result.comparison.capacityUsd,
     planType:result.comparison.planType,baseline:result.comparison.baseline},capacityHistory:result.capacityHistory};}
+
+/** Own the workload read/compute/persist lifecycle independently of dashboard assembly. */
+export async function buildLocalIndexWorkloadProjection({
+  indexFile, stateFile, nowMs, accountScopeToken, previousAccountScopeToken = null,
+  previous = null, liveSinceMs = nowMs, sourceFresh = false,
+  quotaWindows = [], capacity = null, declaredSpeedBaselines = [],
+  errors = [], signal = null, onTiming = null, monotonicClock = undefined,
+} = {}, {
+  store = createWorkloadAccountStateStore(indexFile),
+  readQuota = readWorkloadQuotaEvidence,
+  readWorkload = readLocalIndexWorkload,
+} = {}) {
+  const timing = createLocalRefreshTimer({ onTiming, clock: monotonicClock });
+  let storedState = null;
+  let stateError = null;
+  try { storedState = await store.read(accountScopeToken); }
+  catch { stateError = "workload_state_read_failed"; }
+  let quotaEvidence;
+  try {
+    quotaEvidence = await timing.measure("snapshot_workload_quota", () => readQuota({
+      stateFile, signal, fromMs: liveSinceMs, nowMs,
+      historyFromMs: Math.max(0, nowMs - WORKLOAD_POLICY.historyMs
+        - WORKLOAD_POLICY.comparisonWindowMs - WORKLOAD_POLICY.comparisonDeadlineUncertaintyMs),
+    }));
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    quotaEvidence = { errorCode: ["quota_history_too_large", "quota_history_invalid"].includes(error?.code)
+      ? error.code : "quota_history_read_failed" };
+  }
+  const workload = timing.measureSync("snapshot_workload", () => readWorkload({
+    indexFile, nowMs, signal, quotaEvidence, accountScopeToken, previousAccountScopeToken,
+    storedState, declaredSpeedBaselines, quotaWindows, capacity, previous, liveSinceMs, sourceFresh,
+  }));
+  if (sourceFresh && ["available", "partial"].includes(workload.status)) {
+    try { await store.write(accountScopeToken, workloadState(workload)); }
+    catch { stateError = "workload_state_write_failed"; }
+  }
+  if (stateError) {
+    workload.errors.push({ code: stateError, stage: "publish" });
+    if (workload.status === "available") workload.status = "partial";
+  }
+  for (const error of errors) {
+    const runtimeError = /^runtime_evidence_[a-z_]{1,60}$/u.test(error?.code ?? "");
+    if (["quota_read_failed", "index_refresh_failed"].includes(error?.code) || runtimeError) {
+      workload.errors.push({ code: error.code, stage: error.stage });
+    }
+    if (runtimeError && workload.pricingDetails?.capture) workload.pricingDetails.capture.status = "failed";
+  }
+  if (errors.length && workload.status === "available") workload.status = "partial";
+  return workload;
+}
 
 const SAFE_ERRORS = new Set(["local_index_newer_version", "local_index_family_mismatch",
   "local_index_unavailable", "price_missing", "numeric_invalid", "workload_context_too_large"]);

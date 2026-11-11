@@ -14,12 +14,8 @@ import {
   resolveCodexExportSourcePlan,
   verifyCodexExportSourcePlan,
 } from "../src/export-source-plan.js";
-import {
-  localCodexLogScanner,
-  localExportSourcePipeline,
-  localExportWorkspace,
-  localSafeRecords,
-} from "../src/local-node-runtime.js";
+import { localCodexLogScanner } from "../src/local-codex-runtime.js";
+import { localExportSourcePipeline, localExportWorkspace, localSafeRecords } from "../src/local-node-runtime.js";
 import { stableJson } from "../src/storage.js";
 
 const { createLocalExportWorkspace, resumeLocalExportWorkspace } = localExportSourcePipeline.controller;

@@ -1,7 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {createHash} from 'node:crypto';
 import {mkdtemp,mkdir,writeFile,stat,rm,appendFile} from 'node:fs/promises';import {join} from 'node:path';import {tmpdir} from 'node:os';
 import {createResponseUsagePlan,projectCompactionUsageLine,RESPONSE_MODEL_RECOVERY_VERSION} from '../src/providers/codex/logs.js';
-import {extractRolloutUsage} from '../src/local-index-extract.js';import {localCodexLogScanner} from '../src/local-node-runtime.js';
+import {extractRolloutUsage} from '../src/local-index-extract.js';import { localCodexLogScanner } from '../src/local-codex-runtime.js';
 import {refreshCodexHome,withReadOnlyStore} from './helpers/local-index-rollout-store.js';import {openLocalIndexStore} from '../src/local-index-store.js';
 import {createLocalIndexBackend} from '../src/local-index-backend.js';
 import {createLineFrame,projectCompleteLine} from '../src/platform/line-frame-projection.js';

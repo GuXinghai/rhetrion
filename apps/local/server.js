@@ -1,7 +1,7 @@
 import { createLocalProgressEvents } from "./local-progress-events.js";
 import { createUnknownSpeedPolicyConfiguration, attachUnknownSpeedPolicyChannel } from "./unknown-speed-policy-channel.js";
 import { createAccountingCalibrationSettingsConfiguration } from "./accounting-calibration-settings.js";
-import { createWorkUsageService } from "../../src/application/index.js";
+import { createWorkUsageService, EXPORT_RESOURCE_FAILURE_CODES } from "../../src/application/index.js";
 import { createWorkUsageSnapshotStore } from "./work-usage-snapshots.js";
 import {
   attachOverviewRefreshIntervalChannel,
@@ -48,6 +48,7 @@ import {
   createLocalCollectorRefreshRunner,
   createLocalRefreshTimer,
   createTerminalRefreshFailureRecorder,
+  normalizeLocalRefreshDiagnosticCode,
   normalizeAccountingRepair,
 } from "../../src/local-companion-refresh.js";
 import {
@@ -132,7 +133,7 @@ export function createCachedLocalUnifiedProjectionReader({
   let closed = false;
   let revision = 0;
   const pending = new Map();
-  function subscribe(build, signal, select = value => value) {
+  function subscribe(build, signal) {
     if (signal?.aborted) return Promise.reject(projectionAborted());
     build.subscribers += 1;
     return new Promise((resolve, reject) => {
@@ -148,23 +149,19 @@ export function createCachedLocalUnifiedProjectionReader({
       const abort = () => finish(reject, projectionAborted());
       signal?.addEventListener("abort", abort, { once: true });
       build.promise.then(value => {
-        try { finish(resolve, structuredClone(select(value))); }
+        try { finish(resolve, structuredClone(value)); }
         catch (error) { finish(reject, error); }
       }, error => finish(reject, error));
     });
   }
   const cacheKey = options => JSON.stringify([
     options.indexFile, options.declaredSpeedBaselines ?? [],
-    options.includeWorkUsage === true, options.exactWindow === true, options.codexHome ?? null, options.secretFile ?? null,
   ]);
-  // The database proof covers the companion calculations only. Work usage
-  // also reads external repository and thread metadata, so it can share an
-  // in-flight build but must not reuse a completed result under this proof.
+  // A completed companion result needs matching publication and time-membership proof.
   const validCached = (options, key, fingerprint) => {
     const nowMs = options.nowMs;
-    return !options.includeWorkUsage && cached
+    return cached
       && key === cached.key && fingerprint === cached.generationFingerprint
-      && (!options.exactWindow || nowMs === cached.projectedAtMs)
       && Number.isFinite(nowMs) && nowMs >= cached.projectedAtMs && nowMs < cached.validUntilMs
       ? cached.projection
       : null;
@@ -172,7 +169,6 @@ export function createCachedLocalUnifiedProjectionReader({
   const read = async function read(options, controls = {}) {
     if (closed) throw projectionAborted();
     if (controls.signal?.aborted) throw projectionAborted();
-    const select = controls.selectProjection ?? (value => value);
     if (options?.mode !== "full") {
       // A deferred read never starts the expensive build, and it does not
       // invalidate a completed full result: while the published generation
@@ -181,25 +177,24 @@ export function createCachedLocalUnifiedProjectionReader({
         const current = await readGeneration(options);
         if (closed || controls.signal?.aborted) throw projectionAborted();
         const valid = validCached(options, cacheKey(options), current);
-        if (valid !== null) return structuredClone(select(valid));
+        if (valid !== null) return structuredClone(valid);
       }
-      return select(await reader(options, controls));
+      return reader(options, controls);
     }
     const nowMs = options.nowMs;
     const key = cacheKey(options);
-    const expectedFingerprint = controls.reuse?.generationFingerprint
-      ?? (options.includeWorkUsage ? await readGeneration(options) : null);
+    const expectedFingerprint = controls.reuse?.generationFingerprint ?? null;
     if (closed || controls.signal?.aborted) throw projectionAborted();
     const valid = validCached(options, key, expectedFingerprint);
-    if (valid !== null) return structuredClone(select(valid));
+    if (valid !== null) return structuredClone(valid);
     // Exact timestamps can share immediately. Different timestamps use the
     // finished cache only after its time-membership proof has completed.
     const buildKey = JSON.stringify([key, expectedFingerprint, nowMs]);
-    const earlier = !options.includeWorkUsage && [...pending.values()].find(item => item.key === key
+    const earlier = [...pending.values()].find(item => item.key === key
       && expectedFingerprint !== null && item.fingerprint === expectedFingerprint
       && item.nowMs < nowMs && !item.controller.signal.aborted);
     if (earlier) {
-      await subscribe(earlier, controls.signal, () => null);
+      await subscribe(earlier, controls.signal);
       return read(options, controls);
     }
     let build = pending.get(buildKey);
@@ -209,14 +204,13 @@ export function createCachedLocalUnifiedProjectionReader({
       const selected = build;
       selected.promise = Promise.resolve().then(async () => {
         const projection = await reader(options, { ...controls, signal: selected.controller.signal });
-        const companion = projection?.companion ?? projection;
+        const companion = projection;
         const generationFingerprint = companion?.generation?.fingerprint;
-        if (!options.includeWorkUsage && companion?.status === "available"
+        if (companion?.status === "available"
             && /^generation-v2-[0-9a-f]{64}$/u.test(generationFingerprint ?? "")
             && Number.isFinite(nowMs)) {
           const validUntilMs = await validUntil({
             indexFile: options.indexFile, generationFingerprint, nowMs,
-            includeWorkUsage: options.includeWorkUsage === true,
           });
           if (!selected.controller.signal.aborted && buildRevision === revision && validUntilMs > nowMs) {
             cached = { key, generationFingerprint, projectedAtMs: nowMs, validUntilMs,
@@ -230,7 +224,7 @@ export function createCachedLocalUnifiedProjectionReader({
       });
       pending.set(buildKey, selected);
     }
-    return subscribe(build, controls.signal, select);
+    return subscribe(build, controls.signal);
   };
   read.close = async () => {
     if (closed) return;
@@ -244,8 +238,7 @@ export function createCachedLocalUnifiedProjectionReader({
 }
 
 /** Internal work summaries stay out of the dashboard's persisted/public DTO. */
-export function selectSharedWorkUsageSnapshot(projection, query) {
-  const work = projection?.workUsage;
+export function selectSharedWorkUsageSnapshot(work, query) {
   if (work?.status !== "available") {
     if (/^work_usage_[a-z_]+$/u.test(work?.errorCode ?? "")) {
       const error = new Error(work.errorCode);
@@ -318,10 +311,21 @@ const LOCAL_STARTUP_DIAGNOSTIC_CODE = "snapshot_unavailable";
 const DIAGNOSTIC_SURFACES = new Set([
   "local_refresh",
 ]);
-// Identifier-shaped fixed codes only: SCREAMING_SNAKE or lower_snake. Neither
-// shape can carry a sentence, a path, or a quoted value.
-const DIAGNOSTIC_ERROR_CODE =
-  /^(?:[A-Z][A-Z0-9_]{1,63}|[a-z][a-z0-9_]{1,63})$/u;
+// Caller vocabulary. data-client.js mirrors these lists with a parity test;
+// server-minted refresh failures use their domain owner's narrower validator.
+export const LOCAL_DIAGNOSTIC_NOTE_CODES = Object.freeze([
+  "unknown", "INTERNAL_ERROR", "snapshot_unavailable", "unsupported_media_type", "request_too_large",
+  "invalid_json", "invalid_request", "refresh_in_progress", "refresh_not_authorized",
+  "refresh_cancel_not_authorized", "refresh_not_running", "app_record_checkpoint_unavailable",
+  "diagnostic_note_not_authorized", "diagnostic_note_not_recorded", "loopback_required", "host_not_allowed",
+  "method_not_allowed", "not_found", "internal_error", "request_failed", "refresh_failed", "refresh_timed_out",
+  "refresh_cancelled", "refresh_degraded", "refresh_resource_limited", "export_too_large",
+  "work_usage_timeout", "work_usage_invalid_response", "work_usage_expired", "work_usage_unavailable",
+  "work_usage_permission", "work_usage_capacity", "work_usage_network",
+]);
+export const LOCAL_DIAGNOSTIC_RESOURCE_DETAILS = EXPORT_RESOURCE_FAILURE_CODES;
+const DIAGNOSTIC_NOTE_CODES = new Set(LOCAL_DIAGNOSTIC_NOTE_CODES);
+const DIAGNOSTIC_RESOURCE_DETAILS = new Set(LOCAL_DIAGNOSTIC_RESOURCE_DETAILS);
 const DIAGNOSTIC_SERVICE_REQUEST_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 function createLocalStartupDiagnosticReference() {
@@ -431,8 +435,8 @@ function sendError(response, statusCode, code) {
  *
  * Every field was validated before this point and is either minted by the
  * dashboard or this companion (the reference), chosen from a fixed set (the
- * surface, and for server-minted refresh-failure notes the step), fixed and
- * identifier-shaped (the code and the optional detail code), or the service's
+ * surface, and for server-minted refresh-failure notes the step), selected
+ * from closed vocabularies (the code and optional detail), or the service's
  * own request id. No message, payload, path, or participant value is written.
  * The optional step member exists only on server-minted terminal
  * refresh-failure notes; the POST route's key validation keeps it unreachable
@@ -469,6 +473,28 @@ function boundedNoteMeasurements(value) {
       : null;
   }
   return bounded;
+}
+
+function projectDiagnosticNote(note) {
+  if (!note || !DIAGNOSTIC_REFERENCE.test(note.reference)
+      || !["local_refresh", LOCAL_STARTUP_DIAGNOSTIC_SURFACE].includes(note.surface)) {
+    throw new TypeError("Local diagnostic note is invalid");
+  }
+  const code = DIAGNOSTIC_NOTE_CODES.has(note.code) ? note.code
+    : normalizeLocalRefreshDiagnosticCode(note.code) ?? "unknown";
+  const detail = LOCAL_STARTUP_DIAGNOSTIC_DETAIL_SET.has(note.detail) ? note.detail
+    : normalizeLocalRefreshDiagnosticCode(note.detail);
+  const step = note.surface === LOCAL_STARTUP_DIAGNOSTIC_SURFACE
+    ? LOCAL_STARTUP_DIAGNOSTIC_STEPS.includes(note.step) ? note.step : null
+    : ["collector", "accounting", "unified_index", "assemble"].includes(note.step) ? note.step : null;
+  const workUsage = normalizeWorkUsageDiagnostic(note.workUsage);
+  const measurements = boundedNoteMeasurements(note.measurements);
+  return Object.freeze({ reference: note.reference, surface: note.surface, code,
+    requestId: DIAGNOSTIC_SERVICE_REQUEST_ID.test(note.requestId) ? note.requestId : "",
+    ...(detail === null ? {} : { detail }), ...(step === null ? {} : { step }),
+    ...(workUsage === null ? {} : { workUsage }),
+    ...(measurements === null ? {} : { measurements }),
+  });
 }
 
 async function appendDiagnosticNote({
@@ -704,13 +730,15 @@ async function authorizeDiagnosticNote(request, response) {
   }
   const hasContext = Object.hasOwn(value, "workUsage");
   const workUsage = hasContext ? normalizeWorkUsageDiagnostic(value.workUsage) : undefined;
-  const keys = Object.keys(value).filter(key => key !== "workUsage").sort().join("\0");
+  const hasDetail = Object.hasOwn(value, "detail");
+  const keys = Object.keys(value).filter(key => key !== "workUsage" && key !== "detail").sort().join("\0");
   if (keys !== "code\0reference\0requestId\0surface"
       || (hasContext && (workUsage === null || value.surface !== "local_refresh"
         || !/^work_usage_(?:timeout|invalid_response|expired|unavailable|permission|capacity|network)$/u.test(value.code)))
       || !DIAGNOSTIC_REFERENCE.test(value.reference)
       || !DIAGNOSTIC_SURFACES.has(value.surface)
-      || !DIAGNOSTIC_ERROR_CODE.test(value.code)
+      || !DIAGNOSTIC_NOTE_CODES.has(value.code)
+      || (hasDetail && !DIAGNOSTIC_RESOURCE_DETAILS.has(value.detail))
       || typeof value.requestId !== "string"
       || (value.requestId !== ""
         && !DIAGNOSTIC_SERVICE_REQUEST_ID.test(value.requestId))) {
@@ -723,6 +751,7 @@ async function authorizeDiagnosticNote(request, response) {
     code: value.code,
     requestId: value.requestId,
     ...(hasContext ? { workUsage } : {}),
+    ...(hasDetail ? { detail: value.detail } : {}),
   });
 }
 
@@ -1041,14 +1070,7 @@ function createPreparedLocalCompanionServer({
   sharedProjectionReader = createCachedLocalUnifiedProjectionReader(
     localIndexBackend.projectionReader,
   ),
-  unifiedProjectionReader = async (options, controls) => {
-    // The dashboard persists only companion figures. Work reports have their
-    // own request/lease lifecycle below; building and discarding them here
-    // delayed snapshot publication and disabled the companion cache proof.
-    return sharedProjectionReader({ ...options, includeWorkUsage: false, codexHome }, {
-      ...controls, selectProjection: projection => projection.companion ?? projection,
-    });
-  },
+  unifiedProjectionReader = sharedProjectionReader,
   dataStore = new LocalCompanionDataStore({
     snapshotFile: statePaths.authoritativeDashboardSnapshotFile,
     quotaReader: (options) => readLocalCompanionQuota({
@@ -1106,15 +1128,14 @@ function createPreparedLocalCompanionServer({
   cacheDropThreadLinksProvider = ({ overview }) => (
     localIndexBackend.cacheDropThreadLinks({ codexHome, overview })
   ),
-  workUsageBuild = async (query, controls) => selectSharedWorkUsageSnapshot({
+  workUsageBuild = async (query, controls) => selectSharedWorkUsageSnapshot(
     // Work queries do not consume the companion report. The work-only backend
     // preserves the publication fence without repeating that synchronous scan.
-    workUsage: await localIndexBackend.readWorkUsage({
+    await localIndexBackend.readWorkUsage({
       nowMs: query.toMs,
       indexFile: unifiedStoreFile, codexHome,
       declaredSpeedBaselines: await codexSpeedBaseline.readWindows(),
-    }, controls),
-  }, query),
+    }, controls), query),
   workUsageEnrich = (query) => enrichWorkUsageRows({ ...query, codexHome }),
   refreshRunner = createLocalCollectorRefreshRunner({
     getUnknownSpeedPolicy: unknownSpeedPolicyConfiguration.get,
@@ -1212,12 +1233,13 @@ function createPreparedLocalCompanionServer({
         && typeof diagnosticNoteRecorder !== "function")) {
     throw new TypeError("local diagnostics controls are invalid");
   }
-  const recordDiagnosticNote = diagnosticNoteRecorder
+  const writeDiagnosticNote = diagnosticNoteRecorder
     ?? ((note) => appendDiagnosticNote({
       file: diagnosticsLogFile,
       note,
       now: clock(),
     }));
+  const recordDiagnosticNote = note => writeDiagnosticNote(projectDiagnosticNote(note));
   let instanceLock = null;
   let instanceLockRelease = null;
   let instanceLockPromise = null;
@@ -1282,8 +1304,7 @@ function createPreparedLocalCompanionServer({
         } catch (error) {
           snapshotState = {
             status: "failed",
-            errorCode: typeof error?.code === "string"
-              && /^[a-z0-9_]{1,64}$/u.test(error.code)
+            errorCode: LOCAL_STARTUP_DIAGNOSTIC_DETAIL_SET.has(error?.code)
               ? error.code
               : "snapshot_unavailable",
           };

@@ -383,6 +383,34 @@ installation credential is preserved in Credential Manager; the
 its sharing use.
 Secret bytes never enter renderer IPC, local HTTP responses or diagnostics.
 
+Local index salt creation and every active salt reader use the same protected
+Windows state boundary. Creation is no-clobber; reads validate owner, DACL,
+single-link and reparse-point policy without replacing a missing or unsafe
+identity. Snapshot reads hold native protected root/child leases plus the
+separate bounded source-read lease. Snapshot publication uses the existing
+native owner-only atomic publisher, including for envelopes above the 1 MiB
+protected-record ceiling. Individual snapshot limits still apply; neither
+the envelope encoding nor salt bytes change. These consumers do not change the
+adapter's general production/race-safety qualification flags. Existing unsafe
+state is preserved and refused; recovery must retain the original identity.
+
+The authoritative dashboard snapshot checks path-specific closed records at
+every nested level before persistence and again before restored publication.
+Artifact datasets share their field lists with the builder. Unknown fields,
+accessors, custom serialization hooks and non-JSON objects are refused, while
+explicit unknown, unavailable and stale values remain available to the existing
+completeness checks. Known valid payloads retain the v1 envelope and digest
+encoding. A rejected write leaves the last-good saved snapshot intact; a
+rejected restore does not become zero usage or trigger data deletion.
+Traversal is bounded to 2,000,000 values, depth 48, 100,000 entries per array and
+4,096 characters per string, in addition to the existing 16 MiB snapshot ceiling.
+
+Files with unsafe or inherited unprotected ACLs are preserved and refused;
+refresh cannot silently repair their permissions or regenerate a salt.
+An unavailable optional snapshot leaves retained evidence explicit; an unreadable
+salt blocks index mutation. Recovery and activation against affected real state
+require their own reviewed preservation-first workflow.
+
 A packaged Windows development shell that passed the native qualification checks
 can read the existing fixed account-observation key through the same parent IPC
 boundary. Its parent broker refuses key creation before entering the credential

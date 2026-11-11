@@ -8,7 +8,7 @@ import {
   createLeadingRateLimitGate,
   RESPONSE_MODEL_RECOVERY_VERSION,
 } from "./providers/codex/logs.js";
-import { localCodexLogScanner } from "./local-node-runtime.js";
+import { localCodexLogScanner } from "./local-codex-runtime.js";
 import { recognizedExportModelId } from "./export/index.js";
 import {
   createLineageSnapshots,
@@ -673,6 +673,7 @@ export async function refreshLocalIndex({
         infos = await timing.measure("index_discovery",()=>discover({
           codexHome, startAt, endAt, signal, discoveryLimits,
           diagnosticTimer: timing,
+          onLineageDiagnostic: code => reportLocalRefreshReuseDiagnostic(onReuseDiagnostic, "index", code),
           excludeApiSessions: true,
           inspectionCache: createInspectionCache(database, catalog, { disabled, roundedHits }),
         }));

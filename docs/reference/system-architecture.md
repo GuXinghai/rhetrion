@@ -43,6 +43,30 @@ Runtime-neutral packages are accessed through their public facades. Scripts and
 tools consume these APIs in one direction; product code does not import tooling.
 `pnpm run architecture:check` enforces these dependency boundaries.
 
+Source scanning is composed by `src/local-codex-runtime.js`; the separate
+`src/local-node-runtime.js` composes export workflows. Ingestion consumes the
+scanner context without constructing export workspaces or deletion services.
+Export callers enter the export owner through its reviewed public entrypoints.
+
+Accounting values, exact event pricing and calibration over a bounded corpus
+have explicit owners in `accounting-values.js`, `accounting-pricing.js` and
+`accounting-calibration.js`. The replay-safe cache consumes these modules for
+assembly, validation and persistence. Index reports use the same pricing owner;
+calibration consumers import named operations rather than cache internals.
+
+Companion figures and work usage have separate readers. Only companion figures
+use the completed projection cache, with publication and time-membership proof.
+Work usage retains its independent metadata reads and publication fence under
+the work service's request, cancellation and snapshot lifecycle. The workload
+owner handles its protected account-state read, evidence collection, computation
+and persistence; dashboard assembly consumes the resulting projection.
+
+The browser refresh coordinator owns submission, cancellation, bounded
+continuation and observation of companion publications. It exposes read-only
+state snapshots and explicit client, event, desktop and presentation ports.
+Dashboard code retains rendering and supplies those ports; it does not maintain
+a second refresh state machine.
+
 ## Stable application identity
 
 `config/application-identity.cjs` is the machine-identity authority. The stable

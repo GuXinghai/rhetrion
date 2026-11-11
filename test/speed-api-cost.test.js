@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { priceCodexUsageEvent, addUsdStrings } from "@app-usagemonitor/accounting";
 import { speedApiPrice } from "../src/speed-api-cost.js";
 import { usageProjection, newUsagePeriod, addUsageToPeriod, finalizeUsagePeriod } from "../src/local-companion-usage-model.js";
-import { createAccountingPricer, buildReplaySafeAccountingPeriod } from "../src/replay-safe-accounting-cache.js";
+import { createAccountingPricer } from "../src/accounting-pricing.js";
+import {
+  buildReplaySafeAccountingPeriod,
+} from "../src/replay-safe-accounting-cache.js";
 
 const components = { input_uncached_tokens: 1000, input_cache_read_tokens: 200, input_cache_write_tokens: 0, output_text_tokens: 100, output_reasoning_tokens: 50 };
 const at = "2026-10-01T12:00:00.000Z";

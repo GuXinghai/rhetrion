@@ -2,11 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
-  chmod, lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile,
+  chmod, link, lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createValidatedSnapshotStore } from "../src/platform/index.js";
+import { assertWindowsOwnerOnly, grantSyntheticEveryoneRead } from "./helpers/windows-owner-only-fixture.js";
 
 const SCHEMA = "test-complete-projection-v1";
 const SAVED_AT = "2026-09-21T12:00:00.000Z";
@@ -59,6 +60,11 @@ test("incomplete, oversized, unserializable and failed-clock writes preserve the
   assert.equal(await createValidatedSnapshotStore({ ...options, maximumBytes: 20 }).write(snapshot), false);
   assert.equal(await createValidatedSnapshotStore({ ...options, now: () => NaN }).write(snapshot), false);
   assert.equal(await createValidatedSnapshotStore({ ...options, now: () => { throw new Error("clock"); } }).write(snapshot), false);
+  const changedByClock = structuredClone(snapshot);
+  assert.equal(await createValidatedSnapshotStore({ ...options, now: () => {
+    changedByClock.privateTitle = "synthetic-private-marker";
+    return Date.parse(SAVED_AT);
+  } }).write(changedByClock), false);
   assert.equal(await createValidatedSnapshotStore({ ...options, validate: () => { throw new Error("validator"); } }).write(snapshot), false);
   const circular = {};
   circular.self = circular;
@@ -118,4 +124,49 @@ test("invalid configuration cannot read or write state", async () => {
     assert.equal(await store.read(), null);
     assert.equal(await store.write(snapshot), false);
   }
+});
+
+test("Windows snapshots use protected native publication and refuse broad or linked state without repair", async t => {
+  const { root, snapshotFile, options, store } = await fixture(t);
+  assert.equal(await store.write(snapshot), true);
+  assertWindowsOwnerOnly(snapshotFile);
+  assertWindowsOwnerOnly(dirname(snapshotFile));
+  const original = await readFile(snapshotFile);
+  grantSyntheticEveryoneRead(snapshotFile);
+  const diagnostics = [];
+  const unsafe = createValidatedSnapshotStore({ ...options, onReadDiagnostic: code => diagnostics.push(code) });
+  assert.equal(await unsafe.read(), null);
+  assert.deepEqual(diagnostics, ["snapshot_read_failed"]);
+  assert.equal(await unsafe.write({ status: "complete", values: [99] }), false);
+  assert.deepEqual(await readFile(snapshotFile), original);
+  // Explicit removal is only synthetic fixture setup, never product recovery.
+  await rm(snapshotFile);
+  assert.equal(await store.write(snapshot), true);
+  const alias = join(root, "linked-copy.json"); await link(snapshotFile, alias);
+  assert.equal(await store.read(), null);
+  assert.equal(await store.write({ status: "complete", values: [99] }), false);
+  assert.deepEqual(await readFile(alias), original);
+});
+
+test("snapshot reads do not create absent roots and reject broad parent permissions", async t => {
+  const { snapshotFile, store } = await fixture(t);
+  assert.equal(await store.read(), null);
+  await assert.rejects(lstat(dirname(snapshotFile)), { code: "ENOENT" });
+  assert.equal(await store.write(snapshot), true);
+  const original = await readFile(snapshotFile);
+  grantSyntheticEveryoneRead(dirname(snapshotFile));
+  assert.equal(await store.read(), null);
+  assert.equal(await store.write({ status: "complete", values: [] }), false);
+  assert.deepEqual(await readFile(snapshotFile), original);
+});
+
+test("native snapshot round trips preserve envelopes above the protected-record byte ceiling", async t => {
+  const { snapshotFile } = await fixture(t);
+  const value = { values: Array(180_000).fill(1234567) };
+  const store = createValidatedSnapshotStore({ snapshotFile, schemaVersion: SCHEMA,
+    validate: x => Array.isArray(x?.values) && x.values.length === 180_000,
+    maximumBytes: 2 * 1024 * 1024 });
+  assert.equal(await store.write(value), true);
+  assertWindowsOwnerOnly(snapshotFile);
+  assert.deepEqual((await store.read()).snapshot, value);
 });

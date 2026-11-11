@@ -4,7 +4,6 @@ import { isProxy } from "node:util/types";
 
 import {
   createExportCompatibilityContext,
-  createLocalCodexLogScanner,
   createLocalExportArtifactStorageContext,
   createLocalExportDeletion,
   createLocalExportResourceContext,
@@ -65,20 +64,17 @@ import {
   readOwnerOnlyLocalMetadataBundlePair,
   sha256Hex,
 } from "./platform/index.js";
+import { localCodexLogScanner } from "./local-codex-runtime.js";
 
 /**
- * The single Node composition root for local source and export
- * workflows. Domain/application owners stay runtime-neutral; this module
+ * Node composition for local export workflows.
+ * Domain/application owners stay runtime-neutral; this module
  * supplies concrete Node and owner-only platform ports once per process.
  *
  * Consumers import the named frozen contexts below. Historical flat modules
  * must not be recreated: their paths are permanent entries in the retired
  * production-source ledger.
  */
-
-export const localCodexLogScanner = createLocalCodexLogScanner(
-  createLocalCodexLogPorts(),
-);
 
 export const localCodexCheckpointState =
   createCodexCheckpointStateContext({ createHash, isProxy });

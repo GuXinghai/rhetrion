@@ -9,7 +9,7 @@ import {
   sanitizeCodexAccountSnapshot,
 } from "./providers/codex/account.js";
 import { scanAndPriceCodexLogs } from "./codex-local-usage-analysis.js";
-import { localCodexLogScanner } from "./local-node-runtime.js";
+import { localCodexLogScanner } from "./local-codex-runtime.js";
 import { stableJson } from "./export/index.js";
 import { subscriptionSpeedSensitivity } from "./application/index.js";
 import { validateTierDeclaration } from "./providers/codex/logs.js";
@@ -216,10 +216,29 @@ export function environmentForWorkload(environment = process.env) {
   return workloadEnvironment;
 }
 
+const WORKLOAD_FAILURE_CODES = new Set([
+  "workload_timeout", "workload_failed", "workload_cleanup_failed",
+  "unsupported_experiment_speed_mode",
+]);
+function workloadFailureCode(error) {
+  try {
+    const code = error?.code;
+    if (WORKLOAD_FAILURE_CODES.has(code)) return code;
+    if (code === "ENOENT") return "workload_unavailable";
+    if (code === "EACCES" || code === "EPERM") return "workload_permission_denied";
+    if (code === "ABORT_ERR" || error?.name === "AbortError") return "workload_cancelled";
+  } catch { /* Untrusted errors cannot become a second output channel. */ }
+  return "workload_failed";
+}
+function workloadError(code) {
+  return Object.assign(new Error("Experiment workload failed"), { code });
+}
+
 async function spawnWorkload(manifest, { timeoutMs, spawnProcess = spawn }) {
   const binary = await findCodexBinary();
   const workingDirectory = await mkdtemp(join(tmpdir(), "app-usagemonitor-pilot-"));
   const workload = WORKLOADS[manifest.workloadId];
+  let workloadFailed = false;
   try {
     const args = [
       "exec",
@@ -235,7 +254,7 @@ async function spawnWorkload(manifest, { timeoutMs, spawnProcess = spawn }) {
       const providerTier = {
         standard: "default", fast: "priority", ultrafast: "ultrafast",
       }[manifest.tierDeclaration.codexSpeedMode];
-      if (!providerTier) throw new Error("unsupported_experiment_speed_mode");
+      if (!providerTier) throw workloadError("unsupported_experiment_speed_mode");
       args.splice(args.length - 2, 0, "-c", `service_tier=\"${providerTier}\"`);
     }
     const workloadEnvironment = environmentForWorkload();
@@ -244,20 +263,27 @@ async function spawnWorkload(manifest, { timeoutMs, spawnProcess = spawn }) {
     return await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         child.kill("SIGTERM");
-        reject(new Error(`workload_timeout:${timeoutMs}`));
+        reject(workloadError("workload_timeout"));
       }, timeoutMs);
       child.once("error", (error) => {
         clearTimeout(timer);
         reject(error);
       });
-      child.once("exit", (code, signal) => {
+      child.once("exit", (code) => {
         clearTimeout(timer);
         if (code === 0) resolve({ exitCode: 0 });
-        else reject(new Error(`workload_failed:${code ?? signal}`));
+        else reject(workloadError("workload_failed"));
       });
     });
+  } catch (error) {
+    workloadFailed = true;
+    throw error;
   } finally {
-    await rm(workingDirectory, { recursive: true });
+    try { await rm(workingDirectory, { recursive: true }); }
+    catch {
+      // Cleanup cannot replace the primary failure, especially cancellation.
+      if (!workloadFailed) throw workloadError("workload_cleanup_failed");
+    }
   }
 }
 
@@ -348,7 +374,7 @@ export async function runExperiment({
       concurrencyPreflight,
       startedAt,
       endedAt: new Date(clock()).toISOString(),
-      stopReasons: [String(error.message).split(":")[0]],
+      stopReasons: [workloadFailureCode(error)],
     };
   }
   const endedAtMs = clock();

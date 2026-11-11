@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { MAXIMUM_EXPORT_SET_CHUNKS } from "../src/export-set-schema.js";
+import { MAXIMUM_EXPORT_SET_CHUNKS } from "../src/export/index.js";
 import {
   assertValidExportDeletionCommitMarker,
   assertValidExportDeletionJournal,

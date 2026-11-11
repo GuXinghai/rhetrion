@@ -9,8 +9,29 @@ import { createLocalIndexBackend } from "../src/local-index-backend.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import { LOCAL_INDEX_STORE_APPLICATION_ID } from "../src/local-index-store.js";
 import { createWorkspace, v2Facts } from "./helpers/local-index-facts.js";
+import { assertWindowsOwnerOnly, grantSyntheticEveryoneRead, writeInitialProtectedFixtureFile } from "./helpers/windows-owner-only-fixture.js";
+import { readExistingDeviceSalt, readOrCreateDeviceSalt } from "../src/local-index-identity.js";
+import { readExistingDeviceSalt as readWorkSalt } from "../src/local-device-salt.js";
 
 const digest = file => createHash("sha256").update(readFileSync(file)).digest("hex");
+
+test("Windows index salt keeps exact bytes and refuses broad permissions without repair or regeneration", async () => {
+  const w = createWorkspace({ files: 1, events: 1 });
+  try {
+    const secret = await readOrCreateDeviceSalt(w.secretFile);
+    assertWindowsOwnerOnly(w.secretFile);
+    assert.equal(secret.length, 32);
+    assert.deepEqual(await readOrCreateDeviceSalt(w.secretFile), secret);
+    assert.deepEqual(await readExistingDeviceSalt(w.secretFile), secret);
+    const before = digest(w.secretFile);
+    grantSyntheticEveryoneRead(w.secretFile);
+    await assert.rejects(readExistingDeviceSalt(w.secretFile), { code: "local_index_secret_unavailable" });
+    await assert.rejects(readWorkSalt(w.secretFile), { code: "local_unified_index_secret_unavailable" });
+    await assert.rejects(readOrCreateDeviceSalt(w.secretFile), { code: "local_index_secret_unavailable" });
+    assert.equal(digest(w.secretFile), before);
+    assert.deepEqual(readFileSync(w.secretFile), secret);
+  } finally { w.cleanup(); }
+});
 
 test("an existing index never recreates a lost salt or changes facts before refusing it", async () => {
   const workspace = createWorkspace({ files: 3, events: 60 });
@@ -27,7 +48,7 @@ test("an existing index never recreates a lost salt or changes facts before refu
     assert.equal(digest(indexFile), before);
     assert.deepEqual(v2Facts(indexFile), facts);
 
-    writeFileSync(workspace.secretFile, "invalid", { mode: 0o600 });
+    writeInitialProtectedFixtureFile(workspace.secretFile, "invalid");
     await assert.rejects(refreshLocalIndex(options), { code: "local_index_secret_invalid" });
     assert.equal(readFileSync(workspace.secretFile, "utf8"), "invalid");
     assert.equal(digest(indexFile), before);

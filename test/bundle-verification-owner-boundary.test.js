@@ -12,7 +12,6 @@ import * as canonicalJson from "../src/export/canonical-json.js";
 import * as verification from "../src/export/bundle-verification.js";
 import { exportCompatibilityTuple } from "../src/export-contract.js";
 import * as legacyPrivacy from "../src/export-privacy.js";
-import * as legacySchema from "../src/export-schema.js";
 import * as platform from "../src/platform/index.js";
 import * as storage from "../src/storage.js";
 
@@ -36,11 +35,6 @@ const LEGACY_VERIFIER_EXPORTS = Object.freeze([
   "loadVerifiedLocalMetadataBundleFiles",
   "verifyLocalMetadataBundleFiles",
 ]);
-const SCHEMA_EXPORTS = Object.freeze([
-  "assertValidExportRecord",
-  "exportSchemas",
-  "validateExportRecord",
-]);
 
 test("bundle verification owners expose exact APIs and legacy identities", () => {
   assert.deepEqual(
@@ -55,10 +49,6 @@ test("bundle verification owners expose exact APIs and legacy identities", () =>
     legacyVerifier.BundleVerificationError,
     verification.BundleVerificationError,
   );
-  assert.deepEqual(Object.keys(legacySchema).sort(), [...SCHEMA_EXPORTS]);
-  for (const name of SCHEMA_EXPORTS) {
-    assert.equal(legacySchema[name], verification[name], name);
-  }
   assert.equal(
     legacyPrivacy.inspectSensitiveExportStrings,
     verification.inspectSensitiveExportStrings,

@@ -19,7 +19,7 @@ import {
   EXPORT_SET_MANIFEST_RECEIPT_VERSION,
   EXPORT_SET_MANIFEST_VERSION,
   exportSetChunkBasenames,
-} from "../src/export-set-schema.js";
+} from "../src/export/index.js";
 import {
   EXPORT_SET_MANIFEST_BASENAME,
   EXPORT_SET_MANIFEST_RECEIPT_BASENAME,
@@ -38,7 +38,7 @@ import {
   compressExportBytes,
   decompressExportBytes,
   ExportCompressionError,
-} from "../src/export-compression.js";
+} from "../src/export/index.js";
 import {
   BundleVerificationError,
   loadVerifiedLocalMetadataBundleBytes,

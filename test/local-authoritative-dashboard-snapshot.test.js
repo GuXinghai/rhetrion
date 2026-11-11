@@ -26,6 +26,8 @@ import {
   LocalCompanionDataStore,
   RETAINED_EVIDENCE_RELABELED_WARNINGS,
 } from "../src/local-companion-data.js";
+import { createProtectedFixtureDirectory } from "./helpers/windows-owner-only-fixture.js";
+import { analyzeWorkload } from "@app-usagemonitor/quota-analysis";
 
 const TOOL_WARNING =
   "Usage accounting is complete, but typed tool history is partial. Tool totals are withheld rather than reported as zero.";
@@ -63,7 +65,6 @@ function authoritativeSnapshot({ toolHistoryPartial = false } = {}) {
       warnings: toolHistoryPartial ? [TOOL_WARNING] : [],
       activity: {
         usageEvents: 12,
-        totalTokens: 1_234,
         toolEvents: toolHistoryPartial ? null : 4,
       },
       tools,
@@ -75,7 +76,7 @@ function authoritativeSnapshot({ toolHistoryPartial = false } = {}) {
         apiPriceEquivalentUsd: 1.25,
       }],
       timeline: {
-        usage: [{ at: "2026-08-27T11:00:00.000Z", events: 12 }],
+        usage: [{ startAt: "2026-08-27T11:00:00.000Z", usageEvents: 12 }],
         history: toolHistoryPartial
           ? { status: "partial", reason: "typed_tool_history_partial" }
           : { status: "complete" },
@@ -114,7 +115,7 @@ function authoritativeSnapshot({ toolHistoryPartial = false } = {}) {
         }],
       },
     },
-    gradient: { datasets: { rolling: [{ at: 1 }] } },
+    gradient: { datasets: { rolling: [{ timestamp: 1 }] } },
     weekly: { datasets: { weekly_values: [{ sequence: 1 }] } },
     quality: {},
   };
@@ -233,30 +234,16 @@ test("authoritative dashboard snapshots round-trip atomically as owner-only stat
   }
 });
 
-test("the envelope traverses the snapshot once and remains byte-compatible", async () => {
+test("ordinary snapshots retain the v1 envelope bytes", async () => {
   const files = await fixture();
   try {
     const plain = authoritativeSnapshot();
-    const snapshot = structuredClone(plain);
-    let serializations = 0;
-    Object.defineProperty(snapshot, "toJSON", {
-      enumerable: false,
-      value: () => {
-        serializations += 1;
-        return plain;
-      },
-    });
     const savedAt = "2026-08-27T12:01:00.000Z";
     assert.equal(await writeAuthoritativeDashboardSnapshot({
       snapshotFile: files.snapshotFile,
-      snapshot,
+      snapshot: plain,
       now: () => Date.parse(savedAt),
     }), true);
-    assert.equal(
-      serializations,
-      1,
-      "encoding must not synchronously traverse the full snapshot twice",
-    );
     const snapshotPayload = JSON.stringify(plain);
     const expected = JSON.stringify({
       schemaVersion: "local-authoritative-dashboard-snapshot-v1",
@@ -276,11 +263,129 @@ test("the envelope traverses the snapshot once and remains byte-compatible", asy
   }
 });
 
-test("a write removes only stale exact-pattern interrupted temporaries", async () => {
+function recordPaths(value, path = []) {
+  if (!value || typeof value !== "object") return [];
+  return [
+    ...(Array.isArray(value) ? [] : [path]),
+    ...Object.entries(value).flatMap(([key, child]) => recordPaths(child, [...path, key])),
+  ];
+}
+
+function atPath(value, path) {
+  return path.reduce((current, key) => current[key], value);
+}
+
+test("unknown nested fields cannot replace the last good receipt or restore with a forged digest", async () => {
+  const files = await fixture();
+  try {
+    const snapshot = authoritativeSnapshot();
+    assert.equal(await writeAuthoritativeDashboardSnapshot({ snapshotFile: files.snapshotFile, snapshot }), true);
+    const original = await readFile(files.snapshotFile, "utf8");
+    for (const path of recordPaths(snapshot)) {
+      const candidate = structuredClone(snapshot);
+      atPath(candidate, path).unexpected = "synthetic-private-marker";
+      assert.equal(isAuthoritativeDashboardSnapshot(candidate), false, path.join("."));
+      assert.equal(await writeAuthoritativeDashboardSnapshot({ snapshotFile: files.snapshotFile, snapshot: candidate }), false);
+      assert.equal(await readFile(files.snapshotFile, "utf8"), original);
+
+      // A digest protects integrity, not the content-free projection contract.
+      const forged = JSON.parse(original);
+      forged.snapshot = candidate;
+      forged.digest = createHash("sha256").update(JSON.stringify(candidate)).digest("hex");
+      await writeFile(files.snapshotFile, JSON.stringify(forged));
+      assert.equal(await readAuthoritativeDashboardSnapshot({ snapshotFile: files.snapshotFile }), null);
+      await writeFile(files.snapshotFile, original);
+    }
+    const candidate = structuredClone(snapshot);
+    candidate.overview.accounting.byModel[0].model = { unexpected: "synthetic" };
+    assert.equal(isAuthoritativeDashboardSnapshot(candidate), false, "known leaves cannot smuggle nested objects");
+    for (const path of [["overview", "accounting"], ["overview", "accounting", "periods", "0"]]) {
+      const misplaced = structuredClone(snapshot);
+      atPath(misplaced, path).id = "synthetic-unexpected-id";
+      assert.equal(isAuthoritativeDashboardSnapshot(misplaced), false, "a field approved on another DTO is not admitted here");
+    }
+    assert.deepEqual((await readAuthoritativeDashboardSnapshot({ snapshotFile: files.snapshotFile })).snapshot, snapshot);
+  } finally {
+    await rm(files.root, { recursive: true });
+  }
+});
+
+test("snapshot validation rejects serialization hooks without executing them", () => {
+  let invoked = 0;
+  for (const mutate of [
+    (value) => Object.defineProperty(value.overview.accounting, "events", {
+      enumerable: true, get() { invoked += 1; return 12; },
+    }),
+    (value) => Object.defineProperty(value, "toJSON", {
+      value() { invoked += 1; return authoritativeSnapshot(); },
+    }),
+    (value) => Object.defineProperty(value.overview.usage[0], "toJSON", {
+      value() { invoked += 1; return { unexpected: "synthetic" }; },
+    }),
+    (value) => { value.overview.usage.extra = "synthetic"; },
+    (value) => { value.overview.accounting[Symbol("synthetic")] = 1; },
+    (value) => { value.overview.accounting = new Proxy(value.overview.accounting, {
+      get() { invoked += 1; throw new Error("synthetic"); },
+    }); },
+    (value) => { Object.setPrototypeOf(value.overview.accounting, { toJSON() { invoked += 1; } }); },
+  ]) {
+    const candidate = authoritativeSnapshot();
+    mutate(candidate);
+    assert.equal(isAuthoritativeDashboardSnapshot(candidate), false);
+  }
+  assert.equal(isAuthoritativeDashboardSnapshot(new Proxy(authoritativeSnapshot(), {})), false);
+  assert.equal(invoked, 0);
+});
+
+test("weekly calibration maps, workload errors and explicit unknowns keep their closed shape", async () => {
+  const files = await fixture();
+  try {
+    const snapshot = authoritativeSnapshot();
+    snapshot.overview.workload = analyzeWorkload({ nowMs: Date.parse(snapshot.generatedAt) });
+    snapshot.overview.workload.errors.push({ code: "price_missing", stage: "pricing", count: 1 });
+    snapshot.overview.workload.pricingDetails = {
+      total: 1, truncated: false,
+      records: [{ at: snapshot.generatedAt, model: "unknown", reason: "model_unknown", tokens: 1,
+        inputUncached: null, cacheRead: 0, output: 1 }],
+      capture: { status: "failed", errorCode: "runtime_evidence_checkpoint_invalid" },
+    };
+    const population = {
+      status: "available", generatedAt: snapshot.generatedAt, planType: "plus", selectedPlanType: "plus",
+      accountAttribution: { status: "historical_unattributed", maySpanMultipleAccounts: true },
+      planAttribution: { methodVersion: "plan-era-v1", status: "historical_plan_conditional",
+        accountVerified: false, comparisonEligibility: "single_plan_conditional" },
+      datasets: {
+        summary: [{ plan_type: "plus", composition_status: "fitted", capacity_by_model: { "gpt-6.1-sol": 100, other: null },
+          model_cost_shares: { "gpt-6.1-sol": 1 }, composition_r2: 0.9 }],
+        weekly_values: [{ sequence: 1, plan_type: "plus", plan_variant: "unknown", aggregation_eligibility: "eligible",
+          price_card_ids: ["synthetic-card"], price_card_breakdown: [{ priceCardId: "synthetic-card", events: 1, costUsd: "1" }] }],
+      },
+      allowanceBasis: { scenario: "unresolved_as_standard", basisFamilyId: "synthetic-basis", basisId: "synthetic-basis-standard",
+        unknownSpeedPolicy: { mode: "standard", customFastRatioBps: null } },
+      stale: { stale: true, reason: "cache_accounting_semantics_outdated", schemaVersion: "synthetic-prior-v1",
+        computedAt: snapshot.generatedAt, coveredAt: { startAt: null, endAt: snapshot.generatedAt } },
+    };
+    snapshot.weekly = { ...population, planPopulations: [structuredClone(population)],
+      allowanceHistoryByWindow: { "300": structuredClone(population) } };
+    assert.equal(isAuthoritativeDashboardSnapshot(snapshot), true);
+    assert.equal(await writeAuthoritativeDashboardSnapshot({ snapshotFile: files.snapshotFile, snapshot }), true);
+    assert.deepEqual((await readAuthoritativeDashboardSnapshot({ snapshotFile: files.snapshotFile })).snapshot, snapshot);
+    for (const path of recordPaths(snapshot)) {
+      const candidate = structuredClone(snapshot);
+      atPath(candidate, path).unexpected = "synthetic";
+      assert.equal(isAuthoritativeDashboardSnapshot(candidate), false, path.join("."));
+    }
+  } finally {
+    await rm(files.root, { recursive: true });
+  }
+});
+
+test("publication preserves unrelated temporary state and bounds legacy cleanup", async () => {
   const files = await fixture();
   try {
     const directory = join(files.root, "private");
-    await mkdir(directory, { recursive: true, mode: 0o700 });
+    if (process.platform === "win32") createProtectedFixtureDirectory(directory);
+    else await mkdir(directory, { recursive: true, mode: 0o700 });
     const uuid = "123e4567-e89b-42d3-a456-426614174000";
     const staleName = `${files.snapshotFile}.424241.${uuid}.tmp`;
     const youngName = `${files.snapshotFile}.424242.${uuid}.tmp`;
@@ -309,7 +414,7 @@ test("a write removes only stale exact-pattern interrupted temporaries", async (
     }), true);
 
     const names = await readdir(directory);
-    assert.equal(names.includes(basename(staleName)), false);
+    assert.equal(names.includes(basename(staleName)), process.platform === "win32");
     assert.equal(names.includes(basename(youngName)), true);
     if (process.platform !== "win32") {
       assert.equal(names.includes(basename(openModeName)), true);
@@ -320,6 +425,11 @@ test("a write removes only stale exact-pattern interrupted temporaries", async (
       assert.equal(names.includes(basename(hardLinkTarget)), true);
     }
     assert.equal(names.includes(basename(ambiguousName)), true);
+    assert.deepEqual(names.sort(), [
+      basename(files.snapshotFile), basename(youngName), basename(openModeName),
+      basename(linkedName), basename(ambiguousName),
+      ...(process.platform === "win32" ? [basename(staleName)] : [basename(hardLinkedName), basename(hardLinkTarget)]),
+    ].sort(), "successful publication leaves no own interrupted temporary");
   } finally {
     await rm(files.root, { recursive: true });
   }
@@ -329,7 +439,8 @@ test("stale temporary cleanup is bounded per authoritative write", async () => {
   const files = await fixture();
   try {
     const directory = join(files.root, "private");
-    await mkdir(directory, { recursive: true, mode: 0o700 });
+    if (process.platform === "win32") createProtectedFixtureDirectory(directory);
+    else await mkdir(directory, { recursive: true, mode: 0o700 });
     const uuid = "123e4567-e89b-42d3-a456-426614174000";
     const staleNames = [424251, 424252, 424253].map(
       (pid) => `${files.snapshotFile}.${pid}.${uuid}.tmp`,
@@ -346,8 +457,8 @@ test("stale temporary cleanup is bounded per authoritative write", async () => {
     const names = await readdir(directory);
     assert.equal(
       staleNames.filter((file) => names.includes(basename(file))).length,
-      1,
-      "one write removes at most two unambiguous stale temporaries",
+      process.platform === "win32" ? 3 : 1,
+      "native publication preserves old Node temporaries; legacy cleanup removes at most two",
     );
   } finally {
     await rm(files.root, { recursive: true });
@@ -616,10 +727,10 @@ test("startup retains only valid saved evidence until a full refresh publishes d
         full.overview.accounting.generationFingerprint =
           "generation-fingerprint-18";
         full.overview.timeline.usage = [
-          { at: "2026-08-27T11:00:00.000Z", events: 6 },
-          { at: "2026-08-27T12:00:00.000Z", events: 6 },
+          { startAt: "2026-08-27T11:00:00.000Z", usageEvents: 6 },
+          { startAt: "2026-08-27T12:00:00.000Z", usageEvents: 6 },
         ];
-        full.gradient.datasets.rolling.push({ at: 2 });
+        full.gradient.datasets.rolling.push({ timestamp: 2 });
         full.weekly.datasets.weekly_values.push({ sequence: 2 });
         const purposes = [];
         const store = new LocalCompanionDataStore({
@@ -841,8 +952,8 @@ test("publication-only reload preserves persistence and isolated access without 
   assert.equal(writes, 1, "publication still persists the authoritative snapshot");
   assert.deepEqual(calls, [{ purpose: "full" }], "the builder receives only its own options");
   const first = store.getOverview();
-  first.timeline.usage[0].events = 999;
-  assert.equal(store.getOverview().timeline.usage[0].events, 12);
+  first.timeline.usage[0].usageEvents = 999;
+  assert.equal(store.getOverview().timeline.usage[0].usageEvents, 12);
   const ordinary = await store.reload({ purpose: "full" });
   assert.equal(ordinary.accounting.events, 12, "the default return contract is unchanged");
   await assert.rejects(store.reload({ returnOverview: "false" }), TypeError);
@@ -876,5 +987,5 @@ test("publication-only quick reload keeps the same retained evidence as ordinary
   const expected = await ordinary.reload({ purpose: "quick" });
   await publishing.reload({ purpose: "quick", returnOverview: false });
   assert.deepEqual(publishing.getOverview(), expected);
-  assert.equal(expected.timeline.usage[0].events, 12);
+  assert.equal(expected.timeline.usage[0].usageEvents, 12);
 });

@@ -259,7 +259,7 @@ export function readLocalIndexPublication(database) {
  * answers `nowMs`: not reusable, so the caller reads in full.
  */
 export function readLocalIndexProjectionValidUntil({
-  indexFile, generationFingerprint, nowMs, includeWorkUsage = false,
+  indexFile, generationFingerprint, nowMs,
 } = {}) {
   let database;
   try {
@@ -275,7 +275,7 @@ export function readLocalIndexProjectionValidUntil({
         commitSeq, readLocalIndexCoverage(database), localIndexToolProvenanceComplete(database),
       );
       if (commitSeq < 1 || identity.fingerprint !== generationFingerprint) return nowMs;
-      return readLocalIndexReportValidUntil(database, { nowMs, includeWorkUsage });
+      return readLocalIndexReportValidUntil(database, { nowMs });
     });
   } catch {
     return nowMs;
@@ -333,72 +333,49 @@ export async function readLocalIndexWorkProjection({
   }
 }
 
-/**
- * Read the companion projection from the v2 store.
- *
- * `includeWorkUsage` additionally returns the work breakdown beside it, as the
- * previous reader does.
- */
+/** Read companion figures and their publication from one read snapshot. */
 export async function readLocalIndexCompanionProjection({
   indexFile,
   nowMs = Date.now(),
   declaredSpeedBaselines = [],
   mode = "full",
-  includeWorkUsage = false,
-  codexHome,
-  secretFile = null,
   signal = null,
   onTiming = null, monotonicClock = undefined,
 } = {}) {
   const timing = createLocalRefreshTimer({ onTiming, clock: monotonicClock });
-  const complete = (companion, workUsage = null) => includeWorkUsage
-    ? {
-      companion,
-      workUsage: workUsage ?? {
-        status: companion.status === "available" ? "unavailable" : companion.status,
-        asOfMs: nowMs,
-      },
-    }
-    : companion;
-  if (includeWorkUsage && typeof codexHome !== "string") {
-    throw new TypeError("codexHome must be a string");
-  }
   signal?.throwIfAborted();
   if (typeof indexFile !== "string" || indexFile.length < 1) {
     throw new TypeError("indexFile must be a non-empty string");
   }
   if (!Number.isFinite(nowMs)) throw new TypeError("nowMs must be a finite epoch timestamp");
   if (!PROJECTION_MODES.has(mode)) throw new TypeError("mode must be full or deferred");
-  if (mode === "deferred") return complete(unavailable("deferred", "local_unified_index_deferred"));
+  if (mode === "deferred") return unavailable("deferred", "local_unified_index_deferred");
   const baselines = Array.isArray(declaredSpeedBaselines) ? declaredSpeedBaselines : [];
 
   let size;
   try {
     const metadata = lstatSync(indexFile);
     if (!metadata.isFile() || metadata.isSymbolicLink()) {
-      return complete(unavailable("unavailable", "local_unified_index_unavailable"));
+      return unavailable("unavailable", "local_unified_index_unavailable");
     }
     size = metadata.size;
   } catch (error) {
-    if (error?.code === "ENOENT") return complete(unavailable("missing"));
-    return complete(unavailable("unavailable", "local_unified_index_unavailable"));
+    if (error?.code === "ENOENT") return unavailable("missing");
+    return unavailable("unavailable", "local_unified_index_unavailable");
   }
 
   let database;
   try {
     database = openLocalIndexStore(indexFile, { readOnly: true });
   } catch (error) {
-    return complete(unavailable("unavailable", error?.code ?? "local_unified_index_unavailable"));
+    return unavailable("unavailable", error?.code ?? "local_unified_index_unavailable");
   }
   try {
-    const { companion, workUsage } = await readSnapshot({
-      database, indexFile, nowMs, baselines, includeWorkUsage, codexHome, secretFile, signal, size, timing, onTiming, monotonicClock,
-    });
-    return complete(companion, workUsage);
+    return readSnapshot({ database, nowMs, baselines, signal, size, timing });
   } catch (error) {
     signal?.throwIfAborted();
     if (error?.code?.startsWith("local_unified_index_") || error?.code?.startsWith("local_index_")) {
-      return complete(unavailable("unavailable", error.code));
+      return unavailable("unavailable", error.code);
     }
     throw fixedError("local_unified_index_unavailable");
   } finally {
@@ -406,57 +383,23 @@ export async function readLocalIndexCompanionProjection({
   }
 }
 
-async function readSnapshot({
-  database, indexFile, nowMs, baselines, includeWorkUsage, codexHome, secretFile, signal, size, timing, onTiming, monotonicClock,
-}) {
-  // The report and the work breakdown must describe the same publication. The
-  // work read is asynchronous, so it cannot sit inside the synchronous
-  // snapshot; its `commit_seq` is compared afterwards instead.
+function readSnapshot({ database, nowMs, baselines, signal, size, timing }) {
   const { report, generation } = timing.measureSync("projection_report", () => withReadSnapshot(database, ({ commitSeq }) => {
-    const result = readLocalIndexReport(database, { nowMs, declaredSpeedBaselines: baselines });
-    // The descriptor reads publication metadata too. Keep it in the same
-    // snapshot as the figures, including when a worker returns them later.
-    return { report: { commitSeq, result }, generation: describeLocalIndexGeneration(database, result, commitSeq) };
+    const report = readLocalIndexReport(database, { nowMs, declaredSpeedBaselines: baselines });
+    return { report, generation: describeLocalIndexGeneration(database, report, commitSeq) };
   }));
   signal?.throwIfAborted();
-  const { commitSeq, buildInProgress, expandedBuckets, readWallMs, ...projection } = report.result;
+  if (generation === null) return unavailable("missing");
+  const { commitSeq, buildInProgress, expandedBuckets, readWallMs, ...projection } = report;
   void commitSeq; void expandedBuckets;
-  const companion = {
+  return {
     ...projection,
-    generatedAt: generation === null || generation.completedAtMs === 0
-      ? null : new Date(generation.completedAtMs).toISOString(),
-    indexStatus: generation?.status ?? "unknown",
+    generatedAt: generation.completedAtMs === 0 ? null : new Date(generation.completedAtMs).toISOString(),
+    indexStatus: generation.status,
     generation,
-    rolloutIssueCounts: generation?.issueCounts ?? {},
+    rolloutIssueCounts: generation.issueCounts ?? {},
     indexBytes: size,
     buildInProgress,
     readWallMs,
   };
-  // A store that was created but never committed has nothing to project.
-  if (generation === null) return { companion: unavailable("missing"), workUsage: null };
-  let workUsage = null;
-  if (includeWorkUsage) {
-    try {
-      workUsage = await timing.measure("projection_work",()=>readLocalIndexWorkUsage({
-        database, indexFile, codexHome, secretFile, nowMs, signal, declaredSpeedBaselines: baselines,
-        onTiming, monotonicClock,
-      }));
-      const settled = Number(database.prepare(
-        "SELECT commit_seq AS n FROM store_state WHERE id = 1",
-      ).get().n);
-      if (settled !== report.commitSeq) {
-        // A refresh committed between the two reads; claim nothing for work.
-        workUsage = { status: "unavailable", asOfMs: nowMs, errorCode: "work_usage_unavailable" };
-      }
-    } catch (error) {
-      signal?.throwIfAborted();
-      workUsage = {
-        status: "unavailable",
-        asOfMs: nowMs,
-        errorCode: error?.code === "work_usage_capacity_exceeded"
-          ? error.code : "work_usage_unavailable",
-      };
-    }
-  }
-  return { companion, workUsage };
 }

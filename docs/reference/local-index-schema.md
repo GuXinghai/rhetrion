@@ -897,6 +897,34 @@ refuses the pass and receives at most two discovery retries under the same
 cancellation/deadline, rather than establishing durable invalid lineage.
 Stable invalid cutoffs still quarantine.
 
+Discovery also reports closed, content-free subcodes in the process-local
+refresh status at `timing.reuse`, with `phase: "index"` and aggregate `calls`.
+The scanner's optional `onLineageDiagnostic(code)` observer carries only the
+fixed code; observer failures cannot change proof, retry or quarantine.
+
+| Subcode | Evidence |
+| --- | --- |
+| `lineage_metadata_missing` | A source has no usable session identity |
+| `lineage_parent_ambiguous` | An inline parent has multiple unresolved heads |
+| `lineage_replacement_mode_invalid`, `lineage_reset_invalid` | A replacement lacks paginated mode, or its independent reset lacks a valid zero ordinal |
+| `lineage_base_invalid`, `lineage_parent_missing` | A malformed history base, or no unique referenced physical parent |
+| `lineage_cutoff_out_of_bounds`, `lineage_cutoff_ordinal_invalid` | Cutoff bytes exceed the stable parent size, or the ordinal range is invalid |
+| `lineage_cutoff_truncated`, `lineage_cutoff_boundary_invalid`, `lineage_cutoff_line_count_mismatch` | A stable decoded prefix is short, ends inside a line, or has the wrong line count |
+| `lineage_parent_content_invalid` | A decoder rejects content after stable physical-state revalidation |
+| `lineage_physical_cycle`, `lineage_logical_cycle` | A physical history cycle, or an unresolved logical cycle/dependency |
+| `lineage_dependency_invalid` | A required present ancestor is already quarantined |
+| `lineage_parent_changed`, `lineage_parent_short_read` | Guarded parent state changed, or a positional read returned fewer bytes than requested |
+| `lineage_parent_open_failed`, `lineage_parent_read_failed`, `lineage_parent_close_failed` | The corresponding I/O operation failed; no OS error text or path is projected |
+
+Stable subcodes count selected quarantined logical groups; shared rejected
+cutoffs retain their cause while avoiding repeated prefix reads within a pass.
+Transient subcodes count failed attempts before bounded discovery retry. They
+never establish durable invalid lineage. Cancellation and resource limits
+retain their own control errors. These diagnostics do not enter the database,
+discovery fingerprints or persisted caches. Existing durable reason enums and
+schema versions stay unchanged; old generic receipts cannot prove a subcause
+retroactively.
+
 When a retained API source is explicitly excluded from subscription statistics,
 its open historical gaps may become `superseded`, rather than `repaired`.
 This requires a stable read of the explicit API declaration, the original
@@ -1086,6 +1114,16 @@ covered instant may replace their saved projection. The browser retains the
 newer visible report and its date when a replacement returns an older saved
 fallback, while continuing to poll the replacement or displaying its failure.
 No source records or accounting timestamps are rewritten by this ordering rule.
+
+The separate authoritative dashboard snapshot uses the same v1 envelope with
+path-specific closed nested DTO validation on both write and restore. Dataset
+field lists are shared with the builder; unknown nested fields and serialization
+hooks are refused before they can become retained or restored report data.
+Known valid JSON, explicit unknown/stale evidence and accounting-completeness
+requirements are unchanged. Refusal preserves saved evidence without rewriting
+its format or treating missing data as zero. Windows snapshot and device-salt
+access additionally require the native protection described in the
+[privacy reference](./local-data-and-privacy.md#credential-manager-and-credential-state).
 
 ## Compressed Codex histories
 

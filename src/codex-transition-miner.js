@@ -1,4 +1,4 @@
-import { localCodexLogScanner } from "./local-node-runtime.js";
+import { localCodexLogScanner } from "./local-codex-runtime.js";
 import { validAbortSignal } from "./valid-abort-signal.js";
 import {
   fastQuotaMultiplier,

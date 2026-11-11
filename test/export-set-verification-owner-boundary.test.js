@@ -19,8 +19,6 @@ import * as compressionOwner from "../src/export/compression.js";
 import * as exportIndex from "../src/export/index.js";
 import * as schemaOwner from "../src/export/set-schema.js";
 import * as verificationOwner from "../src/export/set-verification.js";
-import * as legacyCompression from "../src/export-compression.js";
-import * as legacySchema from "../src/export-set-schema.js";
 import * as legacyVerifier from "../src/export-set-verifier.js";
 import * as platform from "../src/platform/index.js";
 import * as platformOwner from
@@ -61,11 +59,21 @@ async function source(relativePath) {
   return readFile(resolve(REPOSITORY_ROOT, relativePath), "utf8");
 }
 
-test("export-set schema owner and compatibility API are exact identities", () => {
+test("retired export forwarding entrypoints stay absent", async () => {
+  for (const relativePath of [
+    "src/export-compression.js",
+    "src/export-schema.js",
+    "src/export-set-schema.js",
+    "src/export-supplemental-source-plan.js",
+    "src/export-workspace-discard-schema.js",
+  ]) {
+    await assert.rejects(source(relativePath), { code: "ENOENT" });
+  }
+});
+
+test("export-set schema public API exposes the owner identities", () => {
   assert.deepEqual(Object.keys(schemaOwner).sort(), [...SCHEMA_EXPORTS].sort());
-  assert.deepEqual(Object.keys(legacySchema).sort(), [...SCHEMA_EXPORTS].sort());
   for (const name of SCHEMA_EXPORTS) {
-    assert.equal(legacySchema[name], schemaOwner[name], name);
     assert.equal(exportIndex[name], schemaOwner[name], name);
   }
   assert.equal(
@@ -76,27 +84,18 @@ test("export-set schema owner and compatibility API are exact identities", () =>
   const candidate = {
     schemaVersion: "invalid",
   };
-  assert.equal(
-    schemaOwner.assertValidExportSetManifest,
-    legacySchema.assertValidExportSetManifest,
-  );
   assert.throws(
     () => schemaOwner.assertValidExportSetManifest(candidate),
     /Privacy export-set manifest failed validation/u,
   );
 });
 
-test("shared compression owner and compatibility API preserve identity", () => {
+test("compression public API exposes the owner identities", () => {
   assert.deepEqual(
     Object.keys(compressionOwner).sort(),
     [...COMPRESSION_EXPORTS].sort(),
   );
-  assert.deepEqual(
-    Object.keys(legacyCompression).sort(),
-    [...COMPRESSION_EXPORTS].sort(),
-  );
   for (const name of COMPRESSION_EXPORTS) {
-    assert.equal(legacyCompression[name], compressionOwner[name], name);
     assert.equal(exportIndex[name], compressionOwner[name], name);
   }
 });
@@ -168,14 +167,6 @@ test("platform mechanics and flat modules respect the composition boundary", asy
     storage,
     /\.\.\/(?:application|export)(?:\/|["'])/u,
   );
-
-  const schemaShim = await source("src/export-set-schema.js");
-  assert.doesNotMatch(schemaShim, /\b(?:function|class)\b/u);
-  assert.match(schemaShim, /from "\.\/export\/index\.js"/u);
-
-  const compressionShim = await source("src/export-compression.js");
-  assert.doesNotMatch(compressionShim, /\b(?:function|class)\b/u);
-  assert.match(compressionShim, /from "\.\/export\/index\.js"/u);
 
   const verifierShim = await source("src/export-set-verifier.js");
   assert.doesNotMatch(verifierShim, /export (?:async )?function|export class/u);

@@ -29,7 +29,7 @@ import {
   EXPORT_SUPPLEMENTAL_SOURCE_PLAN_VERSION,
   normalizeSupplementalSourcePlan,
   summarizeSupplementalSourcePlan,
-} from "../src/export-supplemental-source-plan.js";
+} from "../src/export/index.js";
 import { isProxy } from "node:util/types";
 const {
   createEmptyCodexCheckpointState,

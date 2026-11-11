@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, access } from "node:fs/promises";
 import test from "node:test";
 import { CODEX_PLAN_TYPES, REVIEWED_CODEX_MODEL_IDS } from "@app-usagemonitor/codex-catalog";
-import { exportSchemas, validateExportRecord } from "../src/export-schema.js";
+import { exportSchemas, validateExportRecord } from "../src/export/bundle-verification.js";
 import { exportCompatibilityTuple } from "../src/export-contract.js";
 import { buildLocalExportContract, serializeLocalExportContract } from "../scripts/generate-local-export-contract.js";
 import { exportDeletionJournalChunkBasenames } from "../src/export/index.js";

@@ -1,45 +1,57 @@
-import { DEFAULT_UNKNOWN_SPEED_POLICY, validateUnknownSpeedPolicy, unknownSpeedScenario, unknownSpeedCalibrationOptions } from "./unknown-speed-policy.js";
-import { openLocalIndexStore, readCommitSeq } from "./local-index-store.js";
-import { REPLAY_SAFE_CALIBRATION_INTERNALS } from "./replay-safe-accounting-cache.js";
-import { readCodexLocalThreadUsageRelations } from "./platform/index.js";
-import { buildWeeklyApiIntervals, unavailableWeeklyApiIntervals } from "./weekly-api-intervals.js";
-import { speedApiPrice } from "./speed-api-cost.js";
-import { createLocalRefreshTimer } from "./local-refresh-timing.js";
-
-const {
+import {
   ACCOUNTING_RSS_CHECK_INTERVAL,
+  ACCOUNTING_SPARK_MODEL as SPARK_MODEL,
+  accountingError as fixedError,
+  accountingModel as safeModel,
+  throwIfAccountingAborted as throwIfAborted,
+} from "./accounting-values.js";
+import {
+  createAccountingPricer,
+  projectAccountingUsageEvent as eventProjection,
+} from "./accounting-pricing.js";
+import {
   ALLOWANCE_CAPACITY_SCHEMA_VERSION,
   ALLOWANCE_HISTORY_WINDOW_MINUTES,
-  ALLOWANCE_SCENARIO_CANDIDATES,
   COMPACT_SNAPSHOT_RETAINED_BYTES,
   COMPACT_USAGE_RETAINED_BYTES,
-  FIVE_HOUR_WINDOW_MINUTES,
-  PARSER_VERSION,
   PLAN_SCOPED_ATTRIBUTION_METHOD_VERSION,
-  SPARK_MODEL,
   STREAMED_USAGE_MEMO_BYTES,
   STREAMED_USAGE_STAMP_BYTES,
   UNIFIED_CALIBRATION_READ_BATCH_ROWS,
   calibrationCohortId,
   calibrationPlanEvidence,
-  codexPrimaryAllowanceBasis,
   compositionFitFailureReason,
-  cooperativeYield,
-  createAccountingPricer,
-  declaredSpeedModeAt,
   deriveBoundedWeeklyCalibrationSeries,
-  eventProjection,
   fitPlanCompositionsFromCorpus,
   historicalPlanComparisonReceipts,
-  fixedError,
   planScopedTimelineReceipt,
-  projectBoundedWeeklyCalibrationSummary,
-  safeModel,
-  throwIfAborted,
+  projectAccountingQuotaSnapshot as weeklyRateLimitProjection,
+  projectAccountingTransitionUsage as transitionUsageProjection,
   transitionResourceLimits,
-  transitionUsageProjection,
-  weeklyRateLimitProjection,
-} = REPLAY_SAFE_CALIBRATION_INTERNALS;
+  yieldAccountingWork as cooperativeYield,
+} from "./accounting-calibration.js";
+import { codexPrimaryAllowanceBasis } from "./codex-primary-allowance-basis.js";
+import { declaredSpeedModeAt } from "./codex-speed-baseline.js";
+import { PARSER_VERSION } from "./codex-transition-miner.js";
+import { projectBoundedWeeklyCalibrationSummary } from "./reporting/index.js";
+import { FIVE_HOUR_WINDOW_MINUTES } from "@app-usagemonitor/quota-analysis";
+import {
+  DEFAULT_UNKNOWN_SPEED_POLICY,
+  validateUnknownSpeedPolicy,
+  unknownSpeedScenario,
+  unknownSpeedCalibrationOptions,
+} from "./unknown-speed-policy.js";
+import {
+  openLocalIndexStore,
+  readCommitSeq,
+} from "./local-index-store.js";
+import { readCodexLocalThreadUsageRelations } from "./platform/index.js";
+import {
+  buildWeeklyApiIntervals,
+  unavailableWeeklyApiIntervals,
+} from "./weekly-api-intervals.js";
+import { speedApiPrice } from "./speed-api-cost.js";
+import { createLocalRefreshTimer } from "./local-refresh-timing.js";
 
 // ---------------------------------------------------------------------------
 // Layer C over the local index store.

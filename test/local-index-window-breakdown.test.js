@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createAccountingPricer } from "../src/replay-safe-accounting-cache.js";
+import { createAccountingPricer } from "../src/accounting-pricing.js";
 
 import {
   LOCAL_WINDOW_BREAKDOWN_SCHEMA_VERSION,

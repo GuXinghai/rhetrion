@@ -23,6 +23,7 @@ import {
   normalizeAccountingFastPathFallbackCode,
 } from "./local-accounting-fast-path.js";
 import { writeLocalCollectorAccountingCache } from "./local-collector-state.js";
+import { EXPORT_RESOURCE_FAILURE_CODES } from "./export/index.js";
 import {
   ACCOUNTING_CALIBRATION_DEFAULT_HOURS,
   accountingCalibrationDue,
@@ -213,6 +214,31 @@ const UNIFIED_INDEX_PUBLIC_ERROR_CODES = new Set([
 ]);
 const DEFAULT_UNIFIED_INDEX_PUBLIC_ERROR_CODE =
   "local_unified_index_refresh_failed";
+const REFRESH_DIAGNOSTIC_CODES = new Set([
+  "refresh_failed", "refresh_timed_out", "refresh_resource_limited", "refresh_degraded", "refresh_cancelled",
+  "accounting_rebuild_deferred", "collection_failed", "quota_publication_failed",
+  "app_record_checkpoint_unavailable", "collector_invalid_size", "collector_unavailable",
+  "local_collector_state_missing", "local_collector_state_unavailable", "local_collector_state_corrupt",
+  "local_collector_state_schema_invalid", "local_collector_state_integrity_failed",
+  "local_collector_state_migration_busy", "local_collector_state_migration_lease_invalid",
+  "local_collector_state_migration_lease_unavailable", "local_collector_state_migration_lease_changed",
+  "local_collector_accounting_migration_required", "local_collector_accounting_window_cache_oversize",
+  "local_collector_accounting_window_cache_stale", "local_collector_projection_aborted",
+  "local_collector_projection_worker_failed", "local_companion_snapshot_reload_aborted",
+  "local_unified_companion_projection_aborted", "local_unified_companion_projection_worker_failed",
+  DEFAULT_UNIFIED_INDEX_PUBLIC_ERROR_CODE,
+  "collector_resource_limit_exceeded", "collector_resource_directory_entries_limit_exceeded",
+  "collector_resource_rollout_files_limit_exceeded", "collector_resource_source_bytes_limit_exceeded",
+  "codex_log_discovery_directory_entries", "codex_log_discovery_rollout_files",
+]);
+
+/** A diagnostic sink admits reviewed failures, never an arbitrary code-shaped string. */
+export function normalizeLocalRefreshDiagnosticCode(value) {
+  return REFRESH_DIAGNOSTIC_CODES.has(value) || PUBLIC_REFRESH_ERROR_CODES.has(value)
+    || ACCOUNTING_UNAVAILABLE_CODES.has(value) || ACCOUNTING_RESOURCE_LIMIT_CODES.has(value)
+    || ACCOUNTING_TERMINAL_FAILURE_CODES.has(value) || UNIFIED_INDEX_PUBLIC_ERROR_CODES.has(value)
+    || EXPORT_RESOURCE_FAILURE_CODES.includes(value) ? value : null;
+}
 const ROLLOUT_QUARANTINE_CODES = Object.freeze([
   "codex_rollout_compression_unsupported",
   "codex_rollout_filename_identity_mismatch",
@@ -274,7 +300,7 @@ const DIAGNOSTIC_REFERENCE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
  * The onTerminalFailure sink for LocalCompanionRefreshController: shapes a
  * settled failed or degraded refresh into one bounded diagnostics note and rate-limits
  * it. Everything written is either chosen from a fixed set (surface, step),
- * identifier-shaped and pattern-checked (codes), or minted here (the
+ * chosen from the reviewed failure vocabulary (codes), or minted here (the
  * reference). No message text, path, or payload can pass through.
  */
 export function createTerminalRefreshFailureRecorder({
@@ -290,18 +316,12 @@ export function createTerminalRefreshFailureRecorder({
   }
   const lastNoteAtBySignature = new Map();
   return async function recordTerminalRefreshFailure(failure) {
-    const code = typeof failure?.errorCode === "string"
-        && REFRESH_FAILURE_CODE_PATTERN.test(failure.errorCode)
-      ? failure.errorCode
-      : "refresh_failed";
+    const code = normalizeLocalRefreshDiagnosticCode(failure?.errorCode) ?? "refresh_failed";
     const step = REFRESH_FAILURE_STEPS.has(failure?.failedStep)
       ? failure.failedStep
       : null;
-    const detail = typeof failure?.failureCode === "string"
-        && REFRESH_FAILURE_CODE_PATTERN.test(failure.failureCode)
-        && failure.failureCode !== code
-      ? failure.failureCode
-      : null;
+    const detailCode = normalizeLocalRefreshDiagnosticCode(failure?.failureCode);
+    const detail = detailCode !== code ? detailCode : null;
     const signature = `${code}\0${step ?? ""}\0${detail ?? ""}`;
     const now = clock();
     const lastAt = lastNoteAtBySignature.get(signature);
@@ -363,10 +383,7 @@ export function createDeferredAccountingRebuildRecorder({
   }
   const lastNoteAtBySignature = new Map();
   return async function recordDeferredAccountingRebuild(outcome) {
-    const detail = typeof outcome?.reason === "string"
-        && REFRESH_FAILURE_CODE_PATTERN.test(outcome.reason)
-      ? outcome.reason
-      : null;
+    const detail = normalizeLocalRefreshDiagnosticCode(outcome?.reason);
     const signature = `accounting_rebuild_deferred\0accounting\0${detail ?? ""}`;
     const now = clock();
     const lastAt = lastNoteAtBySignature.get(signature);
@@ -887,7 +904,6 @@ export function createLocalCollectorRefreshRunner({
   stateFile = null,
   accountObservationOperationLockFile = null,
   selectAccountObservationSecret = selectProductionAccountObservationSecret,
-  readAccountAttributionBinding = null,
   runCollector = runCollectorOnce,
   readAccountingCache = readReplaySafeAccountingCache,
   projectAccountingTime = projectLocalIndexAccountingTime,
@@ -935,9 +951,6 @@ export function createLocalCollectorRefreshRunner({
 } = {}) {
   if (typeof selectAccountObservationSecret !== "function") {
     throw new TypeError("selectAccountObservationSecret must be a function");
-  }
-  if (readAccountAttributionBinding !== null && typeof readAccountAttributionBinding !== "function") {
-    throw new TypeError("readAccountAttributionBinding must be a function or null");
   }
   if (typeof runCollector !== "function") throw new TypeError("runCollector must be a function");
   if (typeof readAccountingCache !== "function") {
@@ -1202,7 +1215,6 @@ export function createLocalCollectorRefreshRunner({
       maximumRecentEventKeys: 5_000,
       loadAccountObservationSecret: selection.loadAccountObservationSecret,
       resetEventClassifier,
-      ...(readAccountAttributionBinding === null ? {} : { readAccountAttributionBinding }),
     };
     // The headline pass uses the collector's ordinary atomic SQLite state
     // transaction with a much smaller read budget. It therefore publishes
@@ -1681,12 +1693,11 @@ export function createLocalCollectorRefreshRunner({
             codexHome,
             ...(stateFile === null ? {} : { stateFile }),
             now: clock,
-            sourceMode: "unified",
             // The scan window bounds only the periods/timeline scan and obeys
             // the standing rule above: extreme, never convenience-sized. The
             // calibration corpus does not follow this window at all.
             windowDays: ACCOUNTING_SCAN_WINDOW_DAYS,
-            ...(unifiedIndexFile === null ? {} : { unifiedIndexFile }),
+            ...(unifiedIndexFile === null ? {} : { indexFile: unifiedIndexFile }),
             expectedGeneration: unifiedIndex.generation,
             contextBehavior: "source_native",
             declaredSpeedBaselines,
@@ -1754,9 +1765,7 @@ export function createLocalCollectorRefreshRunner({
             + ACCOUNTING_REBUILD_BUDGET_BACKOFF_MS;
           accountingRebuildDeferredStreak += 1;
           accountingRebuildDeferred = {
-            reason: REFRESH_FAILURE_CODE_PATTERN.test(rebuilt.reason ?? "")
-              ? rebuilt.reason
-              : "accounting_rebuild_deferred",
+            reason: normalizeLocalRefreshDiagnosticCode(rebuilt.reason) ?? "accounting_rebuild_deferred",
             retained: rebuilt.retained === true,
             consecutive: accountingRebuildDeferredStreak,
           };
@@ -2205,10 +2214,7 @@ export function publicRefreshResult(result, now = Date.now()) {
     // rebuild that is never landing.
     projected.accountingRebuildDeferred = {
       status: "deferred",
-      reason: typeof deferred.reason === "string"
-          && REFRESH_FAILURE_CODE_PATTERN.test(deferred.reason)
-        ? deferred.reason
-        : "accounting_rebuild_deferred",
+      reason: normalizeLocalRefreshDiagnosticCode(deferred.reason) ?? "accounting_rebuild_deferred",
       retained: deferred.retained === true,
       consecutive: Number.isSafeInteger(deferred.consecutive)
           && deferred.consecutive >= 1
@@ -2559,7 +2565,7 @@ export class LocalCompanionRefreshController {
     this.#degradedNotified = true;
     try {
       Promise.resolve(this.#onDegradedOutcome({
-        reason: typeof deferred.reason === "string" ? deferred.reason : null,
+        reason: normalizeLocalRefreshDiagnosticCode(deferred.reason),
         retained: deferred.retained === true,
       })).catch(() => {});
     } catch {
@@ -2909,9 +2915,8 @@ export class LocalCompanionRefreshController {
           ...(REFRESH_FAILURE_STEPS.has(error?.refreshStep)
             ? { failedStep: error.refreshStep }
             : {}),
-          ...(typeof error?.code === "string"
-              && REFRESH_FAILURE_CODE_PATTERN.test(error.code)
-            ? { failureCode: error.code }
+          ...(normalizeLocalRefreshDiagnosticCode(error?.code) !== null
+            ? { failureCode: normalizeLocalRefreshDiagnosticCode(error.code) }
             : {}),
         };
         this.#notifyTerminalFailure();

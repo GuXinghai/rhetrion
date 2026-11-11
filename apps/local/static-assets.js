@@ -63,6 +63,10 @@ export const LOCAL_COMPANION_STATIC_FILES = Object.freeze({
     file: "local-progress-events.js",
     type: "text/javascript; charset=utf-8",
   }),
+  "/refresh-coordinator.js": Object.freeze({
+    file: "refresh-coordinator.js",
+    type: "text/javascript; charset=utf-8",
+  }),
   "/electron-tray-popup.html": Object.freeze({
     file: "electron-tray-popup.html",
     type: "text/html; charset=utf-8",

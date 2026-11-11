@@ -73,8 +73,11 @@ test("a legal parent append during discovery retries without removing child fact
       return ports.filesystem.openReadOnlyNoFollow(path);
     },
   } });
-  await refreshLocalIndex({ ...f.options, discover: args => { attempts++; return scanner.discoverCodexRolloutInfos(args); } });
+  const diagnostics = [];
+  await refreshLocalIndex({ ...f.options, onReuseDiagnostic: value => diagnostics.push(value),
+    discover: args => { attempts++; return scanner.discoverCodexRolloutInfos(args); } });
   assert.equal(attempts, 2);
+  assert.ok(diagnostics.some(value => value.phase === "index" && value.code === "lineage_parent_changed"));
   assert.deepEqual(f.facts(), expected);
 });
 
@@ -136,7 +139,9 @@ test("a partial tail preserves the gap until a complete replay succeeds", async 
 test("a stable invalid parent cutoff remains quarantined with an open gap", async t => {
   const f = await fixture(t); legacyQuarantine(f);
   await writeFile(f.parent, line(meta(ids[0], 0)));
-  await refreshLocalIndex(f.options);
+  const diagnostics = [];
+  await refreshLocalIndex({ ...f.options, onReuseDiagnostic: value => diagnostics.push(value) });
+  assert.ok(diagnostics.some(value => value.phase === "index" && value.code === "lineage_cutoff_out_of_bounds"));
   assert.equal(f.facts().quarantined, 1);
   assert.equal(f.facts().gaps[0].repair_status, "open");
 });

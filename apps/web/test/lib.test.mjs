@@ -2697,8 +2697,7 @@ async function createDashboardStartupHarness({
       schedule() { state.events.push(["preload-reports"]); },
     },
     localActionBusy: initialBusy,
-    localRefreshInProgress: false,
-    localRefreshStatusVersion: 0,
+    refreshCoordinator: { state: () => ({ running: false, version: 0 }) },
     localProgressEvents: { connection: () => "unavailable" },
     localAnalysisAllowed: () => true,
     localCompanionHealth: initialHealth,
@@ -3131,7 +3130,8 @@ test("first run is a truthful install and local preflight journey", async () => 
   assert.doesNotMatch(appSource, /loopbackHttp/u);
   assert.match(appSource, /function openInstalledApp\(\)/u);
   assert.match(appSource, /function localAnalysisAllowed\(/u);
-  assert.match(appSource, /if \(!localAnalysisAllowed\(\)\) \{/u);
+  const coordinatorSource = await readFile(new URL("../public/refresh-coordinator.js", import.meta.url), "utf8");
+  assert.match(coordinatorSource, /if \(!view\.analysisAllowed\(\)\) \{/u);
   for (const status of [
     "codex_home_missing",
     "codex_home_unreadable",
@@ -3159,30 +3159,32 @@ test("local analysis exposes quick results and cancel-safe progress", async () =
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
   const appSource = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 
+  const coordinatorSource = await readFile(new URL("../public/refresh-coordinator.js", import.meta.url), "utf8");
+
   assert.match(html, /id="cancel-refresh"[^>]*hidden/u);
-  assert.match(appSource, /localClient\.cancelRefresh\(\)/u);
-  assert.match(appSource, /\["running", "cancelling"\]\.includes\(outcome\)/u);
-  assert.match(appSource, /phase === "quick_result"/u);
-  assert.match(appSource, /await loadQuickResultDashboard\(\)/u);
+  assert.match(coordinatorSource, /client\.cancelRefresh\(\)/u);
+  assert.match(coordinatorSource, /\["running", "cancelling"\]\.includes\(outcome\)/u);
+  assert.match(coordinatorSource, /phase === "quick_result"/u);
+  assert.match(coordinatorSource, /await view\.quickReload\(\)/u);
   assert.match(appSource, /renderDashboard\(data\)/u);
-  assert.match(appSource, /await localProgressEvents\.wait\(eventCursor, \{ signal: waitController\.signal, timeoutMs: remaining \}\)/u);
-  assert.match(appSource, /localProgressEvents\.connection\(\) !== "connected"/u);
-  assert.match(appSource, /refreshAccountingStatus\(\{ progress \}\)/u);
-  assert.match(appSource, /refreshProgressClock\.update\(phase, \{ processed, selected \}\)/u);
-  assert.match(appSource, /const accountingStatus = outcome === "running"/u);
-  assert.match(appSource, /const collectorProgress = progress\?\.kind === undefined/u);
-  assert.match(appSource, /if \(\(refresh\.quickResultAt \|\| \(collectorProgress && progress\?\.phase === "quick_result"/u);
-  assert.match(appSource, /const countedProgress = collectorProgress \|\| unifiedIndexScanning/u);
-  assert.match(appSource, /outcome === "cancelling"[\s\S]*?accountingStatus !== null/u);
-  assert.doesNotMatch(appSource, /Verified summary ready|Preparing verified summary/u);
-  assert.match(appSource, /kind === "unified_index"/u);
+  assert.match(coordinatorSource, /await events\.wait\(eventCursor, \{ signal: waitController\.signal, timeoutMs: remaining \}\)/u);
+  assert.match(coordinatorSource, /events\.connection\(\) !== "connected"/u);
+  assert.match(coordinatorSource, /refreshAccountingStatus\(\{ progress \}\)/u);
+  assert.match(coordinatorSource, /refreshProgressClock\.update\(phase, \{ processed, selected \}\)/u);
+  assert.match(coordinatorSource, /const accountingStatus = outcome === "running"/u);
+  assert.match(coordinatorSource, /const collectorProgress = progress\?\.kind === undefined/u);
+  assert.match(coordinatorSource, /if \(\(refresh\.quickResultAt \|\| \(collectorProgress && progress\?\.phase === "quick_result"/u);
+  assert.match(coordinatorSource, /const countedProgress = collectorProgress \|\| unifiedIndexScanning/u);
+  assert.match(coordinatorSource, /outcome === "cancelling"[\s\S]*?accountingStatus !== null/u);
+  assert.doesNotMatch(coordinatorSource, /Verified summary ready|Preparing verified summary/u);
+  assert.match(coordinatorSource, /kind === "unified_index"/u);
   assert.match(appSource, /Scanning local history/u);
-  assert.doesNotMatch(appSource, /Headline ready; finishing deeper accounting/u);
+  assert.doesNotMatch(coordinatorSource, /Headline ready; finishing deeper accounting/u);
   assert.match(translate("refresh.cancelRequestedCopy"), /keep a checkpoint so you can resume/u);
-  assert.match(appSource, /refresh_resource_limited/u);
-  assert.match(appSource, /refresh\.resourceTitle/u);
+  assert.match(coordinatorSource, /refresh_resource_limited/u);
+  assert.match(coordinatorSource, /refresh\.resourceTitle/u);
   assert.match(translate("refresh.resourceCopy"), /no partial result replaced them/u);
-  assert.match(appSource, /refresh\.continuationTitle/u);
+  assert.match(coordinatorSource, /refresh\.continuationTitle/u);
 });
 
 test("timeline keeps time, uncertainty, and primary navigation explicit", async () => {
@@ -4473,7 +4475,7 @@ test("diagnostic notes are recorded through a fixed, bounded local route", async
   const recorded = await client.recordDiagnosticNote({
     reference: "TT-7QF3K2",
     surface: "local_refresh",
-    code: "contribution_device_recovery_required",
+    code: "refresh_failed",
     requestId: "0f2c7a11-4b93-4bb2-9a7c-1c0d2e3f4a5b",
   });
   assert.deepEqual(recorded, { status: "recorded", reference: "TT-7QF3K2" });
@@ -4484,7 +4486,7 @@ test("diagnostic notes are recorded through a fixed, bounded local route", async
   assert.deepEqual(JSON.parse(calls[0].options.body), {
     reference: "TT-7QF3K2",
     surface: "local_refresh",
-    code: "contribution_device_recovery_required",
+    code: "refresh_failed",
     requestId: "0f2c7a11-4b93-4bb2-9a7c-1c0d2e3f4a5b",
   });
 
@@ -4504,7 +4506,8 @@ test("diagnostic notes are recorded through a fixed, bounded local route", async
   });
 
   // A coarse code is worth little to whoever reads the reference later, so the
-  // specific bound behind it travels too — under the same shape test, and only
+  // specific bound behind it travels too — from the closed resource vocabulary,
+  // and only
   // when there is one to send.
   await client.recordDiagnosticNote({
     reference: "TT-4HJ7M2",
@@ -4520,7 +4523,7 @@ test("diagnostic notes are recorded through a fixed, bounded local route", async
     detail: "export_resource_expanded_record_bytes",
     requestId: "",
   });
-  for (const detail of ["", "Failed reading /Users/private/state.json", 42]) {
+  for (const detail of ["", "Failed reading /Users/private/state.json", "export_resource_private_marker", 42]) {
     await client.recordDiagnosticNote({
       reference: "TT-4HJ7M3",
       surface: "local_refresh",
@@ -4532,6 +4535,14 @@ test("diagnostic notes are recorded through a fixed, bounded local route", async
       Object.hasOwn(JSON.parse(calls.at(-1).options.body), "detail"),
       false,
     );
+  }
+
+  for (const code of ["synthetic_private_marker", "SYNTHETIC_PRIVATE_MARKER", "accounting_private_marker",
+    "contribution_device_recovery_required"]) {
+    await client.recordDiagnosticNote({ reference: "TT-4HJ7M3", surface: "local_refresh", code });
+    const body = JSON.parse(calls.at(-1).options.body);
+    assert.equal(body.code, "unknown");
+    assert.equal(JSON.stringify(body).includes(code), false);
   }
 
   const callsBeforeInvalid = calls.length;
@@ -4605,7 +4616,7 @@ test("failed diagnostic writes reject and leave the user with only the reference
     client.recordDiagnosticNote({
       reference: "TT-7QF3K2",
       surface: "local_refresh",
-      code: "contribution_device_recovery_required",
+      code: "refresh_failed",
       requestId: "",
     }),
     (error) => error?.status === 500
@@ -4787,11 +4798,11 @@ test("a refresh finished by the native shell makes the page re-read its evidence
   // second overlapping read would only race it.
   assert.match(
     appSource,
-    /async function reloadLocalEvidenceAfterNativeRefresh\(\) \{[\s\S]*?if \(nativeEvidenceReloadInFlight \|\| localRefreshInProgress \|\| localActionBusy\) \{\s*\n\s*nativeEvidenceReloadPending = true;\s*\n\s*return;/u,
+    /async function reloadLocalEvidenceAfterNativeRefresh\(\) \{[\s\S]*?if \(nativeEvidenceReloadInFlight \|\| refreshCoordinator\.state\(\)\.running \|\| localActionBusy\) \{\s*\n\s*nativeEvidenceReloadPending = true;\s*\n\s*return;/u,
   );
   assert.doesNotMatch(appSource, /function scheduleReturningUserRefresh\(/u,
     "the companion owns return and startup collection scheduling");
-  assert.match(appSource, /async function observeOverviewPublication\(/u);
+  assert.match(appSource, /const \{ requestRefresh, cancelLocalAnalysis, observeOverviewPublication \} = refreshCoordinator;/u);
 });
 
 test("a chart says so when its series does not reach back as far as its label", async () => {

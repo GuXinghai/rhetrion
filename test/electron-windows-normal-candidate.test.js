@@ -25,7 +25,7 @@ import {
   inspectLocalOnboarding,
   prepareLocalInstallationRoots,
 } from "../src/local-installation-diagnostics.js";
-import { localCodexLogScanner } from "../src/local-node-runtime.js";
+import { localCodexLogScanner } from "../src/local-codex-runtime.js";
 import { WindowsProtectedStateStoreError } from "../src/platform/windows-protected-state-store.js";
 import { loadWindowsSourceReadBinding } from "../src/platform/windows-filesystem.js";
 import {

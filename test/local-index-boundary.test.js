@@ -17,8 +17,8 @@ const SOURCE_EXTENSIONS = /(?<!\.test)\.(?:js|mjs|cjs|ts|tsx)$/u;
 // store access; these facades own their own guarded reads and writes.
 const FACADE_IMPORTERS = new Map([
   ["apps/local/server.js", new Set(["local-index-backend.js", "local-index-runtime-model-evidence.js"])],
-  // The snapshot builder's default projection reader.
-  ["src/local-companion-data.js", new Set(["local-index-backend.js"])],
+  // The snapshot builder's companion reader and guarded workload lifecycle.
+  ["src/local-companion-data.js", new Set(["local-index-backend.js", "local-index-workload.js"])],
   ["src/local-companion-refresh.js", new Set(["local-index-accounting-reuse.js", "local-index-accounting-cache.js"])],
   ["src/local-accounting-fast-path.js", new Set(["local-index-accounting-window-cache.js"])],
   ["src/local-accounting-window-refresh.js", new Set(["local-index-accounting-windows.js", "local-index-accounting-window-cache.js"])],

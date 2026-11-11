@@ -5,15 +5,9 @@
 // never be rotated, renamed or regenerated. Every index generation, past and
 // future, derives its join keys from it.
 
-import { createHmac, createSecretKey, randomBytes } from "node:crypto";
-
-import { constants, lstatSync } from "node:fs";
-
-import { chmod, mkdir, open } from "node:fs/promises";
-
-import { dirname, resolve, join } from "node:path";
-
-const SECRET_BYTES = 32;
+import { createHmac, createSecretKey } from "node:crypto";
+import { dirname, resolve } from "node:path";
+import { readExistingDeviceSalt as readIndexSalt, readOrCreateDeviceSalt as createIndexSalt } from "./local-index-identity.js";
 
 const MAX_SECRET_BYTES = 256;
 
@@ -35,53 +29,9 @@ export function defaultLocalUnifiedIndexSecretPath(
   return resolve(dirname(resolve(indexFile)), "local-unified-index-device-salt-v1");
 }
 
-function ownerOnlyRegularFile(metadata) {
-  return metadata.isFile() && !metadata.isSymbolicLink() && metadata.nlink === 1;
-}
-
-function safeDirectoryComponent(metadata) {
-  return metadata.isDirectory() && !metadata.isSymbolicLink();
-}
-
-function captureSafeLocalUnifiedIndexDirectoryChain(indexFile) {
-  const chain = [];
-  let directory = dirname(resolve(indexFile));
-  while (true) {
-    let metadata;
-    try {
-      metadata = lstatSync(directory);
-    } catch {
-      throw fixedError("local_unified_index_file_invalid");
-    }
-    const parent = dirname(directory);
-    if (!safeDirectoryComponent(metadata)) {
-      throw fixedError("local_unified_index_file_invalid");
-    }
-    chain.push(Object.freeze({
-      path: directory,
-      dev: metadata.dev,
-      ino: metadata.ino,
-    }));
-    if (parent === directory) break;
-    directory = parent;
-  }
-  return Object.freeze(chain);
-}
-
-function sameLocalUnifiedIndexDirectoryChain(left, right) {
-  return left.length === right.length && left.every((entry, index) => (
-    entry.path === right[index].path
-      && entry.dev === right[index].dev
-      && entry.ino === right[index].ino
-  ));
-}
-
-function recheckLocalUnifiedIndexDirectoryChain(indexFile, expected) {
-  const current = captureSafeLocalUnifiedIndexDirectoryChain(indexFile);
-  if (!sameLocalUnifiedIndexDirectoryChain(expected, current)) {
-    throw fixedError("local_unified_index_file_invalid");
-  }
-  return current;
+function saltFailure(error) {
+  return fixedError(error?.code === "local_index_secret_invalid"
+    ? "local_unified_index_secret_invalid" : "local_unified_index_secret_unavailable");
 }
 
 /**
@@ -93,29 +43,8 @@ function recheckLocalUnifiedIndexDirectoryChain(indexFile, expected) {
 export async function readOrCreateDeviceSalt(
   secretFile = defaultLocalUnifiedIndexSecretPath(),
 ) {
-  await mkdir(dirname(resolve(secretFile)), { recursive: true, mode: 0o700 });
-  let handle;
-  try {
-    handle = await open(
-      secretFile,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
-        | (constants.O_NOFOLLOW ?? 0),
-      0o600,
-    );
-    const secret = randomBytes(SECRET_BYTES);
-    await handle.writeFile(secret);
-    await handle.sync();
-    return secret;
-  } catch (error) {
-    if (error?.code !== "EEXIST") {
-      throw fixedError("local_unified_index_secret_unavailable");
-    }
-  } finally {
-    await handle?.close();
-  }
-  const secret = await readExistingDeviceSalt(secretFile);
-  await chmod(secretFile, 0o600);
-  return secret;
+  try { return await createIndexSalt(secretFile); }
+  catch (error) { throw saltFailure(error); }
 }
 
 /**
@@ -127,37 +56,8 @@ export async function readOrCreateDeviceSalt(
 export async function readExistingDeviceSalt(
   secretFile = defaultLocalUnifiedIndexSecretPath(),
 ) {
-  const directoryChain = captureSafeLocalUnifiedIndexDirectoryChain(secretFile);
-  let readHandle;
-  try {
-    readHandle = await open(
-      secretFile,
-      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-    );
-    const metadata = await readHandle.stat();
-    if (!ownerOnlyRegularFile(metadata)
-        || metadata.size < SECRET_BYTES
-        || metadata.size > MAX_SECRET_BYTES) {
-      throw fixedError("local_unified_index_secret_invalid");
-    }
-    const buffer = await readHandle.readFile();
-    const finalMetadata = await readHandle.stat();
-    if (buffer.length !== metadata.size
-        || finalMetadata.dev !== metadata.dev
-        || finalMetadata.ino !== metadata.ino
-        || finalMetadata.size !== metadata.size
-        || finalMetadata.mtimeMs !== metadata.mtimeMs
-        || finalMetadata.ctimeMs !== metadata.ctimeMs) {
-      throw fixedError("local_unified_index_secret_invalid");
-    }
-    recheckLocalUnifiedIndexDirectoryChain(secretFile, directoryChain);
-    return buffer;
-  } catch (error) {
-    if (error?.code?.startsWith("local_unified_index_")) throw error;
-    throw fixedError("local_unified_index_secret_unavailable");
-  } finally {
-    await readHandle?.close();
-  }
+  try { return await readIndexSalt(secretFile); }
+  catch (error) { throw saltFailure(error); }
 }
 
 function reusableLocalDigestKey(deviceSalt) {

@@ -252,6 +252,121 @@ test("an out-of-range cutoff requires stable final dependency state before quara
   assert.equal((await f.discover()).receipt.status,"partial");
 });
 
+test("stable lineage failures report fixed subcodes without changing the durable receipt", async t => {
+  const cases = [
+    ["lineage_cutoff_out_of_bounds", f => ({ bytes: f.parentBytes.length + 1, lines: 3 })],
+    ["lineage_cutoff_boundary_invalid", f => ({ bytes: f.parentBytes.length - 1, lines: 2 })],
+    ["lineage_cutoff_line_count_mismatch", f => ({ bytes: f.parentBytes.length, lines: 3 })],
+    ["lineage_cutoff_ordinal_invalid", f => ({ bytes: f.parentBytes.length, lines: 0 })],
+    ["lineage_base_invalid", () => ({ bytes: -1, lines: 2 })],
+    ["lineage_replacement_mode_invalid", () => null],
+  ];
+  for (const [code, base] of cases) await t.test(code, async () => {
+    const f = fixture();
+    f.files.get(f.childPaths[0]).bytes = Buffer.from(`${metadata(base(f))}\n`);
+    const codes = [];
+    const actual = await f.discover({ onLineageDiagnostic: code => codes.push(code) });
+    assert.deepEqual(codes, [code]);
+    assert.deepEqual(actual.receipt.reasonCounts, { codex_rollout_lineage_invalid: 1 });
+    const withoutObserver = await f.discover();
+    assert.deepEqual(actual, withoutObserver, "diagnostics do not enter receipts or proof identity");
+    for (const observer of [() => { throw Error("synthetic-private-content"); },
+      async () => { throw Error("synthetic-private-content"); }]) {
+      assert.deepEqual(await f.discover({ onLineageDiagnostic: observer }), actual);
+    }
+    await new Promise(resolve => setImmediate(resolve));
+    assert.doesNotMatch(JSON.stringify(codes), /synthetic|rollout|11111111|22222222/);
+  });
+  await t.test("missing parent", async () => {
+    const f = fixture(), codes = []; f.files.delete(f.parentPath);
+    assert.equal((await f.discover({ onLineageDiagnostic: code => codes.push(code) })).receipt.status, "partial");
+    assert.deepEqual(codes, ["lineage_parent_missing"]);
+  });
+  await t.test("invalid reset ordinal", async () => {
+    const f = fixture(), codes = [];
+    const record = JSON.parse(metadata()); record.ordinal = 1; record.payload.history_mode = "paginated";
+    f.files.get(f.childPaths[0]).bytes = Buffer.from(`${JSON.stringify(record)}\n`);
+    await f.discover({ onLineageDiagnostic: code => codes.push(code) });
+    assert.deepEqual(codes, ["lineage_reset_invalid"]);
+  });
+});
+
+test("graph diagnostics distinguish absent metadata, ambiguous parents, cycles and invalid dependencies", async t => {
+  const other = "33333333-3333-4333-8333-333333333333";
+  for (const kind of ["metadata_missing", "parent_ambiguous", "physical_cycle", "logical_cycle", "dependency_invalid"]) {
+    await t.test(kind, async () => {
+      const f = fixture(), codes = [];
+      const parent = JSON.parse(metadata());
+      const otherPath = posix.join(HOME, "sessions", `rollout-2026-07-30T12-00-00-${other}.jsonl`);
+      if (kind === "metadata_missing") f.add(posix.join(HOME, "sessions", "synthetic-missing.jsonl"), '{"type":"synthetic_noop"}\n');
+      if (kind === "parent_ambiguous") {
+        const reset = JSON.parse(metadata()); reset.payload.history_mode = "paginated";
+        f.add(posix.join(HOME, "sessions", `rollout-2026-07-30T12-00-00-${THREAD}_${other}.jsonl`), `${JSON.stringify(reset)}\n`);
+        const child = JSON.parse(metadata(null, other)); child.payload.parent_thread_id = THREAD;
+        f.add(otherPath, `${JSON.stringify(child)}\n`);
+      }
+      if (kind === "physical_cycle") {
+        parent.payload.history_mode = "paginated";
+        parent.payload.history_base = { thread_id: REPLACEMENT, end_byte_offset: 0, end_ordinal_exclusive: 0 };
+        f.files.get(f.parentPath).bytes = Buffer.from(`${JSON.stringify(parent)}\n`);
+      }
+      if (kind === "logical_cycle") {
+        parent.payload.parent_thread_id = other;
+        const bytes = Buffer.from(`${JSON.stringify(parent)}\n`);
+        f.files.get(f.parentPath).bytes = bytes;
+        f.files.get(f.childPaths[0]).bytes = Buffer.from(`${metadata({ bytes: bytes.length, lines: 1 })}\n`);
+        const child = JSON.parse(metadata(null, other)); child.payload.parent_thread_id = THREAD;
+        f.add(otherPath, `${JSON.stringify(child)}\n`);
+      }
+      if (kind === "dependency_invalid") {
+        parent.payload.history_base = {};
+        const bytes = Buffer.from(`${JSON.stringify(parent)}\n`);
+        f.files.get(f.parentPath).bytes = bytes;
+        f.add(otherPath, `${metadata({ bytes: bytes.length, lines: 1 }, other)}\n`);
+      }
+      assert.equal((await f.discover({ onLineageDiagnostic: code => codes.push(code) })).receipt.status, "partial");
+      const expected = kind === "logical_cycle" ? ["lineage_logical_cycle", "lineage_logical_cycle"]
+        : kind === "dependency_invalid" ? ["lineage_base_invalid", "lineage_dependency_invalid"] : [`lineage_${kind}`];
+      assert.deepEqual(codes.sort(), expected.sort());
+      assert.doesNotMatch(JSON.stringify(codes), /synthetic|rollout|11111111|22222222|33333333/);
+      if (kind === "metadata_missing") {
+        f.files.get(posix.join(HOME, "sessions", "synthetic-missing.jsonl")).mtimeNs = NS - 86_400_000_000_000n;
+        codes.length = 0;
+        assert.equal((await f.discover({ onLineageDiagnostic: code => codes.push(code) })).receipt.status, "complete");
+        assert.deepEqual(codes, [], "an unrelated old invalid group is outside this diagnostic receipt");
+      }
+    });
+  }
+});
+
+test("transient cutoff diagnostics distinguish changed, open, read, short-read and close failures", async t => {
+  for (const kind of ["changed", "open_failed", "read_failed", "short_read", "close_failed"]) await t.test(kind, async () => {
+    const f = fixture(), codes = [];
+    const first = await f.discover(); f.cacheInspections(first);
+    const openOriginal = f.filesystem.openReadOnlyNoFollow;
+    const filesystem = { ...f.filesystem, async openReadOnlyNoFollow(path) {
+      if (kind === "open_failed") throw Error("synthetic-private-open");
+      const handle = await openOriginal(path);
+      if (kind === "read_failed") return { ...handle, async stat() { throw Error("synthetic-private-stat"); } };
+      if (kind === "short_read") return { ...handle, async read(...args) {
+        const result = await handle.read(...args); return { ...result, bytesRead: result.bytesRead - 1 };
+      } };
+      return handle;
+    } };
+    if (kind === "changed") f.state.onRead = file => { file.ctimeNs++; };
+    if (kind === "close_failed") f.state.failClose = true;
+    // New scanner and cached inspections isolate the cutoff reader from headers.
+    const scanner = createCodexLogScanner({ filesystem, lineReader: f.lineReader });
+    const options = { codexHome: HOME, startAt: "2026-07-30T10:00:00.000Z",
+      inspectionCache: info => first.infos.find(x => x.path === info.path),
+      onLineageDiagnostic: code => codes.push(code) };
+    await assert.rejects(scanner.discoverCodexRolloutInfos(options), { code: "codex_log_source_changed" });
+    assert.deepEqual(codes, [`lineage_parent_${kind}`]);
+    assert.doesNotMatch(JSON.stringify(codes), /synthetic|rollout|11111111|22222222/);
+    if (kind !== "open_failed") assert.equal(f.counters.opens, f.counters.closes);
+  });
+});
+
 test("the process-local proof cache evicts beyond its fixed entry bound", async () => {
   const f = fixture({ cutoffs: 2049 });
   assert.equal((await f.discover()).receipt.status, "complete");
@@ -259,6 +374,28 @@ test("the process-local proof cache evicts beyond its fixed entry bound", async 
   f.reset(); await f.discover();
   assert.ok(f.counters.bytes > 0, "the first of 2049 keys was evicted");
   f.reset(); await f.discover(); assert.equal(f.counters.bytes, 0);
+});
+
+test("cutoff cleanup cannot replace a resource limit or cancellation with a retry", async t => {
+  for (const kind of ["resource", "abort"]) await t.test(kind, async () => {
+    const f = fixture(), codes = [];
+    const first = await f.discover();
+    const control = kind === "resource"
+      ? Object.assign(Error("synthetic-private-limit"), { code: "export_resource_elapsed_time" })
+      : Object.assign(Error("synthetic-private-abort"), { name: "AbortError", code: "ABORT_ERR" });
+    const scanner = createCodexLogScanner({ filesystem: { ...f.filesystem,
+      async openReadOnlyNoFollow(path) {
+        const handle = await f.filesystem.openReadOnlyNoFollow(path);
+        return { ...handle, async read() { throw control; } };
+      },
+    }, lineReader: f.lineReader });
+    f.state.failClose = true;
+    await assert.rejects(scanner.discoverCodexRolloutInfos({ codexHome: HOME, startAt: "2026-07-30T10:00:00.000Z",
+      inspectionCache: info => first.infos.find(x => x.path === info.path),
+      onLineageDiagnostic: code => codes.push(code) }), error => error === control);
+    assert.deepEqual(codes, []);
+    assert.equal(f.counters.opens, f.counters.closes);
+  });
 });
 
 test("shared rejected cutoffs read once per discovery but are retried in the next pass", async t => {
@@ -281,8 +418,10 @@ test("shared rejected cutoffs read once per discovery but are retried in the nex
       if (compressed) assert.equal(f.counters.decoderCalls, 1);
       else assert.equal(f.counters.bytes, f.parentBytes.length);
       f.cacheInspections(first); f.reset();
-      const next = await f.discover();
+      const codes = [];
+      const next = await f.discover({ onLineageDiagnostic: code => codes.push(code) });
       assert.equal(next.receipt.status, "partial");
+      assert.deepEqual(codes, Array(32).fill("lineage_cutoff_line_count_mismatch"), "shared rejection retains its cause");
       assert.equal(f.counters.opens, 1);
       assert.equal(f.counters.closes, 1);
       if (compressed) assert.equal(f.counters.decoderCalls, 1);
@@ -371,12 +510,29 @@ test("a compressed decoder failure after its final yielded prefix never seeds a 
     },
   } });
   const options = { codexHome: HOME, startAt: "2026-07-30T10:00:00.000Z" };
-  const rejected = await scanner.discoverCodexRolloutInfos(options);
+  const codes = [];
+  const rejected = await scanner.discoverCodexRolloutInfos({ ...options, onLineageDiagnostic: code => codes.push(code) });
   assert.equal(scanner.codexRolloutDiscoveryReceipt(rejected).status, "partial");
+  assert.deepEqual(codes, ["lineage_parent_content_invalid"]);
   fail = false; f.reset();
   const complete = await scanner.discoverCodexRolloutInfos(options);
   assert.equal(scanner.codexRolloutDiscoveryReceipt(complete).status, "complete");
   assert.equal(f.counters.decoderCalls, 1);
+});
+
+test("a stable short decoded prefix reports truncation rather than a positional short read", {
+  skip: !supportsCompressedRollouts(),
+}, async () => {
+  const f = fixture({ compressed: true }), codes = [];
+  const scanner = createCodexLogScanner({ filesystem: f.filesystem, lineReader: { ...f.lineReader,
+    async *readCompressedRolloutBytes(source, options) {
+      for await (const chunk of f.lineReader.readCompressedRolloutBytes(source, options)) yield chunk.subarray(0, chunk.length - 1);
+    },
+  } });
+  const infos = await scanner.discoverCodexRolloutInfos({ codexHome: HOME, startAt: "2026-07-30T10:00:00.000Z",
+    onLineageDiagnostic: code => codes.push(code) });
+  assert.equal(scanner.codexRolloutDiscoveryReceipt(infos).status, "partial");
+  assert.deepEqual(codes, ["lineage_cutoff_truncated"]);
 });
 
 test("actual Node handle and named bigint metadata allow unchanged plain source reuse", async () => {

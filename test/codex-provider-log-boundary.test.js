@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import * as codexLocalUsageAnalysis from "../src/codex-local-usage-analysis.js";
-import { localCodexLogScanner } from "../src/local-node-runtime.js";
+import { localCodexLogScanner } from "../src/local-codex-runtime.js";
 import * as providerNormalization from "../src/providers/codex/log-normalization.js";
 import * as providerLogs from "../src/providers/codex/logs.js";
 import * as providerSurface from "../src/providers/codex/surface-classification.js";
@@ -190,6 +190,20 @@ test("the local Node composition exposes only bound scanner operations", () => {
   );
   assert.equal(Object.hasOwn(localCodexLogScanner, "scanAndPriceCodexLogs"), false);
   assert.equal(typeof codexLocalUsageAnalysis.scanAndPriceCodexLogs, "function");
+});
+
+test("ingestion composes the scanner independently of export transactions", async () => {
+  const source = await readFile(resolve(REPOSITORY_ROOT, "src/local-codex-runtime.js"), "utf8");
+  const imports = await extractEsmImports(source);
+  assert.deepEqual(imports.map(({ specifier }) => specifier), [
+    "./application/index.js", "./platform/index.js",
+  ]);
+  assert.doesNotMatch(source, /createLocalExport|createOwnerOnlyExport|local-node-runtime/u);
+  for (const file of ["src/local-index-refresh.js", "src/passive-collector.js", "src/codex-transition-miner.js"]) {
+    const imports = await extractEsmImports(await readFile(resolve(REPOSITORY_ROOT, file), "utf8"));
+    assert.ok(imports.some(({ specifier }) => specifier === "./local-codex-runtime.js"), file);
+    assert.equal(imports.some(({ specifier }) => specifier === "./local-node-runtime.js"), false, file);
+  }
 });
 
 test("the Codex log facade re-exports each pure provider binding by identity", () => {

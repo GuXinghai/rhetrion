@@ -25,7 +25,7 @@ import {
   normalizeTokenUsage,
   tokenComponentPresence,
 } from "./providers/codex/logs.js";
-import { localCodexLogScanner } from "./local-node-runtime.js";
+import { localCodexLogScanner } from "./local-codex-runtime.js";
 import {
   codexTierObservation,
   normalizeProviderTier,

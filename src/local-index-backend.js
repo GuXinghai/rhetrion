@@ -29,7 +29,6 @@ import { readLocalIndexWindowBreakdown } from "./local-index-window-breakdown.js
 import {reconcileRuntimeModelEvidence} from './local-index-runtime-model-evidence.js';
 import { createLocalRefreshTimer } from "./local-refresh-timing.js";
 import { createLocalIndexCompanionProjectionReader } from "./local-index-companion-projection-off-main.js";
-export { readLocalIndexWorkload, readWorkloadQuotaEvidence, workloadStateStore, workloadState } from "./local-index-workload.js";
 
 // The v2 index as one backend the local companion composes.
 //
@@ -72,16 +71,10 @@ function count(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
-/**
- * The projection reader for callers that compose no backend of their own. The
- * options are the cached reader's; `exactWindow` is a retired field the
- * previous index honoured and is dropped.
- */
+/** Companion-only reader for callers without a composed backend. */
 export async function readLocalIndexProjection(options = {}, controls = {}) {
-  const { exactWindow: _exactWindow, ...rest } = options;
-  void _exactWindow;
   return readLocalIndexCompanionProjection({
-    ...rest,
+    ...options,
     signal: controls?.signal ?? null,
   });
 }
@@ -240,15 +233,9 @@ export function createLocalIndexBackend({
 
   /** The refresh runner's `refreshAccounting` seam. */
   async function refreshAccounting({
-    // The previous implementation's routing options; the v2 cache is always
-    // unified and built from this backend's store.
-    sourceMode: _sourceMode,
-    unifiedIndexFile: requestedFile = null,
-    indexFile: _legacyAnalysisFile,
-    indexSecretFile: _legacyAnalysisSecretFile,
+    indexFile: requestedFile = null,
     ...options
   } = {}) {
-    void _sourceMode; void _legacyAnalysisFile; void _legacyAnalysisSecretFile;
     return refreshLocalIndexAccountingCache({
       ...options,
       indexFile: requestedFile ?? indexFile,
@@ -324,8 +311,7 @@ export function createLocalIndexBackend({
   const projectionReader = Object.freeze({
     reader: Object.assign(
       async function readProjection(options = {}, controls = {}) {
-        const read = options.includeWorkUsage ? readLocalIndexProjection : companionProjectionReader;
-        return read(
+        return companionProjectionReader(
           { ...options, indexFile: options.indexFile ?? indexFile },
           controls,
         );
@@ -333,9 +319,9 @@ export function createLocalIndexBackend({
       { close: () => companionProjectionReader.close() },
     ),
     validUntil: async ({
-      indexFile: file = indexFile, generationFingerprint, nowMs, includeWorkUsage = false,
+      indexFile: file = indexFile, generationFingerprint, nowMs,
     } = {}) => readLocalIndexProjectionValidUntil({
-      indexFile: file, generationFingerprint, nowMs, includeWorkUsage,
+      indexFile: file, generationFingerprint, nowMs,
     }),
     readGeneration: async ({ indexFile: file = indexFile } = {}) => (
       readLocalIndexGenerationIdentity({ indexFile: file })?.fingerprint ?? null

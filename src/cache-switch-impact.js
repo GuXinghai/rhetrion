@@ -6,9 +6,7 @@ import {
 } from "@app-usagemonitor/accounting";
 import { codexPrimaryAllowanceBasis } from "./codex-primary-allowance-basis.js";
 import { isLocalUnifiedIndexBoundaryParserVersion, reasoningEffortName } from "./codex-usage-vocabulary.js";
-import {
-  createAccountingPricer,
-} from "./replay-safe-accounting-cache.js";
+import { createAccountingPricer } from "./accounting-pricing.js";
 import { declaredSpeedModeAt } from "./codex-speed-baseline.js";
 import { projectRecordedTokenComponents } from "./reporting/index.js";
 

@@ -44,16 +44,8 @@ import {
   renderParticipantIdentitySourceState,
   selectProductionParticipantIdentity,
 } from "./export-identity-production.js";
-import {
-  localCodexLogScanner,
-  localExportDeletion,
-  localExportSetMaterialization,
-  localExportSetVerification,
-  localExportSourcePipeline,
-  localExportWorkspaceDiscard,
-  localMetadataBundleVerification,
-  localMetadataExport,
-} from "./local-node-runtime.js";
+import { localCodexLogScanner } from "./local-codex-runtime.js";
+import { localExportDeletion, localExportSetMaterialization, localExportSetVerification, localExportSourcePipeline, localExportWorkspaceDiscard, localMetadataBundleVerification, localMetadataExport } from "./local-node-runtime.js";
 import { readBoundedJsonLines } from "./bounded-jsonl.js";
 import { createExportResourceGuard, DEFAULT_EXPORT_RESOURCE_LIMITS } from "./export-resource-policy.js";
 import {
@@ -1279,9 +1271,28 @@ export async function run(
   throw new Error(`Unknown command: ${args.command}`);
 }
 
+const CLI_FAILURE_CODES = new Set([
+  "observation_read_failed", "observation_json_invalid",
+  "CLI_PATH_SAFETY_INVALID_PATH", "CLI_PATH_SAFETY_INVALID_LIST",
+  "CLI_PATH_SAFETY_INPUT_OUTPUT_COLLISION", "CLI_PATH_SAFETY_OUTPUT_COLLISION",
+]);
+
+/** The terminal boundary never quotes source, provider or operating-system text. */
+export function cliFailureCode(error) {
+  try {
+    const code = error?.code;
+    if (CLI_FAILURE_CODES.has(code)) return code;
+    if (code === "ENOENT") return "file_not_found";
+    if (code === "EACCES" || code === "EPERM") return "permission_denied";
+    if (code === "ABORT_ERR" || error?.name === "AbortError") return "operation_aborted";
+    if (error instanceof SyntaxError) return "invalid_json";
+  } catch { /* A hostile property must not escape this last error boundary. */ }
+  return "command_failed";
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   run().catch((error) => {
-    console.error(`usage-monitor: ${error.message}`);
+    console.error(`usage-monitor: ${cliFailureCode(error)}`);
     process.exitCode = 1;
   });
 }

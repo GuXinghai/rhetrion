@@ -5,7 +5,7 @@ import { APP_OFFICIAL_PRICE_CARDS } from "@app-usagemonitor/accounting";
 import { REVIEWED_MODEL_CATALOG, REVIEWED_CODEX_MODEL_IDS, REVIEWED_MODEL_CATALOG_VERSION, assertReviewedModelCatalogCompleteness, reviewedModelIdentity, codexRequestReasoningEffort, codexCacheReasoningConfiguration } from "@app-usagemonitor/codex-catalog";
 import * as browser from "../apps/web/public/codex-catalog.generated.js";
 import { recognizedCodexModelId, codexModelPricingStatus, codexModelAllowanceTrack } from "../src/export/registries.js";
-import { exportSchemas } from "../src/export-schema.js";
+import { exportSchemas } from "../src/export/bundle-verification.js";
 
 test("reviewed identity catalog covers priced OpenAI models and explicit aliases, never provider tools", () => {
   const models = REVIEWED_MODEL_CATALOG;

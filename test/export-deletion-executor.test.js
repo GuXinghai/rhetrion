@@ -27,8 +27,8 @@ import {
 import {
   exportSetChunkBasenames,
   EXPORT_SET_MANIFEST_VERSION,
-} from "../src/export-set-schema.js";
-import { decompressExportBytes } from "../src/export-compression.js";
+} from "../src/export/index.js";
+import { decompressExportBytes } from "../src/export/index.js";
 import { EXPORT_DELETION_JOURNAL_VERSION_V0_1, EXPORT_DELETION_JOURNAL_VERSION_V0_2, EXPORT_DELETION_JOURNAL_VERSION_V0_3 } from "../src/export/index.js";
 import { buildLocalExportDeletionPlan, planLocalExportDeletion } from "../src/export-deletion.js";
 import {
