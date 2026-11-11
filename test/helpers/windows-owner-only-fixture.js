@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { basename, dirname } from "node:path";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, symlink } from "node:fs/promises";
 import { createWindowsFilesystemAdapter, createWindowsProtectedStateStore } from "../../src/platform/index.js";
 
 export function assertWindowsOwnerOnly(path) {
@@ -24,6 +26,21 @@ export function grantSyntheticEveryoneRead(path) {
 // product state. Deliberately unsafe-state fixtures must keep their raw writes.
 export function createProtectedFixtureDirectory(path) {
   return createWindowsFilesystemAdapter().ensureDirectory(path);
+}
+
+export async function createProtectedFixtureTempDirectory(prefix) {
+  if (process.platform !== "win32") return mkdtemp(prefix);
+  const path = `${prefix}${randomUUID()}`;
+  createProtectedFixtureDirectory(path);
+  return path;
+}
+
+export async function writeSyntheticDestinationLock(path, pid, token) {
+  if (process.platform === "win32") {
+    writeInitialProtectedFixtureFile(path, JSON.stringify({
+      version: "export-destination-lock-v1", pid: Number(pid), token,
+    }));
+  } else await symlink(`pid=${pid};token=${token}`, path);
 }
 
 export function writeInitialProtectedFixtureFile(path, text) {

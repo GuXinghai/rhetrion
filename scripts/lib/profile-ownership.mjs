@@ -48,7 +48,8 @@ add("background", "file", ["desktop-settings/window-background-v1.json", "deskto
 add("x_reader", "file", ["desktop-settings/x-reader/x-reader-v1.json", "desktop-settings/x-reader/x-reader-pending-v1.json",
   "desktop-settings/x-reader/x-session-registry-v1.json", "desktop-settings/x-reader/x-state-operation.lock"]);
 add("x_import", "file", ["desktop-settings/x-import/manifest.json", "desktop-settings/x-import/popup.html",
-  "desktop-settings/x-import/popup.js", "desktop-settings/x-import/UsageMonitorXImport.exe", "desktop-settings/x-import/native-host.json"]);
+  "desktop-settings/x-import/popup.js", "desktop-settings/x-import/UsageMonitorXImport.exe", "desktop-settings/x-import/native-host.json",
+  "desktop-settings/x-import/setup-receipt-v1.json", "desktop-settings/x-import/setup-intent-v1.json"]);
 add("diagnostics", "file", ["startup-diagnostics/startup-diagnostic-v1.json", "desktop-settings/x-diagnostics/x-errors-v1.json"]);
 const dynamic = [
   { pattern: new RegExp(`^desktop-settings/background-${UUID}-${ORDINAL}\\.bin$`, "u"), owner: "background", kind: "file" },

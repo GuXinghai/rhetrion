@@ -6,7 +6,9 @@ import { createWorkUsageProjectResolver, createCodexWorkUsageProjectResolver,
   readCodexLocalProjectMemberships, readCodexLocalThreadUsageRelations,
   readCodexLocalRepositoryOrigins } from "../../src/platform/index.js";
 import { createWorkUsageCollectorCore } from "../../src/local-index-work-usage.js";
-import { readCommitSeq } from "../../src/local-index-store.js";
+import { LOCAL_INDEX_PARSER_VERSION, readCommitSeq } from "../../src/local-index-store.js";
+import { readLocalIndexCacheCandidateRowsExact } from "../../src/local-index-report.js";
+import { analyzeCacheImpactRows } from "../../src/cache-switch-impact.js";
 import { projectRecordedTokenComponents } from "../../src/reporting/index.js";
 
 // Synthetic committed facts only. Deliberately avoid rollups, usageProjection,
@@ -119,6 +121,21 @@ export function reportSpeedOracle(facts, nowMs, ledger) {
     const result = (total, rows) => ({ ...finish(total), byModel: Object.fromEntries([...rows].map(([model, value]) => [model, finish(value)])) });
     return [id, { ...result(main, models), spark: result(spark, sparkModels) }];
   }));
+}
+
+// Reuse the reviewed scenario classification, but bypass the optimized candidate
+// query and memoized pricer. The public ledger prices both sides of each
+// counterfactual independently; classifier semantics have hand-calculated and
+// negative coverage in cache-switch-impact.test.js.
+export function cacheImpactPricingOracle(database, nowMs, ledger) {
+  return analyzeCacheImpactRows(readLocalIndexCacheCandidateRowsExact(database, nowMs + 5 * 60_000), {
+    nowMs,
+    declaredSpeedBaselines: ledger,
+    boundaryParser: value => value === LOCAL_INDEX_PARSER_VERSION,
+    pricer: (event, components) => priceCodexUsageEvent({ ...event, components }, {
+      apiServiceTier: "standard", priceEpochBasis: "event_time",
+    }),
+  });
 }
 
 // Reuse only identity/family assembly and exact cell accumulation. Fact reading,

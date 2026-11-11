@@ -84,7 +84,7 @@ export function createExportWorkspaceContract(configuration = {}) {
   const EXPORT_SOURCE_PLAN_VERSION = ownString(ownValue(configuration, "EXPORT_SOURCE_PLAN_VERSION"), isProxy);
   const EXPORT_SUPPLEMENTAL_SOURCE_PLAN_VERSION = ownString(ownValue(configuration, "EXPORT_SUPPLEMENTAL_SOURCE_PLAN_VERSION"), isProxy);
 
-  const EXPORT_WORKSPACE_VERSION = "local-export-workspace-v1";
+  const EXPORT_WORKSPACE_VERSION = "local-export-workspace-v2";
   const DEFAULT_EXPORT_WORKSPACE_MAXIMUM_BYTES = DEFAULT_EXPORT_RESOURCE_LIMITS.maximumWorkspaceBytes;
   const DEFAULT_EXPORT_WORKSPACE_BATCH_RECORDS = DEFAULT_EXPORT_RESOURCE_LIMITS.maximumSqliteBatchRecords;
   const EXPORT_WORKSPACE_DATABASE_BASENAME = "workspace.sqlite3";
@@ -131,7 +131,7 @@ export function createExportWorkspaceContract(configuration = {}) {
   }
   function validSupplementalSourcePlanSummary(value) {
     return exactKeys(value, ["schemaVersion", "supplementalSourcePlanSha256", "sourceCount", "sourceFiles", "sourceBytes"])
-      && [EXPORT_SUPPLEMENTAL_SOURCE_PLAN_VERSION, "supplemental-export-source-plan-v1"].includes(value.schemaVersion)
+      && value.schemaVersion === EXPORT_SUPPLEMENTAL_SOURCE_PLAN_VERSION
       && validSha256(value.supplementalSourcePlanSha256)
       && safeCount(value.sourceCount) && safeCount(value.sourceFiles) && safeCount(value.sourceBytes);
   }

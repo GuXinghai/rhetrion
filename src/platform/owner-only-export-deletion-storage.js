@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat as nodeLstat, open as nodeOpen, rename, unlink } from "node:fs/promises";
+import { lstat as nodeLstat, open as nodeOpen, rename } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { isProxy } from "node:util/types";
 
@@ -12,6 +12,7 @@ import { createOwnerOnlyExportArtifactStorageContext } from "./owner-only-export
 import { readBoundedDirectoryEntries as readBoundedDirectoryEntriesImpl } from "./bounded-directory-reader.js";
 
 import { exactLstat, exactOpen } from "./exact-filesystem-stats.js";
+import { createWindowsFilesystemAdapter } from "./windows-filesystem.js";
 const lstat = (path) => exactLstat(path, nodeLstat);
 const open = (path, flags, mode) => exactOpen(path, flags, nodeOpen, mode);
 
@@ -226,8 +227,15 @@ export function createOwnerOnlyExportDeletionStorage(configuration = {}) {
     args,
   );
 
-  async function unlinkDurably(path) {
-    await unlink(path);
+  async function unlinkDurably(path, artifact) {
+    try {
+      const adapter = createWindowsFilesystemAdapter();
+      if (typeof adapter.deleteExactFile !== "function") fail("replacement");
+      adapter.deleteExactFile(path, {
+        device: artifact.stats.dev, inode: artifact.stats.ino,
+        byteSize: Number(artifact.stats.size), sha256: artifact.sha256,
+      });
+    } catch { fail("replacement"); }
     await syncDirectory(dirname(path));
   }
 
@@ -237,24 +245,8 @@ export function createOwnerOnlyExportDeletionStorage(configuration = {}) {
     }
     const directory = dirname(resolve(path));
     await assertOwnerControlledDirectory(directory);
-    let handle;
-    try {
-      handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
-      await handle.chmod(0o600);
-      await handle.writeFile(content, "utf8");
-      await handle.sync();
-      const stats = await handle.stat();
-      if (!stats.isFile() || stats.nlink !== 1 || stats.size !== Buffer.byteLength(content, "utf8")
-          || (typeof process.getuid === "function" && stats.uid !== process.getuid())) {
-        throw new Error("Owner-only deletion control validation failed");
-      }
-      await handle.close();
-      handle = null;
-      await syncDirectory(directory);
-    } catch (error) {
-      await handle?.close().catch(() => {});
-      throw error;
-    }
+    createWindowsFilesystemAdapter().createFile(path, Buffer.from(content, "utf8"));
+    await syncDirectory(directory);
   }
 
 const MAX_CONTROL_BYTES = 1024 * 1024;
@@ -470,7 +462,7 @@ async function quarantineThenUnlink(path, expected, quarantinePath, {
   const quarantined = await readExactFile(quarantinePath);
   if (quarantined) {
     if (!evidenceMatches(quarantined, expected)) fail("replacement");
-    await unlinkDurably(quarantinePath);
+    await unlinkDurably(quarantinePath, quarantined);
     return true;
   }
   const current = await readExactFile(path);
@@ -487,7 +479,7 @@ async function quarantineThenUnlink(path, expected, quarantinePath, {
   const moved = await readExactFile(quarantinePath);
   if (!moved || !evidenceMatches(moved, expected)) fail("replacement");
   if (quarantineStage) await failpoint(quarantineStage, detail);
-  await unlinkDurably(quarantinePath);
+  await unlinkDurably(quarantinePath, moved);
   return true;
 }
 
@@ -757,7 +749,8 @@ async function deleteLocalExport(options) {
     }
     const journalText = stableJson(plan.journal);
     const markerValue = {
-      schemaVersion: plan.journal.schemaVersion === "usage-export-deletion-journal-v0.3" ? EXPORT_DELETION_COMMIT_MARKER_VERSION : "usage-export-deletion-commit-marker-v0.1",
+      schemaVersion: ["usage-export-deletion-journal-v0.3", "usage-export-deletion-journal-v0.4"].includes(plan.journal.schemaVersion)
+        ? EXPORT_DELETION_COMMIT_MARKER_VERSION : "usage-export-deletion-commit-marker-v0.1",
       planVersion: EXPORT_DELETION_PLAN_VERSION,
       deletionOrderVersion: plan.journal.deletionOrderVersion,
       state: "committed",

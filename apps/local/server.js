@@ -1060,6 +1060,7 @@ function createPreparedLocalCompanionServer({
       signal = null,
       unifiedProjectionReuse = null,
       previousWorkload = null,
+      previousWorkloadScope = null,
       workloadSourceFresh = false,
       workloadErrors = [],
       onTiming = null,
@@ -1075,6 +1076,7 @@ function createPreparedLocalCompanionServer({
       unifiedProjectionReader,
       unifiedProjectionReuse,
       previousWorkload,
+      previousWorkloadScope,
       workloadLiveSinceMs,
       workloadSourceFresh,
       workloadErrors:[...workloadErrors,...(runtimeModelEvidence.status().errorCode

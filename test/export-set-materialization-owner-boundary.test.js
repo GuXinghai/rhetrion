@@ -719,8 +719,8 @@ test("manifest comparison recognizes only exact canonical ExportSetError instanc
 test("supplemental plan snapshots reject nested arrays, sources, bindings, and plan accessors", () => {
   const binding = {
     kind: "file_prefix",
-    device: 1,
-    inode: 2,
+    device: "1",
+    inode: "2",
     birthtimeMs: 3,
     prefixBytes: 4,
     prefixSha256: "e".repeat(64),

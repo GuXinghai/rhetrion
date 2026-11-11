@@ -37,9 +37,15 @@ test("stage observers preserve the entire accounting cache and report the deep b
   const measured = await buildLocalIndexAccountingCache({ ...options,
     monotonicClock: () => ++monotonic, onTiming: event => { spans.push(event); throw new Error("synthetic observer failure"); } });
   assert.deepEqual(measured, reference);
-  assert.deepEqual(spans.map(row => row.stage), ["accounting_scan", "accounting_corpus_open", "accounting_fit",
-    "accounting_weekly_origins", "accounting_weekly_intervals", "accounting_transitions", "accounting_corpus_finish", "accounting_finalize"]);
-  assert.ok(spans.every(row => row.wallMs === 1 && row.outcome === "completed"));
+  assert.deepEqual(spans.map(row => row.stage), ["accounting_scan", "corpus_project", "accounting_corpus_open",
+    "corpus_cadence", "corpus_consume", "accounting_fit_stream", "fit_attribution", "fit_event_projection", "fit_row_processing",
+    "accounting_fit_observations", "accounting_fit_solver", "accounting_fit_timeline", "accounting_fit_current_finish",
+    "fit_attribution", "fit_event_projection", "fit_row_processing", "accounting_fit_observations", "accounting_fit_solver",
+    "accounting_fit_timeline", "accounting_fit_historical_finish", "accounting_fit", "origin_parent_chain",
+    "accounting_weekly_origins", "corpus_cadence", "corpus_consume", "accounting_weekly_intervals",
+    "corpus_cadence", "corpus_consume", "accounting_transitions", "accounting_corpus_finish", "accounting_finalize"]);
+  assert.ok(spans.every(row => row.wallMs >= 1 && row.outcome === "completed"));
+  assert.equal(spans.find(row => row.stage === "accounting_scan").wallMs, 1);
 });
 
 test("accounting metadata matches the full report across future, zero, provisional and empty evidence", async t => {

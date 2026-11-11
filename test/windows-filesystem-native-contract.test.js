@@ -1,3 +1,4 @@
+import { memoryWindowsFilesystem } from "./helpers/memory-participant-filesystem.js";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,67 +12,8 @@ import {
   withParticipantSecretLease,
 } from "../src/platform/participant-identity.js";
 
-const IDENTITY_BASE = Object.freeze({
-  volumeSerialNumber: "0000000000000001",
-  fileId: "00000000000000000000000000000001",
-  linkCount: 1,
-});
-
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-function memoryWindowsFilesystem() {
-  const files = new Map();
-  let nextId = 1;
-  const identityFor = () => ({
-    ...IDENTITY_BASE,
-    fileId: nextId.toString(16).padStart(32, "0"),
-  });
-  return {
-    productionSafe: true,
-    pathWalkRaceSafe: true,
-    files,
-    directories: new Set(),
-    ensureDirectory(path) {
-      this.directories.add(path);
-      return IDENTITY_BASE;
-    },
-    readFile(path) {
-      const value = files.get(path);
-      if (!value) {
-        const error = new Error("missing");
-        error.code = "ENOENT";
-        throw error;
-      }
-      return { data: Buffer.from(value.data), identity: value.identity };
-    },
-    createFile(path, data) {
-      if (files.has(path)) {
-        const error = new Error("exists");
-        error.code = "EEXIST";
-        throw error;
-      }
-      const identity = identityFor();
-      nextId += 1;
-      files.set(path, { data: Buffer.from(data), identity });
-      return identity;
-    },
-    deleteFile(path, identity) {
-      const value = files.get(path);
-      if (!value) {
-        const error = new Error("missing");
-        error.code = "ENOENT";
-        throw error;
-      }
-      if (value.identity.fileId !== identity.fileId) {
-        const error = new Error("changed");
-        error.code = "WINDOWS_FILESYSTEM_IDENTITY_MISMATCH";
-        throw error;
-      }
-      files.delete(path);
-      return { deleted: true, identity };
-    },
-  };
-}
 
 test("participant identity uses the injected Windows handle contract for state and control files", async () => {
   const filesystem = memoryWindowsFilesystem();

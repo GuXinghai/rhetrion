@@ -1,7 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmod, link, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,14 +17,25 @@ import {
   defaultExportSecretFile,
   defaultExportStateDirectory,
   encodeParticipantSecret,
-  inspectParticipantSecret,
-  loadOrCreateParticipantSecret,
+  inspectParticipantSecret as inspectIdentity,
+  loadOrCreateParticipantSecret as loadIdentity,
   participantSecretBackendRetirementFile,
   participantSecretLegacyRetirementFile,
   randomBundleId,
-  rotateParticipantSecret,
-  withParticipantSecretLease,
+  rotateParticipantSecret as rotateIdentity,
+  withParticipantSecretLease as leaseIdentity,
 } from "../src/export-identity.js";
+
+import { createMemoryIdentityFixture } from "./helpers/memory-participant-filesystem.js";
+
+// These are logical lifecycle tests against an explicitly injected memory port.
+// Real Windows ACL/refusal behavior is covered by the native boundary tests.
+let state;
+test.beforeEach(() => { state = createMemoryIdentityFixture(); });
+const inspectParticipantSecret = (options) => inspectIdentity({ ...options, windowsFilesystemAdapter: state.adapter });
+const loadOrCreateParticipantSecret = (options) => loadIdentity({ ...options, windowsFilesystemAdapter: state.adapter });
+const rotateParticipantSecret = (options) => rotateIdentity({ ...options, windowsFilesystemAdapter: state.adapter });
+const withParticipantSecretLease = (options, callback) => leaseIdentity({ ...options, windowsFilesystemAdapter: state.adapter }, callback);
 
 const TEST_BACKEND_CAPABILITY = Object.freeze({ name: "export-identity-test" });
 
@@ -103,8 +112,8 @@ test("export identity uses stable platform application-state paths", () => {
   );
 });
 
-test("participant secret file is owner-only and reused", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-secret-"));
+test("participant secret is created once and reused through the memory file port", async () => {
+  const directory = await state.tempDirectory(join(tmpdir(), "app-usagemonitor-secret-"));
   const secretFile = join(directory, "private", "export-secret");
   try {
     const first = await loadOrCreateParticipantSecret({ environmentSecret: null, secretFile });
@@ -112,62 +121,21 @@ test("participant secret file is owner-only and reused", async () => {
     assert.equal(first.created, true);
     assert.equal(second.created, false);
     assert.deepEqual(first.secret, second.secret);
-    assert.equal((await stat(secretFile)).mode & 0o777, 0o600);
-    assert.equal((await readFile(secretFile, "utf8")).trim(), encodeParticipantSecret(first.secret));
+    assert.equal((await state.stat(secretFile)).nlink, 1);
+    assert.equal((await state.read(secretFile, "utf8")).trim(), encodeParticipantSecret(first.secret));
   } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("participant secret rejects symlinks, hardlinks, and loose permissions without modifying targets", async (t) => {
-  if (process.platform === "win32") return t.skip("POSIX link and mode policy");
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-secret-policy-"));
-  const encoded = `${encodeParticipantSecret(Buffer.alloc(32, 3))}\n`;
-  try {
-    const target = join(directory, "target");
-    await writeFile(target, encoded, { mode: 0o600 });
-    const symbolic = join(directory, "symbolic");
-    await symlink(target, symbolic);
-    await assert.rejects(
-      loadOrCreateParticipantSecret({ environmentSecret: null, secretFile: symbolic, legacySecretFile: null }),
-    );
-    assert.equal((await stat(target)).mode & 0o777, 0o600);
-
-    const hard = join(directory, "hard");
-    await link(target, hard);
-    await assert.rejects(
-      loadOrCreateParticipantSecret({ environmentSecret: null, secretFile: hard, legacySecretFile: null }),
-      /hard-linked/,
-    );
-
-    await rm(hard);
-    await chmod(target, 0o644);
-    await assert.rejects(
-      loadOrCreateParticipantSecret({ environmentSecret: null, secretFile: target, legacySecretFile: null }),
-      /owner-only/,
-    );
-    assert.equal((await stat(target)).mode & 0o777, 0o644);
-
-    const unsafeDirectory = join(directory, "unsafe");
-    await mkdir(unsafeDirectory, { mode: 0o777 });
-    await chmod(unsafeDirectory, 0o777);
-    await assert.rejects(
-      loadOrCreateParticipantSecret({ environmentSecret: null, secretFile: join(unsafeDirectory, "new"), legacySecretFile: null }),
-      /group- or world-writable/,
-    );
-  } finally {
-    await rm(directory, { recursive: true, force: true });
+    await state.remove(directory, { recursive: true, force: true });
   }
 });
 
 test("legacy working-directory identity migrates without changing the secret", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-secret-migrate-"));
+  const directory = await state.tempDirectory(join(tmpdir(), "app-usagemonitor-secret-migrate-"));
   const legacy = join(directory, "legacy", "secret");
   const canonical = join(directory, "canonical", "secret");
   const secret = Buffer.alloc(32, 5);
   try {
-    await mkdir(join(directory, "legacy"), { mode: 0o700 });
-    await writeFile(legacy, `${encodeParticipantSecret(secret)}\n`, { mode: 0o600 });
+    await state.directory(join(directory, "legacy"), { mode: 0o700 });
+    await state.write(legacy, `${encodeParticipantSecret(secret)}\n`, { mode: 0o600 });
     const result = await loadOrCreateParticipantSecret({
       environmentSecret: null,
       secretFile: canonical,
@@ -176,15 +144,15 @@ test("legacy working-directory identity migrates without changing the secret", a
     assert.equal(result.migrated, true);
     assert.equal(result.created, false);
     assert.deepEqual(result.secret, secret);
-    assert.equal(await readFile(legacy, "utf8"), await readFile(canonical, "utf8"));
-    assert.match(await readFile(participantSecretLegacyRetirementFile(canonical), "utf8"), /retired v1/);
+    assert.equal(await state.read(legacy, "utf8"), await state.read(canonical, "utf8"));
+    assert.match(await state.read(participantSecretLegacyRetirementFile(canonical), "utf8"), /retired v1/);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await state.remove(directory, { recursive: true, force: true });
   }
 });
 
 test("inspection is non-creating and reports missing, legacy, canonical, and environment states", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-secret-inspect-"));
+  const directory = await state.tempDirectory(join(tmpdir(), "app-usagemonitor-secret-inspect-"));
   const legacy = join(directory, "legacy", "secret");
   const canonical = join(directory, "canonical", "secret");
   const secret = Buffer.alloc(32, 9);
@@ -194,38 +162,38 @@ test("inspection is non-creating and reports missing, legacy, canonical, and env
     assert.equal(missing.wouldCreate, true);
     assert.equal(Object.hasOwn(missing, "secret"), false);
     assert.equal(Object.hasOwn(missing, "path"), false);
-    assert.deepEqual(await readdir(directory), []);
+    assert.deepEqual(await state.entries(directory), []);
 
-    await mkdir(join(directory, "legacy"), { mode: 0o700 });
-    await writeFile(legacy, `${encodeParticipantSecret(secret)}\n`, { mode: 0o600 });
+    await state.directory(join(directory, "legacy"), { mode: 0o700 });
+    await state.write(legacy, `${encodeParticipantSecret(secret)}\n`, { mode: 0o600 });
     const legacyOnly = await inspectParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: legacy });
     assert.equal(legacyOnly.source, "legacy_owner_only_file");
     assert.equal(legacyOnly.wouldMigrate, true);
-    assert.equal((await readdir(directory)).includes("canonical"), false);
+    assert.equal((await state.entries(directory)).includes("canonical"), false);
 
     const environment = await inspectParticipantSecret({ environmentSecret: encodeParticipantSecret(secret), secretFile: canonical, legacySecretFile: legacy });
     assert.equal(environment.source, "environment");
     assert.equal(environment.rotatable, false);
-    assert.equal((await readdir(directory)).includes("canonical"), false);
+    assert.equal((await state.entries(directory)).includes("canonical"), false);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await state.remove(directory, { recursive: true, force: true });
   }
 });
 
 test("equal canonical and legacy secrets are accepted and different secrets fail closed", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-secret-conflict-"));
+  const directory = await state.tempDirectory(join(tmpdir(), "app-usagemonitor-secret-conflict-"));
   const legacy = join(directory, "legacy", "secret");
   const canonical = join(directory, "canonical", "secret");
   try {
-    await mkdir(join(directory, "legacy"), { mode: 0o700 });
-    await mkdir(join(directory, "canonical"), { mode: 0o700 });
-    await writeFile(legacy, `${encodeParticipantSecret(Buffer.alloc(32, 4))}\n`, { mode: 0o600 });
-    await writeFile(canonical, `${encodeParticipantSecret(Buffer.alloc(32, 4))}\n`, { mode: 0o600 });
+    await state.directory(join(directory, "legacy"), { mode: 0o700 });
+    await state.directory(join(directory, "canonical"), { mode: 0o700 });
+    await state.write(legacy, `${encodeParticipantSecret(Buffer.alloc(32, 4))}\n`, { mode: 0o600 });
+    await state.write(canonical, `${encodeParticipantSecret(Buffer.alloc(32, 4))}\n`, { mode: 0o600 });
     const equal = await inspectParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: legacy });
     assert.equal(equal.status, "ready");
     assert.equal(equal.conflict, false);
 
-    await writeFile(legacy, `${encodeParticipantSecret(Buffer.alloc(32, 6))}\n`, { mode: 0o600 });
+    await state.write(legacy, `${encodeParticipantSecret(Buffer.alloc(32, 6))}\n`, { mode: 0o600 });
     const conflict = await inspectParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: legacy });
     assert.equal(conflict.status, "conflict");
     assert.equal(Object.hasOwn(conflict, "secret"), false);
@@ -234,18 +202,18 @@ test("equal canonical and legacy secrets are accepted and different secrets fail
       (error) => error.code === "EXPORT_IDENTITY_CONFLICT",
     );
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await state.remove(directory, { recursive: true, force: true });
   }
 });
 
 test("concurrent legacy migration converges on one canonical secret", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-secret-migration-race-"));
+  const directory = await state.tempDirectory(join(tmpdir(), "app-usagemonitor-secret-migration-race-"));
   const legacy = join(directory, "legacy", "secret");
   const canonical = join(directory, "canonical", "secret");
   const secret = Buffer.alloc(32, 10);
   try {
-    await mkdir(join(directory, "legacy"), { mode: 0o700 });
-    await writeFile(legacy, `${encodeParticipantSecret(secret)}\n`, { mode: 0o600 });
+    await state.directory(join(directory, "legacy"), { mode: 0o700 });
+    await state.write(legacy, `${encodeParticipantSecret(secret)}\n`, { mode: 0o600 });
     const results = await Promise.all(Array.from({ length: 12 }, () => loadOrCreateParticipantSecret({
       environmentSecret: null,
       secretFile: canonical,
@@ -254,240 +222,26 @@ test("concurrent legacy migration converges on one canonical secret", async () =
     results.forEach((result) => assert.deepEqual(result.secret, secret));
     assert.deepEqual((await loadOrCreateParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: legacy })).secret, secret);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await state.remove(directory, { recursive: true, force: true });
   }
 });
 
-test("rotation requires confirmation, refuses environment identity, and changes every derived identifier", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-secret-rotate-"));
-  const canonical = join(directory, "canonical", "secret");
-  try {
-    const before = await loadOrCreateParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: null });
-    await assert.rejects(
-      rotateParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: null }),
-      /confirmRotation: true/,
-    );
-    await assert.rejects(
-      rotateParticipantSecret({ confirmRotation: true, environmentSecret: encodeParticipantSecret(before.secret), secretFile: canonical }),
-      (error) => error.code === "EXPORT_IDENTITY_ENVIRONMENT_ROTATION_REFUSED",
-    );
-
-    const identifiers = (secret) => [
-      deriveParticipantId(secret),
-      deriveSessionScopeId(secret, "session"),
-      deriveEventId(secret, "event"),
-      deriveEventOccurrenceId(secret, "event-source"),
-      deriveSnapshotId(secret, "snapshot"),
-      deriveSnapshotObservationId(secret, "snapshot-source"),
-      deriveQuotaStateId(secret, "quota"),
-      deriveMarkerId(secret, "marker"),
-      deriveMarkerOccurrenceId(secret, "marker-source"),
-      deriveAccountScopeId(secret, "account"),
-      deriveModelFingerprint(secret, "model"),
-    ];
-    const beforeIds = identifiers(before.secret);
-    beforeIds.forEach((identifier) => {
-      assert.match(identifier, /^[a-z][a-z0-9-]*:v[12]:[a-f0-9]{64}$/u);
-    });
-    const beforeInode = (await stat(canonical)).ino;
-    const rotated = await rotateParticipantSecret({ confirmRotation: true, environmentSecret: null, secretFile: canonical, legacySecretFile: null });
-    assert.equal(rotated.secureErasure, false);
-    assert.notEqual((await stat(canonical)).ino, beforeInode);
-    identifiers(rotated.secret).forEach((identifier, index) => assert.notEqual(identifier, beforeIds[index]));
-    assert.deepEqual((await loadOrCreateParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: null })).secret, rotated.secret);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("rotation retires legacy identity so deleting canonical cannot resurrect it", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-secret-retire-"));
-  const legacy = join(directory, "legacy", "secret");
-  const canonical = join(directory, "canonical", "secret");
-  const original = Buffer.alloc(32, 12);
-  try {
-    await mkdir(join(directory, "legacy"), { mode: 0o700 });
-    await writeFile(legacy, `${encodeParticipantSecret(original)}\n`, { mode: 0o600 });
-    await loadOrCreateParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: legacy });
-    const rotated = await rotateParticipantSecret({ confirmRotation: true, environmentSecret: null, secretFile: canonical, legacySecretFile: legacy });
-    assert.equal(rotated.legacyRetired, true);
-    await rm(canonical);
-
-    const inspection = await inspectParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: legacy });
-    assert.equal(inspection.status, "missing");
-    assert.equal(inspection.legacyState, "retired");
-    const recreated = await loadOrCreateParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: legacy });
-    assert.equal(recreated.created, true);
-    assert.equal(recreated.migrated, false);
-    assert.notDeepEqual(recreated.secret, original);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("rotation is serialized and failpoints leave a complete old or new strict file", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-secret-atomic-"));
-  const canonical = join(directory, "canonical", "secret");
-  try {
-    const original = await loadOrCreateParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: null });
-    await assert.rejects(
-      rotateParticipantSecret({
-        confirmRotation: true,
-        environmentSecret: null,
-        secretFile: canonical,
-        legacySecretFile: null,
-        failpoint: "after-stage-sync",
-      }),
-      (error) => error.code === "EXPORT_IDENTITY_ROTATION_FAILPOINT",
-    );
-    assert.deepEqual((await loadOrCreateParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: null })).secret, original.secret);
-    assert.deepEqual((await readdir(join(directory, "canonical"))).sort(), ["secret"]);
-
-    const externalReplacement = Buffer.alloc(32, 14);
-    await assert.rejects(
-      rotateParticipantSecret({
-        confirmRotation: true,
-        environmentSecret: null,
-        secretFile: canonical,
-        legacySecretFile: null,
-        rotationHook: async (point) => {
-          if (point !== "after-stage-sync") return;
-          const replacementPath = join(directory, "canonical", "external-replacement");
-          await writeFile(replacementPath, `${encodeParticipantSecret(externalReplacement)}\n`, { mode: 0o600 });
-          await rename(replacementPath, canonical);
-        },
-      }),
-      (error) => error.code === "EXPORT_IDENTITY_ROTATION_RACE",
-    );
-    assert.deepEqual((await loadOrCreateParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: null })).secret, externalReplacement);
-    assert.deepEqual((await readdir(join(directory, "canonical"))).sort(), ["secret"]);
-
-    let releaseFirst;
-    let firstHasLock;
-    const hasLock = new Promise((resolve) => { firstHasLock = resolve; });
-    const release = new Promise((resolve) => { releaseFirst = resolve; });
-    const first = rotateParticipantSecret({
-      confirmRotation: true,
-      environmentSecret: null,
-      secretFile: canonical,
-      legacySecretFile: null,
-      rotationHook: async (point) => {
-        if (point === "after-stage-sync") {
-          firstHasLock();
-          await release;
-        }
-      },
-    });
-    await hasLock;
-    await assert.rejects(
-      rotateParticipantSecret({ confirmRotation: true, environmentSecret: null, secretFile: canonical, legacySecretFile: null }),
-      (error) => error.code === "EXPORT_IDENTITY_ROTATION_LOCKED",
-    );
-    releaseFirst();
-    const concurrentWinner = await first;
-
-    await assert.rejects(
-      rotateParticipantSecret({
-        confirmRotation: true,
-        environmentSecret: null,
-        secretFile: canonical,
-        legacySecretFile: null,
-        failpoint: "after-rename",
-      }),
-      (error) => error.code === "EXPORT_IDENTITY_ROTATION_FAILPOINT",
-    );
-    const afterRename = await inspectParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: null });
-    const afterRenameSecret = await loadOrCreateParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: null });
-    assert.equal(afterRename.status, "ready");
-    assert.notDeepEqual(afterRenameSecret.secret, concurrentWinner.secret);
-    assert.equal((await stat(canonical)).size, 44);
-    assert.equal((await stat(canonical)).nlink, 1);
-    assert.equal((await stat(canonical)).mode & 0o777, 0o600);
-    assert.deepEqual((await readdir(join(directory, "canonical"))).sort(), ["secret"]);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("rotation CLI preflight is non-mutating and confirmed output is content-free", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-secret-cli-"));
-  const canonical = join(directory, "canonical", "private-secret-name");
-  const childEnvironment = { ...process.env };
-  delete childEnvironment.APP_USAGEMONITOR_EXPORT_SECRET;
-  try {
-    const before = await loadOrCreateParticipantSecret({ environmentSecret: null, secretFile: canonical, legacySecretFile: null });
-    const beforeEncoded = encodeParticipantSecret(before.secret);
-    const preflight = spawnSync(process.execPath, ["./src/cli.js", "rotate-local-identity", "--secret-file", canonical], {
-      cwd: new URL("..", import.meta.url),
-      env: childEnvironment,
-      encoding: "utf8",
-    });
-    assert.equal(preflight.status, 0, preflight.stderr);
-    assert.match(preflight.stdout, /preflight: ready/);
-    assert.equal(preflight.stdout.includes(canonical), false);
-    assert.equal(preflight.stdout.includes(beforeEncoded), false);
-    assert.equal(await readFile(canonical, "utf8"), `${beforeEncoded}\n`);
-
-    const confirmed = spawnSync(process.execPath, ["./src/cli.js", "rotate-local-identity", "--secret-file", canonical, "--confirm"], {
-      cwd: new URL("..", import.meta.url),
-      env: childEnvironment,
-      encoding: "utf8",
-    });
-    assert.equal(confirmed.status, 0, confirmed.stderr);
-    assert.match(confirmed.stdout, /rotation: completed/);
-    assert.match(confirmed.stdout, /Network activity: none/);
-    assert.equal(confirmed.stdout.includes(canonical), false);
-    assert.equal(confirmed.stdout.includes(beforeEncoded), false);
-    assert.notEqual((await readFile(canonical, "utf8")).trim(), beforeEncoded);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("an export identity lease prevents rotation until publication work finishes", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-secret-lease-"));
-  const canonical = join(directory, "canonical", "secret");
-  let finishLease;
-  let leaseStarted;
-  const started = new Promise((resolve) => { leaseStarted = resolve; });
-  const finish = new Promise((resolve) => { finishLease = resolve; });
-  try {
-    const leased = withParticipantSecretLease({
-      environmentSecret: null,
-      secretFile: canonical,
-      legacySecretFile: null,
-    }, async (identity) => {
-      leaseStarted(identity.secret);
-      await finish;
-      return "published";
-    });
-    const leasedSecret = await started;
-    await assert.rejects(
-      rotateParticipantSecret({
-        confirmRotation: true,
-        environmentSecret: null,
-        secretFile: canonical,
-        legacySecretFile: null,
-      }),
-      (error) => error.code === "EXPORT_IDENTITY_ROTATION_LOCKED",
-    );
-    finishLease();
-    assert.equal(await leased, "published");
-    const rotated = await rotateParticipantSecret({
-      confirmRotation: true,
-      environmentSecret: null,
-      secretFile: canonical,
-      legacySecretFile: null,
-    });
-    assert.notDeepEqual(rotated.secret, leasedSecret);
-  } finally {
-    finishLease?.();
-    await rm(directory, { recursive: true, force: true });
-  }
+test("file rotation preserves identity while its Windows replacement gate is unavailable", async () => {
+  const canonical = join(tmpdir(), "memory-rotation", "secret");
+  const options = { environmentSecret: null, secretFile: canonical, legacySecretFile: null };
+  const before = await loadOrCreateParticipantSecret(options);
+  await assert.rejects(rotateParticipantSecret(options), /confirmRotation: true/);
+  await assert.rejects(rotateParticipantSecret({ ...options, confirmRotation: true,
+    environmentSecret: encodeParticipantSecret(before.secret) }),
+    { code: "EXPORT_IDENTITY_ENVIRONMENT_ROTATION_REFUSED" });
+  await assert.rejects(rotateParticipantSecret({ ...options, confirmRotation: true }),
+    { code: "EXPORT_IDENTITY_WINDOWS_ROTATION_REPLACEMENT_UNAVAILABLE" });
+  assert.deepEqual((await loadOrCreateParticipantSecret(options)).secret, before.secret);
+  assert.deepEqual(await state.entries(join(tmpdir(), "memory-rotation")), ["secret"]);
 });
 
 test("backend inspection is non-mutating, content-free, and environment override remains explicit", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-backend-inspect-"));
+  const directory = await state.tempDirectory(join(tmpdir(), "app-usagemonitor-backend-inspect-"));
   const canonical = join(directory, "state", "secret");
   const backendSecret = Buffer.alloc(32, 41);
   const backend = memoryParticipantSecretBackend(backendSecret);
@@ -505,7 +259,7 @@ test("backend inspection is non-mutating, content-free, and environment override
     assert.equal(inspection.ownerFileState, "missing");
     assert.equal(Object.hasOwn(inspection, "secret"), false);
     assert.equal(Object.hasOwn(inspection, "path"), false);
-    assert.deepEqual(await readdir(directory), []);
+    assert.deepEqual(await state.entries(directory), []);
 
     backend.calls.length = 0;
     const override = await loadOrCreateParticipantSecret({
@@ -517,21 +271,21 @@ test("backend inspection is non-mutating, content-free, and environment override
     assert.equal(override.source, "environment");
     assert.deepEqual(backend.calls, []);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await state.remove(directory, { recursive: true, force: true });
   }
 });
 
 test("owner-file and legacy identities migrate exactly to the backend and cannot resurrect", async () => {
   for (const sourceKind of ["canonical", "legacy"]) {
-    const directory = await mkdtemp(join(tmpdir(), `app-usagemonitor-backend-migrate-${sourceKind}-`));
+    const directory = await state.tempDirectory(join(tmpdir(), `app-usagemonitor-backend-migrate-${sourceKind}-`));
     const canonical = join(directory, "state", "secret");
     const legacy = join(directory, "legacy", "secret");
     const source = sourceKind === "canonical" ? canonical : legacy;
     const original = Buffer.alloc(32, sourceKind === "canonical" ? 43 : 44);
     const backend = memoryParticipantSecretBackend();
     try {
-      await mkdir(join(directory, sourceKind === "canonical" ? "state" : "legacy"), { recursive: true, mode: 0o700 });
-      await writeFile(source, `${encodeParticipantSecret(original)}\n`, { mode: 0o600 });
+      await state.directory(join(directory, sourceKind === "canonical" ? "state" : "legacy"), { recursive: true, mode: 0o700 });
+      await state.write(source, `${encodeParticipantSecret(original)}\n`, { mode: 0o600 });
       const migrated = await loadOrCreateParticipantSecret({
         environmentSecret: null,
         secretFile: canonical,
@@ -543,9 +297,9 @@ test("owner-file and legacy identities migrate exactly to the backend and cannot
       assert.equal(migrated.migrated, true);
       assert.deepEqual(migrated.secret, original);
       assert.deepEqual(backend.stored(), original);
-      assert.match(await readFile(participantSecretBackendRetirementFile(canonical), "utf8"), /backend retired v1/);
-      assert.match(await readFile(participantSecretLegacyRetirementFile(canonical), "utf8"), /retired v1/);
-      await assert.rejects(readFile(source, "utf8"), { code: "ENOENT" });
+      assert.match(await state.read(participantSecretBackendRetirementFile(canonical), "utf8"), /backend retired v1/);
+      assert.match(await state.read(participantSecretLegacyRetirementFile(canonical), "utf8"), /retired v1/);
+      await assert.rejects(state.read(source, "utf8"), { code: "ENOENT" });
       assert.equal(migrated.secretFilesRemoved, 1);
       assert.equal(migrated.secretFilesRetained, 0);
       const cleaned = await inspectParticipantSecret({
@@ -570,20 +324,20 @@ test("owner-file and legacy identities migrate exactly to the backend and cannot
       assert.notDeepEqual(recreated.secret, original);
       assert.deepEqual(backend.stored(), recreated.secret);
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await state.remove(directory, { recursive: true, force: true });
     }
   }
 });
 
 test("backend migration retirement is durable before cleanup and crash residue is recovered", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-backend-cleanup-recovery-"));
+  const directory = await state.tempDirectory(join(tmpdir(), "app-usagemonitor-backend-cleanup-recovery-"));
   const canonical = join(directory, "state", "secret");
   const original = Buffer.alloc(32, 84);
   const backend = memoryParticipantSecretBackend();
   let crash = true;
   try {
-    await mkdir(join(directory, "state"), { recursive: true, mode: 0o700 });
-    await writeFile(canonical, `${encodeParticipantSecret(original)}\n`, { mode: 0o600 });
+    await state.directory(join(directory, "state"), { recursive: true, mode: 0o700 });
+    await state.write(canonical, `${encodeParticipantSecret(original)}\n`, { mode: 0o600 });
     await assert.rejects(
       loadOrCreateParticipantSecret({
         environmentSecret: null,
@@ -601,8 +355,8 @@ test("backend migration retirement is durable before cleanup and crash residue i
       /simulated migration crash/,
     );
     assert.deepEqual(backend.stored(), original);
-    assert.equal((await readFile(canonical, "utf8")).trim(), encodeParticipantSecret(original));
-    assert.match(await readFile(participantSecretBackendRetirementFile(canonical), "utf8"), /backend retired v1/);
+    assert.equal((await state.read(canonical, "utf8")).trim(), encodeParticipantSecret(original));
+    assert.match(await state.read(participantSecretBackendRetirementFile(canonical), "utf8"), /backend retired v1/);
     const residue = await inspectParticipantSecret({
       environmentSecret: null,
       secretFile: canonical,
@@ -621,22 +375,22 @@ test("backend migration retirement is durable before cleanup and crash residue i
     });
     assert.equal(recovered.ownerFileCleanup, "removed");
     assert.equal(recovered.secretFilesRemoved, 1);
-    await assert.rejects(readFile(canonical, "utf8"), { code: "ENOENT" });
+    await assert.rejects(state.read(canonical, "utf8"), { code: "ENOENT" });
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await state.remove(directory, { recursive: true, force: true });
   }
 });
 
 test("backend cleanup never removes a same-user replacement after retirement", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-backend-cleanup-replacement-"));
+  const directory = await state.tempDirectory(join(tmpdir(), "app-usagemonitor-backend-cleanup-replacement-"));
   const canonical = join(directory, "state", "secret");
   const original = Buffer.alloc(32, 85);
   const replacement = Buffer.alloc(32, 86);
   const backend = memoryParticipantSecretBackend();
   let replaced = false;
   try {
-    await mkdir(join(directory, "state"), { recursive: true, mode: 0o700 });
-    await writeFile(canonical, `${encodeParticipantSecret(original)}\n`, { mode: 0o600 });
+    await state.directory(join(directory, "state"), { recursive: true, mode: 0o700 });
+    await state.write(canonical, `${encodeParticipantSecret(original)}\n`, { mode: 0o600 });
     const migrated = await loadOrCreateParticipantSecret({
       environmentSecret: null,
       secretFile: canonical,
@@ -647,15 +401,15 @@ test("backend cleanup never removes a same-user replacement after retirement", a
         if (!replaced && point === "before-owner-secret-removal") {
           replaced = true;
           const staged = join(directory, "state", "same-user-replacement");
-          await writeFile(staged, `${encodeParticipantSecret(replacement)}\n`, { mode: 0o600 });
-          await rename(staged, canonical);
+          await state.write(staged, `${encodeParticipantSecret(replacement)}\n`, { mode: 0o600 });
+          await state.rename(staged, canonical);
         }
       },
     });
     assert.equal(migrated.ownerFileCleanup, "retained_changed");
     assert.equal(migrated.secretFilesRemoved, 0);
     assert.equal(migrated.secretFilesRetained, 1);
-    assert.equal((await readFile(canonical, "utf8")).trim(), encodeParticipantSecret(replacement));
+    assert.equal((await state.read(canonical, "utf8")).trim(), encodeParticipantSecret(replacement));
     assert.deepEqual(backend.stored(), original);
     const inspection = await inspectParticipantSecret({
       environmentSecret: null,
@@ -666,21 +420,21 @@ test("backend cleanup never removes a same-user replacement after retirement", a
     });
     assert.equal(inspection.ownerFileState, "retired_retained");
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await state.remove(directory, { recursive: true, force: true });
   }
 });
 
 test("backend migration accepts equal dual state and refuses every disagreement", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-backend-conflict-"));
+  const directory = await state.tempDirectory(join(tmpdir(), "app-usagemonitor-backend-conflict-"));
   const canonical = join(directory, "state", "secret");
   const legacy = join(directory, "legacy", "secret");
   const shared = Buffer.alloc(32, 45);
   const backend = memoryParticipantSecretBackend(shared);
   try {
-    await mkdir(join(directory, "state"), { recursive: true, mode: 0o700 });
-    await mkdir(join(directory, "legacy"), { recursive: true, mode: 0o700 });
-    await writeFile(canonical, `${encodeParticipantSecret(shared)}\n`, { mode: 0o600 });
-    await writeFile(legacy, `${encodeParticipantSecret(shared)}\n`, { mode: 0o600 });
+    await state.directory(join(directory, "state"), { recursive: true, mode: 0o700 });
+    await state.directory(join(directory, "legacy"), { recursive: true, mode: 0o700 });
+    await state.write(canonical, `${encodeParticipantSecret(shared)}\n`, { mode: 0o600 });
+    await state.write(legacy, `${encodeParticipantSecret(shared)}\n`, { mode: 0o600 });
     const equal = await loadOrCreateParticipantSecret({
       environmentSecret: null,
       secretFile: canonical,
@@ -692,12 +446,12 @@ test("backend migration accepts equal dual state and refuses every disagreement"
     assert.equal(equal.migrated, true);
     assert.equal(equal.secretFilesRemoved, 2);
     assert.equal(equal.secretFilesRetained, 0);
-    await assert.rejects(readFile(canonical, "utf8"), { code: "ENOENT" });
-    await assert.rejects(readFile(legacy, "utf8"), { code: "ENOENT" });
+    await assert.rejects(state.read(canonical, "utf8"), { code: "ENOENT" });
+    await assert.rejects(state.read(legacy, "utf8"), { code: "ENOENT" });
 
-    await rm(participantSecretBackendRetirementFile(canonical));
-    await rm(participantSecretLegacyRetirementFile(canonical));
-    await writeFile(legacy, `${encodeParticipantSecret(Buffer.alloc(32, 46))}\n`, { mode: 0o600 });
+    await state.remove(participantSecretBackendRetirementFile(canonical));
+    await state.remove(participantSecretLegacyRetirementFile(canonical));
+    await state.write(legacy, `${encodeParticipantSecret(Buffer.alloc(32, 46))}\n`, { mode: 0o600 });
     const conflict = await inspectParticipantSecret({
       environmentSecret: null,
       secretFile: canonical,
@@ -719,12 +473,12 @@ test("backend migration accepts equal dual state and refuses every disagreement"
     );
     assert.deepEqual(backend.stored(), shared);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await state.remove(directory, { recursive: true, force: true });
   }
 });
 
 test("backend rotation uses exact replacement/readback and shares the publication lease", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-backend-rotate-"));
+  const directory = await state.tempDirectory(join(tmpdir(), "app-usagemonitor-backend-rotate-"));
   const canonical = join(directory, "state", "secret");
   const backend = memoryParticipantSecretBackend();
   let finishLease;
@@ -780,14 +534,40 @@ test("backend rotation uses exact replacement/readback and shares the publicatio
     const replaceCall = backend.calls.find(([method]) => method === "replaceExact");
     assert.deepEqual(replaceCall[2], created.secret);
     assert.deepEqual(replaceCall[3], rotated.secret);
+    for (const derive of [deriveParticipantId, deriveSessionScopeId, deriveEventId,
+      deriveEventOccurrenceId, deriveSnapshotId, deriveSnapshotObservationId,
+      deriveQuotaStateId, deriveMarkerId, deriveMarkerOccurrenceId,
+      deriveAccountScopeId, deriveModelFingerprint]) {
+      assert.notEqual(derive(created.secret, "synthetic-subject"), derive(rotated.secret, "synthetic-subject"));
+    }
   } finally {
     finishLease?.();
-    await rm(directory, { recursive: true, force: true });
+    await state.remove(directory, { recursive: true, force: true });
   }
 });
 
+test("backend rotation failure checkpoints preserve a complete identity and release the lease", async () => {
+  const canonical = join(tmpdir(), "memory-backend-checkpoints", "secret");
+  const backend = memoryParticipantSecretBackend(Buffer.alloc(32, 51));
+  const options = { environmentSecret: null, secretFile: canonical, legacySecretFile: null,
+    confirmRotation: true, participantSecretBackend: backend,
+    participantSecretCapability: TEST_BACKEND_CAPABILITY };
+  const original = backend.stored();
+  await assert.rejects(rotateParticipantSecret({ ...options, failpoint: "before-backend-replace" }),
+    { code: "EXPORT_IDENTITY_ROTATION_FAILPOINT" });
+  assert.deepEqual(backend.stored(), original);
+  await assert.rejects(rotateParticipantSecret({ ...options, failpoint: "after-backend-replace" }),
+    { code: "EXPORT_IDENTITY_ROTATION_FAILPOINT" });
+  assert.notDeepEqual(backend.stored(), original);
+  assert.equal(backend.stored().length, 32);
+  assert.equal((await inspectParticipantSecret(options)).status, "ready");
+  assert.equal(state.adapter.files.has(`${canonical}.rotation-lock`), false);
+  const recovered = await rotateParticipantSecret(options);
+  assert.deepEqual(recovered.secret, backend.stored());
+});
+
 test("participant identity leases fail when their lock is removed or replaced", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-lock-loss-"));
+  const directory = await state.tempDirectory(join(tmpdir(), "app-usagemonitor-lock-loss-"));
   const canonical = join(directory, "state", "secret");
   const backend = memoryParticipantSecretBackend(Buffer.alloc(32, 94));
   const options = {
@@ -800,7 +580,7 @@ test("participant identity leases fail when their lock is removed or replaced", 
   try {
     await assert.rejects(
       withParticipantSecretLease(options, async () => {
-        await unlink(`${canonical}.rotation-lock`);
+        await state.remove(`${canonical}.rotation-lock`);
         return "must-not-succeed";
       }),
       (error) => error.code === "EXPORT_IDENTITY_ROTATION_LOCK_LOST",
@@ -809,19 +589,19 @@ test("participant identity leases fail when their lock is removed or replaced", 
     await assert.rejects(
       withParticipantSecretLease(options, async () => {
         const lockPath = `${canonical}.rotation-lock`;
-        await unlink(lockPath);
-        await writeFile(lockPath, "replacement\n", { mode: 0o600 });
+        await state.remove(lockPath);
+        await state.write(lockPath, "replacement\n", { mode: 0o600 });
         return "must-not-succeed";
       }),
       (error) => error.code === "EXPORT_IDENTITY_ROTATION_LOCK_LOST",
     );
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await state.remove(directory, { recursive: true, force: true });
   }
 });
 
 test("adversarial backend failures and malformed values fail closed without content disclosure", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-backend-adversarial-"));
+  const directory = await state.tempDirectory(join(tmpdir(), "app-usagemonitor-backend-adversarial-"));
   const canonical = join(directory, "state", "secret");
   const canary = "DO-NOT-LEAK-adversarial-backend";
   try {
@@ -916,12 +696,12 @@ test("adversarial backend failures and malformed values fail closed without cont
       },
     );
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await state.remove(directory, { recursive: true, force: true });
   }
 });
 
 test("a same-user backend create race cannot silently replace a file identity", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-backend-create-race-"));
+  const directory = await state.tempDirectory(join(tmpdir(), "app-usagemonitor-backend-create-race-"));
   const canonical = join(directory, "state", "secret");
   const expected = Buffer.alloc(32, 47);
   const racer = Buffer.alloc(32, 48);
@@ -931,8 +711,8 @@ test("a same-user backend create race cannot silently replace a file identity", 
     return "existing";
   };
   try {
-    await mkdir(join(directory, "state"), { recursive: true, mode: 0o700 });
-    await writeFile(canonical, `${encodeParticipantSecret(expected)}\n`, { mode: 0o600 });
+    await state.directory(join(directory, "state"), { recursive: true, mode: 0o700 });
+    await state.write(canonical, `${encodeParticipantSecret(expected)}\n`, { mode: 0o600 });
     await assert.rejects(
       loadOrCreateParticipantSecret({
         environmentSecret: null,
@@ -944,14 +724,14 @@ test("a same-user backend create race cannot silently replace a file identity", 
       (error) => error.code === "EXPORT_IDENTITY_CONFLICT",
     );
     assert.deepEqual(backend.stored(), racer);
-    await assert.rejects(readFile(participantSecretBackendRetirementFile(canonical), "utf8"), { code: "ENOENT" });
+    await assert.rejects(state.read(participantSecretBackendRetirementFile(canonical), "utf8"), { code: "ENOENT" });
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await state.remove(directory, { recursive: true, force: true });
   }
 });
 
 test("file replacement during backend migration is detected before retirement", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-backend-file-race-"));
+  const directory = await state.tempDirectory(join(tmpdir(), "app-usagemonitor-backend-file-race-"));
   const canonical = join(directory, "state", "secret");
   const expected = Buffer.alloc(32, 49);
   const replacement = Buffer.alloc(32, 50);
@@ -960,13 +740,13 @@ test("file replacement during backend migration is detected before retirement", 
   backend.createIfMissing = async (...args) => {
     const outcome = await baseCreate(...args);
     const staged = join(directory, "state", "replacement");
-    await writeFile(staged, `${encodeParticipantSecret(replacement)}\n`, { mode: 0o600 });
-    await rename(staged, canonical);
+    await state.write(staged, `${encodeParticipantSecret(replacement)}\n`, { mode: 0o600 });
+    await state.rename(staged, canonical);
     return outcome;
   };
   try {
-    await mkdir(join(directory, "state"), { recursive: true, mode: 0o700 });
-    await writeFile(canonical, `${encodeParticipantSecret(expected)}\n`, { mode: 0o600 });
+    await state.directory(join(directory, "state"), { recursive: true, mode: 0o700 });
+    await state.write(canonical, `${encodeParticipantSecret(expected)}\n`, { mode: 0o600 });
     await assert.rejects(
       loadOrCreateParticipantSecret({
         environmentSecret: null,
@@ -978,9 +758,9 @@ test("file replacement during backend migration is detected before retirement", 
       (error) => error.code === "EXPORT_IDENTITY_MIGRATION_RACE",
     );
     assert.deepEqual(backend.stored(), expected);
-    assert.equal((await readFile(canonical, "utf8")).trim(), encodeParticipantSecret(replacement));
-    await assert.rejects(readFile(participantSecretBackendRetirementFile(canonical), "utf8"), { code: "ENOENT" });
+    assert.equal((await state.read(canonical, "utf8")).trim(), encodeParticipantSecret(replacement));
+    await assert.rejects(state.read(participantSecretBackendRetirementFile(canonical), "utf8"), { code: "ENOENT" });
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await state.remove(directory, { recursive: true, force: true });
   }
 });

@@ -4,6 +4,7 @@ import {
   validAbortSignal,
 } from "./log-normalization.js";
 import { classifySessionSurface } from "./surface-classification.js";
+import { isCodexApiSession } from "./tier-normalization.js";
 
 const MAXIMUM_ACTIVE_APPEND_PROOF_BYTES = 8 * 1024 * 1024;
 const MAXIMUM_ROLLOUT_LINEAGE_BYTES = 1024 * 1024;
@@ -553,6 +554,7 @@ export function createCodexLogSources({ filesystem, lineReader }) {
     maximumTotalBytes = MAXIMUM_ROLLOUT_LINEAGE_BYTES,
     signal = null,
     prefix = null,
+    onApiSession = null,
   } = {}) {
     if (!validAbortSignal(signal)) throw new TypeError("signal must be an AbortSignal or null");
     throwIfAborted(signal);
@@ -610,6 +612,7 @@ export function createCodexLogSources({ filesystem, lineReader }) {
           };
         const startOrdinalValid = Number.isSafeInteger(record.ordinal)
           && record.ordinal >= 0;
+        onApiSession?.(isCodexApiSession(record.payload));
         return {
           sessionId,
           parentId,
@@ -676,8 +679,10 @@ export function createCodexLogSources({ filesystem, lineReader }) {
     // source again. Absent, discovery inspects every file as before.
     inspectionCache = null,
     diagnosticTimer = null,
+    excludeApiSessions = false,
   }) {
     if (!validAbortSignal(signal)) throw new TypeError("signal must be an AbortSignal or null");
+    if (typeof excludeApiSessions !== 'boolean') throw new TypeError('excludeApiSessions must be boolean');
     if (inspectionCache !== null && typeof inspectionCache !== "function") {
       throw new TypeError("inspectionCache must be a function or null");
     }
@@ -735,14 +740,15 @@ export function createCodexLogSources({ filesystem, lineReader }) {
       }
     }
     const finishInspect = diagnosticTimer?.start("discovery_inspect");
-    const all = await mapWithConcurrency(representations, 16, async ([key, info]) => {
+    let all = await mapWithConcurrency(representations, 16, async ([key, info]) => {
       throwIfAborted(signal);
       const filename = parseCodexRolloutFilename(info.path);
       const compressed = info.path.endsWith(".jsonl.zst");
       let compressionReason = null;
       let inspection = null;
       const known = inspectionCache === null ? null : inspectionCache(info);
-      if (known !== null && known !== undefined) {
+      if (known !== null && known !== undefined
+          && (!excludeApiSessions || known.subscriptionEligible === true)) {
         return {
           ...info,
           ...(compressed ? {
@@ -764,6 +770,7 @@ export function createCodexLogSources({ filesystem, lineReader }) {
           lineage: known.lineage,
         };
       }
+      let excludedApiSession = false;
       if (compressed) {
         if (lineReader.supportsCompressedRollouts?.() !== true) {
           compressionReason = "codex_rollout_compression_unsupported";
@@ -806,7 +813,12 @@ export function createCodexLogSources({ filesystem, lineReader }) {
           maximumTotalBytes: MAXIMUM_ROLLOUT_LINEAGE_BYTES,
           signal,
           prefix: inspection?.prefix ?? null,
+          onApiSession: value => { excludedApiSession = value; },
         });}finally{finish?.();}})();
+      if (excludeApiSessions && excludedApiSession) {
+        const current = await statActiveSourcePath(info.path, info);
+        if (!sameSourceState(current, info)) sourceChanged();
+      }
       return {
         ...info,
         ...(inspection === null ? {} : {
@@ -826,11 +838,42 @@ export function createCodexLogSources({ filesystem, lineReader }) {
           && selectedRolloutNames?.get(filename.threadId)
             === sourceName(info.path),
         lineage,
+        ...(excludedApiSession ? { excludedApiSession: true } : {}),
       };
     });
     throwIfAborted(signal);
 
     finishInspect?.();
+    const excludedApiSources = excludeApiSessions
+      ? all.filter(info => info.excludedApiSession === true) : [];
+    if (excludeApiSessions && excludedApiSources.length > 0) {
+      // Keep the complete ambiguity/dependency closure of every admitted
+      // source. API-only histories need no graph hashing/cutoff reads; an API
+      // ancestor still supplies transient replay proof for subscription work.
+      const byIdentity = new Map();
+      const add = (key, info) => {
+        if (typeof key !== 'string') return;
+        const entries = byIdentity.get(key) ?? [];
+        entries.push(info); byIdentity.set(key, entries);
+      };
+      for (const info of all) {
+        for (const key of [info.threadId, info.lineage?.sessionId, info.sourceIdentity]) add(key, info);
+      }
+      const retained = new Set();
+      const pending = all.filter(info => info.excludedApiSession !== true);
+      while (pending.length > 0) {
+        const info = pending.pop();
+        if (retained.has(info)) continue;
+        retained.add(info);
+        for (const key of [info.threadId, info.lineage?.sessionId, info.sourceIdentity,
+          info.lineage?.parentId, info.lineage?.historyBase?.rolloutId]) {
+          for (const related of byIdentity.get(key) ?? []) {
+            if (!retained.has(related)) pending.push(related);
+          }
+        }
+      }
+      all = all.filter(info => retained.has(info));
+    }
     const finishGraph = diagnosticTimer?.start("discovery_graph");
     // Validate the physical and logical graphs before selecting a time
     // window. Invalid old groups are remembered locally but do not poison an
@@ -1081,6 +1124,7 @@ export function createCodexLogSources({ filesystem, lineReader }) {
       let handle;
       let valid = false;
       let before = null;
+      let openedState = null;
       let proof = null;
       try {
         throwIfAborted(signal);
@@ -1089,19 +1133,20 @@ export function createCodexLogSources({ filesystem, lineReader }) {
         handle = await filesystem.openReadOnlyNoFollow(parent.path);
         const stats = await handle.stat();
         assertActiveSourceStats(stats, parent);
-        if (stats.size !== (parent.physicalSize ?? parent.size) || base.endByteOffset > parent.size) {
+        openedState = stats;
+        if (stats.size !== (parent.physicalSize ?? parent.size)) sourceChanged();
+        if (base.endByteOffset > parent.size) {
           historyCutoffProofs.delete(key);
-          return false;
         }
         before = cacheable ? await readExactCutoffState(handle, parent.path) : null;
         const cached = before === null ? null : historyCutoffProofs.get(key);
-        if (cached?.state === before
+        if (base.endByteOffset <= parent.size && cached?.state === before
             && cached.bytes === base.endByteOffset
             && cached.lines === base.endOrdinalExclusive - startOrdinal
             && (cached.bytes === 0 || cached.lastByte === 0x0a)) {
           proof = cached;
           valid = true;
-        } else {
+        } else if (base.endByteOffset <= parent.size) {
           historyCutoffProofs.delete(key);
           let bytes = 0;
           let lines = 0;
@@ -1131,7 +1176,7 @@ export function createCodexLogSources({ filesystem, lineReader }) {
               resourceGuard?.checkRuntime();
               const length = Math.min(buffer.length, base.endByteOffset - bytes);
               const read = await handle.read(buffer, 0, length, bytes);
-              if (read.bytesRead !== length) return false;
+              if (read.bytesRead !== length) sourceChanged();
               let from = 0;
               for (;;) {
                 const newline = buffer.indexOf(0x0a, from);
@@ -1150,16 +1195,32 @@ export function createCodexLogSources({ filesystem, lineReader }) {
             && (bytes === 0 || lastByte === 0x0a);
           if (valid && before !== null) proof = { state: before, bytes, lines, lastByte };
         }
-        if (before !== null && await readExactCutoffState(handle, parent.path) !== before) valid = false;
+        if (before !== null && await readExactCutoffState(handle, parent.path) !== before) sourceChanged();
+        if (before === null) {
+          const settled = await handle.stat();
+          const named = await statActiveSourcePath(parent.path, stats);
+          if (!sameSourceState(stats, settled) || !sameSourceState(settled, named)) sourceChanged();
+        }
         throwIfAborted(signal);
         resourceGuard?.checkRuntime();
       } catch (error) {
         historyCutoffProofs.delete(key);
         rethrowScannerControlError(error);
-        valid = false;
+        // An unreadable or changing dependency is not proof of invalid lineage.
+        // Refuse this discovery pass before any writer can quarantine its child.
+        if (error?.code === "codex_rollout_content_invalid" && openedState !== null) {
+          if (before !== null) {
+            if (await readExactCutoffState(handle, parent.path) !== before) sourceChanged();
+          } else {
+            const settled = await handle.stat();
+            const named = await statActiveSourcePath(parent.path, openedState);
+            if (!sameSourceState(openedState, settled) || !sameSourceState(settled, named)) sourceChanged();
+          }
+          valid = false;
+        } else sourceChanged();
       } finally {
         try { await handle?.close(); }
-        catch { valid = false; historyCutoffProofs.delete(key); }
+        catch { historyCutoffProofs.delete(key); throwIfAborted(signal); sourceChanged(); }
         if (!valid) rejectedHistoryCutoffs.add(key);
         if (signal?.aborted) { historyCutoffProofs.delete(key); throwIfAborted(signal); }
       }
@@ -1190,7 +1251,6 @@ export function createCodexLogSources({ filesystem, lineReader }) {
       }
       const parent = byRolloutId.get(base.rolloutId);
       if (parent === undefined
-          || base.endByteOffset > Number(parent.size ?? 0)
           || !await historyCutoffValid(parent, base)) {
         invalidGroupReason.set(groupKey, "codex_rollout_lineage_invalid");
       }
@@ -1472,6 +1532,7 @@ export function createCodexLogSources({ filesystem, lineReader }) {
       reasonCounts: Object.freeze(reasonCounts),
       diagnosticGroups: Object.freeze(diagnosticGroups),
       quarantined: Object.freeze(quarantinedSources),
+      ...(excludeApiSessions ? { excludedApiSources: Object.freeze(excludedApiSources) } : {}),
       fingerprint: hashString(JSON.stringify(receiptMaterial)),
       quarantineFingerprint: hashString(JSON.stringify(quarantineMaterial)),
     });

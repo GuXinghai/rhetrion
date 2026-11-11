@@ -1,9 +1,9 @@
+import { createProtectedFixtureTempDirectory as mkdtemp, grantSyntheticEveryoneRead } from "./helpers/windows-owner-only-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
   chmod,
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
   rename,
@@ -388,11 +388,11 @@ test("compressed verifier checks the decoded hash before canonical bundle parsin
 });
 
 test("compressed verifier enforces owner-only artifact permissions", async () => {
-  if (process.platform === "win32") return;
   const value = await localSet();
   try {
     const names = exportSetChunkBasenames(0, EXPORT_SET_MANIFEST_VERSION);
-    await chmod(join(value.output, names.bundle), 0o644);
+    if (process.platform === "win32") grantSyntheticEveryoneRead(join(value.output, names.bundle));
+    else await chmod(join(value.output, names.bundle), 0o644);
     await assert.rejects(
       verifyLocalExportSet({ directory: value.output }),
       (error) => error instanceof ExportSetVerificationError
@@ -456,7 +456,9 @@ test("set verifier rejects a cross-chunk duplicate occurrence ID", async () => {
     secondBundle.records.usageEvents[0].eventId = firstBundle.records.usageEvents[0].eventId;
     const secondBundleText = stableJson(secondBundle);
     const secondReceipt = verifyPrivacySafeBundle(secondBundle, { createdAt: secondBundle.createdAt });
-    const secondArtifact = compressExportBytes(Buffer.from(secondBundleText));
+    const secondArtifact = compressExportBytes(Buffer.from(secondBundleText), {
+      maximumDecodedBytes: Buffer.byteLength(secondBundleText), maximumEncodedBytes: 1024 * 1024,
+    });
     await writeFile(secondBundlePath, secondArtifact, { mode: 0o600 });
     await writeFile(secondReceiptPath, stableJson(secondReceipt), { mode: 0o600 });
 

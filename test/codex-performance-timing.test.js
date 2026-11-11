@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCodexPerformanceTimingParser } from '../src/providers/codex/logs.js';
+import { createCodexPerformanceTimingParser, createToolFreeParser } from '../src/providers/codex/logs.js';
 
 const BASE = Date.parse('2026-09-01T12:00:00.000Z');
 const KEY = Buffer.alloc(32, 7);
@@ -79,6 +79,24 @@ function performanceFixture({
   );
   return rows;
 }
+
+test('API session exclusion also covers primary and tool-free performance across restart', () => {
+  for(const create of [createCodexPerformanceTimingParser,createToolFreeParser]){
+    for(const fields of [{model_provider:'synthetic-relay'},{model_provider:'openai',auth_mode:'apikey'}]){
+      const rows=performanceFixture(),result=[];
+      rows[0].payload={...rows[0].payload,...fields};
+      const p=create(KEY,null,row=>result.push(row));
+      p.line(Buffer.from(JSON.stringify(rows[0])),1,false);
+      const state=structuredClone(p.state());assert.equal(state.blocked,true);
+      const resumed=create(KEY,state,row=>result.push(row));
+      rows.slice(1).forEach((r,i)=>resumed.line(Buffer.from(JSON.stringify(r)),i+2,false));
+      assert.deepEqual(result,[]);
+      assert.ok(!JSON.stringify(resumed.state()).includes('synthetic-relay'));
+    }
+  }
+  const rows=performanceFixture();rows[0].payload={...rows[0].payload,model_provider:'openai',source:'cli'};
+  assert.equal(parse(rows).result.length,1,'subscription CLI remains eligible');
+});
 
 // Keep the original timing experiment corpus in this provider-owned suite so
 // the v1.2 additions cannot silently change the established TPS/TTFT rules.

@@ -811,6 +811,8 @@ export interface WorkloadInput {
   estimationPlanType?: string | null;
   quotaResetEvents?: QuotaResetEvent[];
   usageCoverageFromMs?: number;
+  /** Proven inclusive missing-usage timestamp bounds; unknown extents require the coverage fence. */
+  usageGaps?: { lowerMs: number; upperMs: number }[];
 }
 export interface WorkloadBin { atMs: number; workMs: number; usd: number; priced: boolean; complete?: boolean }
 export type WorkloadLevel = "light" | "medium" | "heavy" | "unclassified";

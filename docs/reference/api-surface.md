@@ -15,7 +15,7 @@ release. There is no hosted Worker, public site, remote relay or cloud runtime.
 
 | Surface | Owner | Callable boundary | Authority |
 | --- | --- | --- | --- |
-| Local companion API | Browser/native shell → loopback Node companion | 18 paths, 19 method/path operations |
+| Local companion API | Browser/native shell → loopback Node companion | 20 paths, 22 method/path operations |
 
 ## Report failure diagnostics
 
@@ -68,9 +68,11 @@ retrying a stripped note or claiming a write receipt.
 | `GET` | `/api/local/weekly-pace-outlook` | Privacy-safe weekly allowance pace projection bound to the current observed window |
 | `GET` | `/api/local/quality` | Monitoring-quality report data |
 | `GET` | `/api/local/timeline/window-breakdown` | Bounded indexed timeline breakdown for `from` and `to` epoch-millisecond bounds |
+| `GET`, `POST` | `/api/local/settings/calibration` | Read or update the closed calibration interval setting; requires the local header and same-origin checks; available before snapshot readiness |
 | `GET`, `POST` | `/api/local/refresh` | Inspect actual run/component state or request one bounded retained-history and detailed-accounting refresh; 202 starts, 200 joins or merges one pending follow-up |
 | `POST` | `/api/local/refresh/quick` | Request quota-only refresh without advancing retained history or rebuilding accounting; returns the same actual-run and request-acceptance receipts |
 | `POST` | `/api/local/refresh/overview` | Join, start or merge a bounded quota plus incremental usage/work publication pass; quota can publish before usage settles; reset the sole configurable companion cadence after settlement |
+| `POST` | `/api/local/refresh/recalculate` | Submit one validated accounting repair through the existing detailed-refresh scheduler; bounded closed JSON, local header and same-origin checks; returns 202 when started or 200 when joined/queued |
 | `POST` | `/api/local/refresh/cancel` | Cooperatively cancel the active refresh |
 
 The thread-link route has a closed `local-cache-drop-thread-links-v1` response:

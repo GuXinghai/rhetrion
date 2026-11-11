@@ -24,6 +24,46 @@ No remote resources were modified by the source retirement.
 
 ## Evidence boundaries
 
+The [2026-11-11 final-review repairs](./receipts/2026-11-11-final-review-repairs.md)
+bind export/discard removal to exact native file identity and content, preserve
+dated same-scope workload results on real quota-history read failures, and
+supersede proved excluded API sources' legacy coverage gaps. Windows controls
+use the existing protected native creator; general production/path policy
+remains disabled. Isolated validation is separate from packaged/live activation.
+
+The [2026-11-11 regression closeout](./receipts/2026-11-11-regression-closeout.md)
+repairs synthetic candidate/project fixtures, profile ownership inventory and
+localized copy, and closes the direct retired R7 matrix-generation bypass.
+Source acquisition distinguishes sharing/lock contention from access refusal
+without relaxing handle, ACL or timeout boundaries. Focused checks and isolated
+Electron source rendering pass; the receipt records the complete-root gate
+separately. This work does not change the active desktop/profile or qualify a
+packaged, installed or released artifact.
+
+The [2026-11-11 Windows export repair](./receipts/2026-11-11-windows-export-repair.md)
+closes export-set file/directory ACL admission and protects the temporary
+uniqueness database/journal. Windows pair publication uses a protected regular
+lock and exact-identity stale removal; crash cleanup proves published hardlink
+counterparts before deleting manifestless stage links. Obsolete identity tests
+use an explicit memory port while production selection and file-backed rotation
+remain refused. This is source and isolated synthetic Windows evidence, with no
+live-profile mutation, candidate switch or installed/release qualification.
+
+The [workspace-discard identity repair](./receipts/2026-11-11-workspace-discard-exact-identity.md)
+uses the existing exact U64 Node stat boundary through confirmation and
+quarantine/control recovery. The versioned v0.2 token contract preserves and
+refuses v0.1 controls rather than reinterpreting rounded commitments. This is
+isolated synthetic evidence; no live cleanup, native U128 qualification or
+production filesystem-policy approval is implied.
+
+The [collector source-identity repair](./receipts/2026-11-11-collector-source-identity-repair.md)
+preserves U64 volume and U128 file identities through collector plan v0.3,
+supplemental plan v3 and workspace v2 / physical schema 8. The old supplemental
+`u64:` codec and numeric-version inference are removed. Older executable formats
+remain preserved/refused, with no live conversion or new compatibility layer.
+This is isolated Windows evidence, including committed-batch crash recovery;
+it does not qualify the running desktop or establish a refresh-speed improvement.
+
 Refresh diagnostics expose process-local, closed stage timings for index
 discovery, classification, replay, maintenance, model fitting and work projection.
 Rescan reasons and changed cache-proof components use fixed category codes only;
@@ -114,12 +154,20 @@ verified subworkers inherit their nearest assigned parent, and non-Git projects
 remain projects. Focused isolated synthetic checks and a read-only projection of
 an existing retained real-data copy passed. The copy was verified unchanged;
 the readback did not open the active index or Codex's live SQLite/WAL/SHM files.
-The wider frozen Standard report and historical work-identity checks still fail;
+At that observation, the wider frozen Standard report and historical
+work-identity checks failed;
 the same 133 report differences and 12 work-identity differences were reproduced
 with the original implementation at `b5c737ceebad5240392bc8bc8712675cf8504567`
 under isolated synthetic data. Their fixture was not rewritten. The project
 repair was adopted by the unsigned local stable candidate at
 `e059d12d4a5481355b2127b1c01632155e285667`; that package predates Terra support.
+
+The [2026-11-11 golden repair](./receipts/2026-11-11-historical-golden-repair.md)
+restores the original synthetic salt and separates historical Standard results
+from the accepted desktop policy, versioned cache analysis and catalog additions.
+Its isolated source tests close this historical-equivalence gate without
+regenerating the fixture or changing production calculation/data. This does not
+qualify a packaged or running candidate, or the remaining root-suite debt.
 
 Brand configuration, neutral package identity and explicit profile paths are
 implemented in source. The approved editable SVG and raster/ICO/tray variants
@@ -151,8 +199,15 @@ Expanded synthetic native regression exposed an existing timing SQLite
 hot-journal recovery gap: the read-only schema preflight returns
 `SQLITE_READONLY_ROLLBACK` (776) before writable guarded recovery. A separately
 rebuilt baseline binding reproduces the same failure. The report-specific
-tests passed, but the broader native filesystem suite is not fully passing;
-this recovery debt remains open. Those regression runs used synthetic databases.
+tests passed at that point; the broader native failure is preserved as
+point-in-time evidence. On 2026-11-10 the
+uncommitted source adds an optional manifest-bound timing-recovery capability:
+hold native original-file byte locks, recover and validate a protected copy,
+then restore through the same handles before clearing the hot journal.
+The formerly failing native test and negative synthetic recovery tests pass;
+see the [recovery receipt](./receipts/2026-11-10-timing-hot-journal-recovery.md).
+This closes the reproduced source failure, not installed/live qualification.
+Those regression runs used synthetic databases.
 The subsequent migration investigation read real database headers only, without
 opening a SQLite connection or changing data.
 

@@ -359,6 +359,155 @@ work enrichment. It never writes source or profile state.
 
 # Read-only live diagnostic
 
+## Protected-copy marginal refresh experiment (2026-11-08)
+
+The owner requested a cached-baseline comparison rather than a session-count
+scale curve. Reparse one protected copy of the existing, closed real sources,
+then build the normal index, accounting/window caches and dashboard snapshot.
+Exclude this initial preparation from the incremental results. From an identical
+cached baseline, measure three unchanged refreshes, three additions of one
+held-out real short session, and three appends of an actual withheld complete-line
+tail to an existing real session. Preserve original identities and bytes; do not
+fabricate sessions or edit live sources, settings, caches or the running app.
+
+Restore only the experiment's baseline state between measured runs, retaining
+the index file identity required by its proof receipt. Check the same starting
+generation, event/source/session counts and fixed calculation anchor each time.
+Record fresh-process startup separately from cached refresh, discovery, index,
+origin proof, window shadow, snapshot projection/publication and first work
+projection. Three cached fresh-process samples do not establish warm-process
+or cold operating-system-cache latency. Keep the external metadata snapshot and
+pricing options fixed; quota network observation is excluded, explicitly
+unavailable rather than a measured zero. Git enrichment remains a local external
+read and is not claimed frozen. Report medians and ranges, inserted/changed
+source counts, bytes read by ingestion, fallback/rebuild and generation checks.
+Only aggregate content-free measurements may leave the protected copy. No
+product source, schema, durable cache format or release change is part of this
+experiment.
+
+The [completed protected-copy comparison](../receipts/2026-11-08-cached-refresh-marginal-comparison.md)
+retains nine primary passes and three additional unchanged controls, all with
+successful replay checks. One short session touched only its 174,844-byte file;
+a 517,356-byte modern-response tail required the existing atomic full-source
+reconciliation of that one 2,478,398-byte file. Accounting stayed fast path with
+zero full rebuilds, and changed cases rebuilt one window day. Host CPU/memory
+conditions and work-origin timings varied too much to establish a causal
+per-session latency. Keep the original and confirmation groups separate; no
+product or live candidate was changed by this experiment.
+
+## Computation reductions without another cache layer (2026-11-08)
+
+Source inspection at `71f1a2cb` and two read-only protected-copy probes identify
+the following bounded candidates. These are investigation results, not product
+changes or demonstrated whole-refresh savings. Reuse existing functions and
+request-local values; do not introduce a service, persistent format, worker,
+cross-generation cache or invalidation policy to pursue them.
+
+1. **Remove work-origin path-query amplification first.**
+   `src/local-index-work-usage.js` runs a `SELECT DISTINCT src.path` join once
+   per requested/discovered session. `EXPLAIN QUERY PLAN` on the frozen copy
+   reports `SCAN src`, a primary-key session lookup and a temporary DISTINCT
+   tree for every invocation. A read-only three-run probe looked up the same
+   4,064 initial usage sessions against generation 4368. Per-session queries
+   took 8,423.231, 13,839.622 and 10,384.404 ms; one source/session scan with
+   request-local grouping took 69.771, 53.149 and 55.494 ms. All three ordered
+   path-list comparisons were exact across the admitted corpus (4,368 rows).
+   The 10,328.910 ms difference of medians qualifies this SQL slice only.
+   The probe's all-history grouping is not a production implementation: a
+   production slice must batch only requested sessions, retain lazy admission
+   of verified parents, preserve case-insensitive UUID lookup, DISTINCT, the
+   33-path refusal sentinel, memory/cancellation bounds and publication fences.
+   In particular, unrelated old sources must not make a small window fail.
+   Keep fresh native origin opens and every guard. Start with
+   `test/local-index-work-usage.test.js`, origin/provider negative cases and
+   generation/cancellation regressions; then repeat exact work output and
+   phase timings on the protected corpus. No new SQLite index/schema is needed.
+
+   Implementation authorized after the probe: keep this slice in
+   `src/local-index-work-usage.js`, batch at most 256 initial requested UUIDs,
+   discard consumed path lists, and retain the existing per-parent lookup
+   outside that initial set. At most 33 distinct paths per UUID are retained;
+   the existing ancestry reader still refuses the sentinel before opening
+   any of those files. Validate case-insensitive matching, filtered sources,
+   duplicate paths, 32/33 boundary, lazy out-of-window parents, unrelated old
+   overflow, cancellation and publication changes. Then compare full work
+   results against `71f1a2cb` on the existing protected copy with unchanged
+   generation/anchor, fresh-process and warm-process samples separately. No
+   running-candidate switch or live-profile change is part of this slice.
+
+   The [implemented batching receipt](../receipts/2026-11-08-work-source-path-batching.md)
+   records 6/6 exact full-work comparisons plus an excluded warmup. Queries
+   fell from 4,066 to 18 on generation 4368; source-path SQL medians fell from
+   15,530.825 to 136.493 ms in fresh processes and from 16,907.188 to 52.468 ms
+   when warm. Severe host-memory pressure and native-read variability prevent
+   a stable whole-work or live-refresh speedup claim. No schema/cache-format
+   change, new cache layer or running-candidate switch was made.
+
+2. **Reuse verified day accumulators within one window-refresh call.**
+   `verifyAccountingWindowDays` constructs `dayMap` and throws its result
+   away; the changed-day/anchor fold later imports, finalizes and verifies
+   the cache's days again. Preserve every keyed receipt/day verification,
+   but arrange the existing window-cache owner to retain its verified local
+   accumulators through that same update. Drop removed days and replace dirty
+   days with newly built verified accumulators before folding. Do not memoize
+   by mutable object identity across calls or accept a caller's bare
+   `verified: true` as proof. A 256-day read-only probe measured full day
+   verification at 279.191–1,670.729 ms and import/finalize alone at
+   123.774–1,094.877 ms. These are overlapping operations, not additive savings.
+   Its rolling fold still performed four distinct edge-range scans and took
+   1,090.500–3,296.003 ms. This does not attribute the entire 8.5–11.4-second
+   changed-day shadow cost to redundant validation. Validate tampered days,
+   receipt/key/basis/revision changes, removed days, manual repair, cancellation,
+   and exact periods/history with existing window-cache/fold/parity tests.
+
+3. **Avoid the second full snapshot accounting-cache decode on an exact hit.**
+   `buildLocalCompanionSnapshot` first loads the complete accounting cache in
+   parallel with the report, then reads it again after obtaining the report's
+   generation. That second call also prepares state, reads/parses and validates
+   the complete cache. A narrow optimization can bind the already validated,
+   private first value to the exact report generation using the existing
+   generation/context/clock rules, with the original fresh read when it does
+   not match. Keep stale-channel behavior and changed-publication handling.
+   Share the existing pure classification logic rather than implementing a
+   second matcher. Evidence proves the duplicated reads; net latency savings
+   remain unmeasured and the first read overlaps the report. This is a smaller
+   priority than the proven path-query amplification. No cache format changes.
+
+4. **Consolidate repeated boundary-scan setup only if later profiles justify it.**
+   `buildAccountingRollingPeriods` already memoizes identical fragments. The
+   four scans observed above are distinct ranges, so claiming four duplicate
+   scans would be wrong. Each currently opens a fresh accounting read and
+   computes global report metadata/tool counts. The same-corpus metadata
+   probes were 34.431–219.500 ms per call. A function-local, pinned-snapshot
+   scan session could share setup, but connection/snapshot lifetime and WAL
+   pressure add complexity. Defer this until the simpler slices are measured.
+
+The all-period work reconstruction for each related-period request is also
+confirmed in `apps/local/server.js`, `src/application/work-usage.js` and the
+browser preloader. It has a higher possible ceiling but crosses existing
+snapshot/lease/freshness boundaries. Do not add a second completed-work cache
+or cache by generation alone. Narrowing the requested interval alone can
+change family aliases/collision sets and still leaves all-directory Git
+resolution. Defer that change rather than disguising a new snapshot lifecycle
+as a small optimization.
+
+Retain full-source `response_reconciliation` for modern appended sessions,
+per-event window building at declared-speed edges (`grouped: false`), native
+ACL/link/path checks and all origin fallback paths. Do not hoist path guards
+or merge accounting-origin and work-origin reads with different evidence
+options merely because their timings share a prefix. Recovery-index ordering
+from the interrupted cold build is a separate recovery issue, not proof of a
+normal cached-refresh bottleneck. Work aggregation/finalize were subsecond in
+the confirmation controls and are lower priority than origins and repeated SQL.
+
+The ignored probe code and aggregate outputs are
+`.release-build/session-growth-20261108/computation-probe.mjs` / `.json` and
+`window-computation-probe.mjs` / `.json`. The probes used Node.js 26.2.0 on
+Windows x64 and read only the existing operational copy. They made no product,
+schema, durable-cache-format, live-profile or running-candidate changes. Their
+three repetitions used a warmed OS cache and do not establish a fresh-process,
+live or balanced whole-refresh performance result.
+
 `scripts/benchmark-work-origin-reads.mjs` requires `--allow-live-read`,
 `--phase cold|warm` and `--run 1|2|3`. It reads the default stable index and
 Codex home only; it never triggers a refresh or writes profile/source state.

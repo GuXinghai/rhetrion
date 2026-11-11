@@ -1,10 +1,11 @@
 // Diagnostic timing only. Qualified rows may feed the separately reviewed
 // daily performance projection, never accounting or transport authority.
 import { createHmac } from 'node:crypto';
+import { isCodexApiSession } from './tier-normalization.js';
 
 export const METHOD = 2;
 // Parsing semantics can advance without changing stable timing HMAC identities.
-export const INFERENCE_TIMING_PARSER_VERSION = 19;
+export const INFERENCE_TIMING_PARSER_VERSION = 20;
 export const MAX_STATE_BYTES = 128 * 1024;
 const MAX_TIER_EVENTS = 512;
 const MAX_CONTEXT_HISTORY = 512;
@@ -506,7 +507,7 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     if (!p || typeof p !== 'object') { rejectToolFree(); return; }
     const at = stamp(r.timestamp);
     if (r.type === 'session_meta') {
-      if (s.own || !id(p.id) || p.forked_from_id) { s.blocked = true; s.turns = {}; return; }
+      if (s.own || !id(p.id) || p.forked_from_id || isCodexApiSession(p)) { s.blocked = true; s.turns = {}; return; }
       s.own = hash('session', p.id); return;
     }
     if (!s.own) return;

@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 
 import {
   createOwnerOnlyLocalMetadataBundlePairReader as createPlatformReader,
+  createWindowsOwnerOnlyArtifactReader,
 } from "../src/platform/local-metadata-bundle-files.js";
 
 class SafeFileError extends Error {
@@ -254,6 +255,29 @@ function readerOptions(overrides = {}) {
     ...overrides,
   };
 }
+
+test("shared Windows artifact reader rejects file and parent replacement and always closes", async () => {
+  for (const kind of ["handle", "file", "parent"]) {
+    const { sourceAccess, calls } = createFakeWindowsSourceAccess({
+      statOverride: kind === "handle" ? (_path, stats) => ({ ...stats,
+        ino: "00000000000000000000000000000099" }) : null,
+      metadataOverride(path, metadata, count) {
+        if ((kind === "file" && path === BUNDLE_PATH && count === 3)
+            || (kind === "parent" && path === PARENT_PATH && count === 4)) {
+          return { ...metadata, identity: { ...metadata.identity,
+            fileId: "00000000000000000000000000000099" } };
+        }
+      },
+    });
+    const reader = createWindowsOwnerOnlyArtifactReader({ sourceAccessFactory: () => sourceAccess });
+    await assert.rejects(reader.read({ path: BUNDLE_PATH, label: "artifact", maximumBytes: 128,
+      createError: (code) => new SafeFileError(code) }),
+    { code: kind === "handle" ? "artifact_changed_during_open"
+      : kind === "file" ? "artifact_changed_during_read" : "parent_directory_changed" });
+    assert.deepEqual(calls.closes, [BUNDLE_PATH]);
+    if (kind === "handle") assert.deepEqual(calls.reads, []);
+  }
+});
 
 function assertCode(expectedCode) {
   return (error) =>

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { buildLocalCompanionSnapshot } from "../src/local-companion-data.js";
 import {
   commitLocalCollectorState,
@@ -18,6 +18,7 @@ import {
 import {
   normalizeDashboardPayload,
 } from "../apps/web/public/data-client.js";
+import { createProtectedFixtureDirectory } from "./helpers/windows-owner-only-fixture.js";
 
 const NOW = Date.parse("2026-08-03T12:30:00.000Z");
 const RESETS_AT = Math.floor(Date.parse("2026-08-10T12:00:00.000Z") / 1_000);
@@ -69,6 +70,7 @@ function quotaRecord({
 // Legacy JSON migration remains covered by local-collector-state.test.js.
 async function writeCollectorState(root, records) {
   const stateFile = defaultLocalCollectorStatePath(root);
+  createProtectedFixtureDirectory(dirname(stateFile));
   await prepareLocalCollectorState({ stateFile, clock: () => NOW });
   await commitLocalCollectorState({
     stateFile,

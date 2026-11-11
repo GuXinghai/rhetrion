@@ -10,6 +10,7 @@ import {
 } from "../src/cli.js";
 import { localCodexLogScanner } from "../src/local-node-runtime.js";
 import { writeJsonOwnerOnlyAtomic } from "../src/storage.js";
+import { createProtectedFixtureDirectory } from "./helpers/windows-owner-only-fixture.js";
 
 const { codexLogSourceFingerprint } = localCodexLogScanner;
 
@@ -44,7 +45,9 @@ test("pathful Codex source provenance is stripped before a cache-validation side
     archiveDirectory,
     "rollout-2026-07-30T12-00-00-fingerprint-basename-canary-7b834861.jsonl",
   );
-  const outputPath = join(fixtureRoot, "cache-validation-sidecar.json");
+  const outputDirectory = join(fixtureRoot, "protected-output");
+  createProtectedFixtureDirectory(outputDirectory);
+  const outputPath = join(outputDirectory, "cache-validation-sidecar.json");
   const rolloutBasename = basename(rolloutPath);
 
   try {

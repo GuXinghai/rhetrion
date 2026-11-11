@@ -242,7 +242,7 @@ PRAGMA user_version;                         -- current: 11; retained predecesso
 SELECT key, value FROM meta
   WHERE key IN ('family', 'parser_version', 'rollup_basis');
   -- family: local-index-store
-  -- current parser_version: local-index-rollout-typed-v3+unified-rollout-typed-v22
+  -- current parser_version: local-index-rollout-typed-v3+unified-rollout-typed-v23
 SELECT commit_seq FROM store_state;
 SELECT seq, committed_at_ms, kind, sources_changed
   FROM commit_log ORDER BY seq DESC LIMIT 5;
@@ -705,6 +705,100 @@ decoder and usage-only target projection. Missing cadence/pause evidence is
 never replaced with defaults. Reopening first reacquires all actual objects;
 re-reading settled controls does not replay an ACL mutation. Other settings
 files keep their ACLs and contents and can still be written normally.
+
+### Explicit collector-state private-copy reconciliation
+
+`scripts/reconcile-native-electron-collector-observations.mjs` is protected
+tooling for three explicitly prepared, stopped collector-state copies, not a
+live-profile repair command. Inspection uses `--copy-root` and creates no
+receipt or operation journal. Application still requires both
+`--apply-to-private-copy` and `--confirm-append-only-private-copy`; real-copy
+execution requires separate authorization for those exact targets.
+
+The root, database copies, conservation proof and generated files must satisfy
+the native Windows owner-only DACL, reparse and single-link contract. Existing
+unsafe files are refused without changing their ACLs. Receipt creation is
+exclusive and replacement is atomic and expected-identity-bound through the
+existing narrow native release-operation capability. General production/path
+approval flags remain disabled. Native rename retries are bounded and never
+replay an append or an uncertain completed replacement.
+
+The tool reuses `operation.json`, `mutex.sqlite` and its protected journal in
+the private-copy directory. The existing operation format binds the root and
+database identities, source/baseline byte digests, conservation proof digest
+and checkpoint. Its SQLite mutex excludes cooperating concurrent runs across
+processes and releases on process death. An unrelated operation in that
+directory is a conflict, not an invitation to overwrite it.
+
+After interruption, repeat the same explicit apply flags on the same preserved
+copy root and unchanged proof. Before appending, the tool verifies that every
+baseline record remains and that destination multiplicities contain only the
+permitted source delta. It appends only still-missing multiplicities, verifies
+metadata/checkpoint and full conservation, then publishes `verified`. A repeat
+of a completed operation verifies state and returns the original cumulative
+result without opening an append session. Record counts in that result belong
+to the bound operation, not just the latest invocation.
+
+If receipt replacement is persistently blocked, the old receipt and protected
+`collector-reconciliation-receipt-v1.json.pending` remain. Resume validates this
+pending value against the bound inputs and actual committed database before
+publication or cleanup. An uncertain replacement is inspected, not blindly
+replayed. Do not delete receipt, pending, mutex or operation files to force a
+retry. Changed input bytes, unexpected rows/fields, missing receipt after an
+append, or unsafe evidence fail closed. A legacy receipt without the matching
+source-bound operation cannot be automatically resumed; preserve it and use a
+separately reviewed recovery plan or prepare a fresh authorized set of copies.
+
+This repair changes neither collector database schema, persistent cache format
+nor the v1 reconciliation receipt shape. It reuses the existing operation
+journal format. Atomic name publication does not claim parent-directory
+power-loss durability, protection against a hostile same-owner process
+bypassing the operation mutex, or installed/live qualification.
+
+### Historical report storage and explicit copy
+
+`pnpm run migrate:legacy-reports -- --root <directory>` previews only the fixed
+historical-report filename inventory. Preview creates no directories or receipt,
+and reports only reviewed relative names, states, byte counts and SHA-256.
+`--apply` creates independent protected copies in
+`.usage-monitor/legacy-reports/`; it never deletes the originals or changes their
+ACLs. This owner-approved preservation behavior replaces the old hard-link,
+chmod and source-unlink sequence. Real report-copy execution still requires
+authorization for the exact source/target root; ordinary tests use synthetic
+roots only.
+
+The existing `local-legacy-report-migration-v0.1` result shape and state names
+remain. `migrated` means verified canonical placement, with source retained.
+An exact, safe existing copy is `already_migrated`; a differing destination is
+`destination_conflict` and blocks apply. Partial failure is explicit and retains
+verified copies for inspection/retry. A repeat authenticates existing files and
+their complete bytes; it never trusts a matching filename, overwrites conflicts
+or deletes a partial target by pathname. No new database schema, persistent
+cache, migration receipt format or automatic source-deletion workflow is added.
+
+Source reads use the verified native frozen legacy-source capability: current
+owner, regular single-link file, no reparse component, pinned ancestors, denied
+writer/deletion sharing, bounded reads and final metadata/overflow checks.
+At most the fixed nine sources are retained, each at most 16 MiB, with 64 KiB
+read chunks. Existing source inheritance is accepted only through this explicit
+read/copy capability and is never converted to a protected target in place.
+An existing writer, changed source identity, oversize file or unsafe source
+blocks copying before any destination is created.
+
+Canonical report parents/files require the native protected owner-only DACL.
+Missing private parents may be created during explicit write/apply; existing
+unsafe parents/files fail closed without ACL repair. Publication reuses the
+existing native atomic report publisher, including its bounded private stage,
+mutex, identity/security checks and uncertain-commit handling. Explicit output
+paths require an already protected parent. Report reads/writes are bounded to
+16 MiB. Canonical reads prefer the protected copy; missing copies can use the
+read-only current-owner legacy source. Unsafe canonical state is never hidden
+by falling back to an older source. Errors omit absolute paths and file content.
+
+Native publication's atomic name guarantee does not assert parent-directory
+power-loss durability. Physical Windows unit tests remain separate from live,
+installed-artifact, signing and release qualification; global native production
+and path-walk policy flags remain disabled.
 
 ## 16. Close out
 

@@ -215,6 +215,7 @@
       "stableAliasReason": "Private operation durability and local mutex support; not a standalone command.",
       "additionalAliases": [],
       "callers": [
+        "scripts/reconcile-native-electron-collector-observations.mjs",
         "test/release-operation.test.js",
         "test/profile-cutover-operation.test.js",
         "scripts/lib/profile-cutover-operation.mjs",
@@ -615,6 +616,7 @@
         "scripts/build-electron-runtime.mjs",
         "test/application-brand-boundary.test.js",
         "test/browser-module-serving-parity.test.js",
+        "test/local-index-companion-projection-off-main.test.js",
         "test/surface-manifest.test.js"
       ],
       "decision": "retain_as_internal_release_support",
@@ -675,10 +677,10 @@
       "stableAlias": "migrate:legacy-reports",
       "stableAliasReason": null,
       "additionalAliases": [],
-      "callers": [],
+      "callers": ["test/local-legacy-report-storage.test.js"],
       "decision": "retain_as_owner_only_migration",
       "provenance": null,
-      "provenanceReason": "The migration moves only known ignored historical report outputs into owner-only local state after an explicit SHA-256-reviewed apply step.",
+      "provenanceReason": "The migration copies only known ignored historical report outputs into owner-only local state after explicit apply and SHA-256 verification; source bytes and ACLs remain unchanged.",
       "legacyPaths": []
     },
     {
@@ -697,19 +699,20 @@
       "legacyPaths": []
     },
     {
-      "classification": "reusable_benchmark",
+      "classification": "historical_research_report",
       "owner": "r7_release_evidence",
       "canonicalPath": "scripts/r7-materialized-boundary-worker.js",
       "stableAlias": null,
-      "stableAliasReason": "Internal benchmark worker is launched by the R7 benchmark module and tests.",
+      "stableAliasReason": "Retired materialized-evidence worker retains a fixed refusal response and historical source-inventory binding.",
       "additionalAliases": [],
       "callers": [
         "src/r7-materialized-boundary-benchmark.js",
         "src/r7-release-evidence-schema.js",
         "test/r7-materialized-boundary-benchmark.test.js",
+        "test/r7-materialized-boundary-harness.test.js",
         "test/r7-release-evidence-schema.test.js"
       ],
-      "decision": "retain_codex_worker_utilities_and_historical_receipt_validation",
+      "decision": "retain_retirement_guard_and_historical_receipt_validation",
       "provenance": null,
       "provenanceReason": "R7 receipts bind this worker through source inventory, but no dated narrative artifact directly identifies the worker path.",
       "legacyPaths": []

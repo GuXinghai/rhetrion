@@ -147,8 +147,16 @@ test("browser catalogs preserve placeholders, plural forms, and legacy text has 
   for (const [key, values] of Object.entries(WEB_MESSAGES)) {
     assert.equal(values.length, 3, `${key} has an entry per supported locale`);
     assert.equal(values.every((value) => value.trim().length > 0), true, key);
-    assert.deepEqual(placeholders(values[1]), placeholders(values[0]), key);
-    assert.deepEqual(placeholders(values[2]), placeholders(values[0]), key);
+    // The bounded legacy warning matcher captures English singular/plural
+    // words; translations own their grammar and retain both numeric slots.
+    // Pin this one reviewed exception instead of allowing arbitrary omissions.
+    if (key === "dashboard.warning.excludedSources") {
+      assert.deepEqual(placeholders(values[0]), ["skipped", "sourcenoun", "threadnoun", "threads"]);
+      for (const copy of values.slice(1)) assert.deepEqual(placeholders(copy), ["skipped", "threads"]);
+    } else {
+      assert.deepEqual(placeholders(values[1]), placeholders(values[0]), key);
+      assert.deepEqual(placeholders(values[2]), placeholders(values[0]), key);
+    }
   }
   for (const [english, values] of Object.entries(LEGACY_TEXT_CATALOG)) {
     assert.equal(english.trim().length > 0, true);
@@ -185,12 +193,12 @@ test("browser catalogs preserve placeholders, plural forms, and legacy text has 
     "2 ventanas de cuota coincidentes",
   );
   assert.equal(
-    translatePlural("contribution.batch", 3, {}, "zh-Hans"),
-    "3 个贡献批次",
+    translatePlural("dashboard.timeline.window", 3, {}, "zh-Hans"),
+    "3 个匹配额度窗口",
   );
   assert.equal(
-    translatePlural("contribution.batch", Number.NaN, {}, "en-US"),
-    "0 contribution batches",
+    translatePlural("dashboard.timeline.window", Number.NaN, {}, "en-US"),
+    "0 matched quota windows",
   );
   assert.equal(
     translatePlural("quota.durationDay", 30, {}, "es"),
@@ -261,6 +269,8 @@ test("shipped static web copy has a complete translated inventory and localizabl
   )));
   const copyThatNeedsNoTranslation = new Set([
     "Rhetrion",
+    // Standard color-space notation, identical in each shipped locale.
+    "HEX", "R", "G", "B",
   ]);
   // `%` joins `$` here: the percent sign is written identically in zh-Hans and
   // es, so a bare one is a unit symbol rather than untranslated copy. The tank

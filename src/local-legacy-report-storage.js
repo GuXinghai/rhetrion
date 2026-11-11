@@ -1,25 +1,14 @@
-import { createHash, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { createHash } from "node:crypto";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
-  link,
-  lstat,
-  mkdir,
-  open,
-  rename,
-  unlink,
-} from "node:fs/promises";
-import { basename, join, parse, relative, resolve, sep } from "node:path";
-import {
-  assertOwnerControlledDirectory,
-  syncDirectory,
+  createOwnerOnlyAtomicFilePublisher,
+  loadWindowsLegacyStateReadBinding,
 } from "./platform/index.js";
 
 const MAX_MIGRATABLE_REPORT_BYTES = 16 * 1024 * 1024;
 const LOCAL_STATE_DIRECTORY = ".usage-monitor";
 const LOCAL_LEGACY_REPORT_DIRECTORY_NAME = "legacy-reports";
-const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
-const DIRECTORY = constants.O_DIRECTORY ?? 0;
-const WRITE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW;
+const publish = createOwnerOnlyAtomicFilePublisher();
 
 export const LOCAL_LEGACY_REPORT_FILENAMES = Object.freeze([
   "2026-07-23-codex-weekly-limit-history-report.html",
@@ -32,809 +21,328 @@ export const LOCAL_LEGACY_REPORT_FILENAMES = Object.freeze([
   "2026-07-24-weekly-7-day-calibration-report.html",
   "artifact.json",
 ]);
-
 const KNOWN_FILENAMES = new Set(LOCAL_LEGACY_REPORT_FILENAMES);
+const absent = error => ["ENOENT", "WINDOWS_FILESYSTEM_NOT_FOUND"].includes(error?.code);
+const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 
-function ownError(code, message) {
-  const error = new Error(message);
-  error.code = code;
-  return error;
+function ownError(code) {
+  return Object.assign(new Error("Legacy report storage operation failed."), { code });
 }
-
 function assertKnownFilename(filename) {
-  if (!KNOWN_FILENAMES.has(filename)) {
-    throw ownError("unknown_legacy_report", "Legacy report filename is not recognized.");
+  if (!KNOWN_FILENAMES.has(filename)) throw ownError("unknown_legacy_report");
+}
+function selectedFiles(files) {
+  if (!Array.isArray(files) || files.length > LOCAL_LEGACY_REPORT_FILENAMES.length) {
+    throw ownError("unknown_legacy_report");
+  }
+  files.forEach(assertKnownFilename);
+  return [...new Set(files)].sort();
+}
+function assertAnchor(path, anchor) {
+  if (anchor === null) return;
+  const child = relative(resolve(anchor), path);
+  if (child === ".." || child.startsWith(`..${sep}`) || resolve(anchor, child) !== path) {
+    throw ownError("unsafe_report_path");
   }
 }
-
-function canonicalRoot(root) {
-  return resolve(root);
+function nativeBinding() {
+  try { return loadWindowsLegacyStateReadBinding(); }
+  catch { throw ownError("legacy_report_storage_unavailable"); }
+}
+function optionalInspect(native, path) {
+  try { return native.inspectPath(path); }
+  catch (error) { if (absent(error)) return null; throw ownError("unsafe_report_path"); }
+}
+function inspectChild(native, target, name) {
+  try { return native.inspectProtectedChild(target.path, target.identity, name); }
+  catch (error) { if (absent(error)) return null; throw ownError("unsafe_report_path"); }
+}
+async function withRoot(native, root, callback) {
+  let held;
+  try { held = native.acquireLegacyStateDirectoryGuard(root); }
+  catch { throw ownError("unsafe_report_path"); }
+  try { return await callback(); }
+  finally { native.releaseProtectedDirectoryGuard(held.guard); }
 }
 
-/**
- * Inspects every existing component without following symbolic links.  A
- * lexical path check is not enough here: an attacker can replace either the
- * final report or one of the private-directory ancestors with a link to a
- * different owner-controlled (or foreign) tree.  Missing components are
- * reported separately so callers may create the canonical tree safely.
- */
-async function inspectPathComponents(path, { anchor = null } = {}) {
-  const absolutePath = resolve(path);
-  const anchorPath = anchor === null ? parse(absolutePath).root : resolve(anchor);
-  const relativePath = relative(anchorPath, absolutePath);
-  if (relativePath === ".." || relativePath.startsWith(`..${sep}`) || relativePath.startsWith(sep)) {
-    return { status: "unsafe", path: absolutePath };
-  }
-  let current = anchorPath;
-  let metadata;
+// Existing native guards authenticate/pin each directory. They never repair an
+// existing inherited/broad DACL. Only explicitly requested missing directories
+// are created, so preview and reads cannot provision state.
+async function withCanonical(native, root, create, callback) {
+  const guards = [];
   try {
-    metadata = await lstat(current);
-  } catch (error) {
-    if (error?.code === "ENOENT") return { status: "missing", path: current };
-    throw error;
-  }
-  if (metadata.isSymbolicLink()) {
-    return { metadata, path: current, status: "unsafe" };
-  }
-  if (!metadata.isDirectory() && current !== absolutePath) {
-    return { metadata, path: current, status: "unsafe" };
-  }
-  if (current === absolutePath) return { metadata, path: current, status: "present" };
-
-  const components = relativePath.split(sep).filter(Boolean);
-  for (const component of components) {
-    current = join(current, component);
-    try {
-      metadata = await lstat(current);
-    } catch (error) {
-      if (error?.code === "ENOENT") return { status: "missing", path: current };
-      throw error;
+    for (const path of [join(root, LOCAL_STATE_DIRECTORY), localLegacyReportDirectory(root)]) {
+      if (create) {
+        try { native.ensureDirectory(path); }
+        catch { throw ownError("unsafe_report_path"); }
+      } else if (optionalInspect(native, path) === null) return await callback(null);
+      let held;
+      try { held = native.acquireProtectedDirectoryGuard(path); }
+      catch { throw ownError("unsafe_report_path"); }
+      guards.push(held);
     }
-    if (metadata.isSymbolicLink()) {
-      return { metadata, path: current, status: "unsafe" };
-    }
-    const isFinal = current === absolutePath;
-    if (!isFinal && !metadata.isDirectory()) {
-      return { metadata, path: current, status: "unsafe" };
-    }
-    if (isFinal) return { metadata, path: current, status: "present" };
-  }
-  return { status: "missing", path: absolutePath };
-}
-
-function unsafePathError(label) {
-  return ownError("unsafe_report_path", `${label} must not contain symbolic links.`);
-}
-
-async function assertSafePathComponents(path, label, options = {}) {
-  const inspected = await inspectPathComponents(path, options);
-  if (inspected.status === "unsafe") throw unsafePathError(label);
-  return inspected;
-}
-
-function identityFingerprint(metadata) {
-  return Object.freeze({
-    dev: String(metadata.dev),
-    ino: String(metadata.ino),
-  });
-}
-
-function sameIdentity(left, right) {
-  return left?.dev === right?.dev && left?.ino === right?.ino;
-}
-
-function reportContentBytes(content) {
-  if (typeof content === "string") return Buffer.from(content, "utf8");
-  if (Buffer.isBuffer(content) || content instanceof Uint8Array) return Buffer.from(content);
-  throw new TypeError("Legacy report content must be a string, Buffer, or Uint8Array");
-}
-
-function reportPathAnchor(path, anchor) {
-  return anchor === null ? parse(resolve(path)).root : resolve(anchor);
-}
-
-async function assertReportDirectory(path, anchor, expectedIdentity = null) {
-  const inspected = await assertSafePathComponents(path, "Legacy report directory", { anchor });
-  if (inspected.status !== "present"
-      || !inspected.metadata.isDirectory()
-      || inspected.metadata.isSymbolicLink()
-      || !isOwner(inspected.metadata)
-      || (process.platform !== "win32" && (inspected.metadata.mode & 0o077) !== 0)) {
-    throw ownError("unsafe_directory", "Legacy report directory must be a private owner directory.");
-  }
-  const identity = identityFingerprint(inspected.metadata);
-  if (expectedIdentity !== null && !sameIdentity(identity, expectedIdentity)) {
-    throw ownError("unsafe_directory", "Legacy report directory changed during report publication.");
-  }
-  return { identity, metadata: inspected.metadata };
-}
-
-async function syncLegacyReportDirectory(path, anchor, expectedIdentity) {
-  await assertReportDirectory(path, anchor, expectedIdentity);
-  let handle;
-  try {
-    handle = await open(path, constants.O_RDONLY | DIRECTORY | NOFOLLOW);
-    const opened = await handle.stat();
-    if (!opened.isDirectory() || opened.isSymbolicLink() || !isOwner(opened)
-        || !sameIdentity(identityFingerprint(opened), expectedIdentity)) {
-      throw ownError("unsafe_directory", "Legacy report directory changed during durability sync.");
-    }
-    await handle.sync();
-    const after = await handle.stat();
-    if (!after.isDirectory() || after.isSymbolicLink() || !isOwner(after)
-        || !sameIdentity(identityFingerprint(after), expectedIdentity)) {
-      throw ownError("unsafe_directory", "Legacy report directory changed during durability sync.");
-    }
-    await assertReportDirectory(path, anchor, expectedIdentity);
-  } catch (error) {
-    if (error?.code === "ELOOP" || error?.code === "ENOTDIR" || error?.code === "ENOENT") {
-      throw ownError("unsafe_directory", "Legacy report directory path is unsafe.");
-    }
-    throw error;
+    return await callback({ path: localLegacyReportDirectory(root), identity: guards.at(-1).identity });
   } finally {
-    await handle?.close();
+    let failure;
+    for (const held of guards.reverse()) {
+      try { native.releaseProtectedDirectoryGuard(held.guard); }
+      catch (error) { failure ??= error; }
+    }
+    if (failure) throw ownError("legacy_report_storage_unavailable");
   }
 }
 
-async function inspectReportDestination(path, anchor, label) {
-  const inspected = await assertSafePathComponents(path, label, { anchor });
-  if (inspected.status === "missing") return null;
-  if (!inspected.metadata.isFile() || inspected.metadata.isSymbolicLink()
-      || !isOwner(inspected.metadata) || inspected.metadata.nlink !== 1) {
-    throw ownError("unsafe_report_path", "Canonical legacy report must be an owner-only regular file.");
-  }
-  return identityFingerprint(inspected.metadata);
+function sameStat(left, right) {
+  return ["dev", "ino", "size", "nlink", "mtimeMs", "ctimeMs"].every(key => left[key] === right[key]);
 }
-
-async function assertStagedReport(path, anchor, expectedIdentity, expectedBytes) {
-  const inspected = await assertSafePathComponents(path, "Staged legacy report path", { anchor });
-  if (inspected.status !== "present"
-      || !inspected.metadata.isFile()
-      || inspected.metadata.isSymbolicLink()
-      || !isOwner(inspected.metadata)
-      || inspected.metadata.nlink !== 1
-      || inspected.metadata.size !== expectedBytes
-      || !sameIdentity(identityFingerprint(inspected.metadata), expectedIdentity)) {
-    throw ownError("unsafe_destination", "Staged legacy report path changed during publication.");
+function boundedStat(native, lease) {
+  const stat = native.statSourceFile(lease);
+  if (!Number.isSafeInteger(stat.size) || stat.size < 0 || stat.size > MAX_MIGRATABLE_REPORT_BYTES) {
+    throw Object.assign(ownError("source_too_large"), { bytes: stat.size });
   }
-  return inspected.metadata;
+  return stat;
 }
-
-async function unlinkExactStagedReport(path, expectedIdentity, directory, anchor, expectedDirectoryIdentity) {
-  if (expectedIdentity === null) return;
+function readFrozen(native, lease, expected = boundedStat(native, lease)) {
+  const bytes = Buffer.alloc(expected.size);
   try {
-    await assertReportDirectory(directory, anchor, expectedDirectoryIdentity);
-    const stagedPath = await assertSafePathComponents(path, "Staged legacy report path", { anchor });
-    if (stagedPath.status !== "present") return;
-    const current = await lstat(path);
-    if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1
-        || !isOwner(current) || !sameIdentity(identityFingerprint(current), expectedIdentity)) return;
-    await unlink(path);
-  } catch (error) {
-    if (error?.code !== "ENOENT") return;
-  }
+    for (let offset = 0; offset < bytes.length;) {
+      const requested = Math.min(65_536, bytes.length - offset);
+      const part = native.readSourceFile(lease, offset, requested);
+      if (!Buffer.isBuffer(part) || part.length < 1 || part.length > requested) throw ownError("source_changed");
+      part.copy(bytes, offset); offset += part.length; part.fill(0);
+    }
+    const extra = native.readSourceFile(lease, expected.size, 1);
+    if (!Buffer.isBuffer(extra) || extra.length !== 0
+        || !sameStat(expected, native.statSourceFile(lease))) throw ownError("source_changed");
+    return bytes;
+  } catch (error) { bytes.fill(0); throw error; }
 }
-
-/**
- * Writes one owner-only report through a private same-directory staging file.
- * The pathname checks and final revalidation intentionally remain in addition
- * to O_NOFOLLOW: Node does not expose renameat/openat, so a hostile same-UID
- * process can still rename an ancestor between the last check and rename.
- */
-async function writeSafeLegacyReportPath(path, content, {
-  anchor = null,
-  label = "Legacy report path",
-  ensureDirectory = false,
-} = {}) {
-  const absolutePath = resolve(path);
-  const pathAnchor = reportPathAnchor(absolutePath, anchor);
-  const directory = parse(absolutePath).dir;
-  const bytes = reportContentBytes(content);
-
-  if (NOFOLLOW === 0) {
-    throw ownError("unsafe_destination", "Legacy report publication requires no-follow filesystem support.");
-  }
-  if (ensureDirectory) await ensureLocalLegacyReportDirectory(pathAnchor);
-
-  const directoryState = await assertReportDirectory(directory, pathAnchor);
-  await inspectReportDestination(absolutePath, pathAnchor, label);
-
-  const stagedPath = join(
-    directory,
-    `.${basename(absolutePath)}.${process.pid}.${randomUUID()}.tmp`,
-  );
-  let handle;
-  let stagedIdentity = null;
-  let published = false;
+function sourceHash(native, lease, expected) {
+  const bytes = readFrozen(native, lease, expected);
+  try { return digest(bytes); } finally { bytes.fill(0); }
+}
+function canonicalBytes(native, target, name) {
+  const metadata = inspectChild(native, target, name);
+  if (metadata === null) throw ownError("report_not_found");
+  const lease = native.openLegacyStateFile(join(target.path, name));
   try {
-    const stagedBeforeOpen = await assertSafePathComponents(
-      stagedPath,
-      "Staged legacy report path",
-      { anchor: pathAnchor },
-    );
-    if (stagedBeforeOpen.status !== "missing") {
-      throw ownError("unsafe_destination", "Staged legacy report path already exists.");
+    const stat = boundedStat(native, lease);
+    if (stat.dev !== metadata.identity.volumeSerialNumber || stat.ino !== metadata.identity.fileId) {
+      throw ownError("source_changed");
     }
-    handle = await open(stagedPath, WRITE_FLAGS, 0o600);
-    const created = await handle.stat();
-    stagedIdentity = identityFingerprint(created);
-    if (!created.isFile() || created.isSymbolicLink() || !isOwner(created) || created.nlink !== 1) {
-      throw ownError("unsafe_destination", "Staged legacy report is not an owner-only regular file.");
-    }
-    await handle.chmod(0o600);
-    await handle.writeFile(bytes);
-    await handle.sync();
-    const written = await handle.stat();
-    if (!written.isFile() || written.isSymbolicLink() || !isOwner(written)
-        || written.nlink !== 1 || written.size !== bytes.byteLength
-        || (process.platform !== "win32" && (written.mode & 0o077) !== 0)
-        || !sameIdentity(identityFingerprint(written), stagedIdentity)) {
-      throw ownError("unsafe_destination", "Staged legacy report failed validation.");
-    }
-    await assertStagedReport(stagedPath, pathAnchor, stagedIdentity, bytes.byteLength);
-    await assertReportDirectory(directory, pathAnchor, directoryState.identity);
-    await inspectReportDestination(absolutePath, pathAnchor, label);
-    await handle.close();
-    handle = null;
-    // Re-check the staged pathname after closing the descriptor and immediately
-    // before rename; no-follow on the initial open cannot protect a later
-    // pathname replacement by another same-UID process.
-    await assertStagedReport(stagedPath, pathAnchor, stagedIdentity, bytes.byteLength);
-    await assertReportDirectory(directory, pathAnchor, directoryState.identity);
-    await inspectReportDestination(absolutePath, pathAnchor, label);
-
+    const data = readFrozen(native, lease, stat);
     try {
-      await rename(stagedPath, absolutePath);
-    } catch (error) {
-      if (error?.code === "ELOOP" || error?.code === "ENOTDIR") {
-        throw ownError("unsafe_report_path", "Legacy report destination path is unsafe.");
+      const after = inspectChild(native, target, name);
+      if (after === null || JSON.stringify(after.identity) !== JSON.stringify(metadata.identity)) {
+        throw ownError("source_changed");
       }
-      throw error;
-    }
-    published = true;
-    const publishedMetadata = await assertSafePathComponents(
-      absolutePath,
-      label,
-      { anchor: pathAnchor },
-    );
-    if (publishedMetadata.status !== "present"
-        || !publishedMetadata.metadata.isFile()
-        || publishedMetadata.metadata.isSymbolicLink()
-        || !isOwner(publishedMetadata.metadata)
-        || publishedMetadata.metadata.nlink !== 1
-        || publishedMetadata.metadata.size !== bytes.byteLength
-        || (process.platform !== "win32" && (publishedMetadata.metadata.mode & 0o077) !== 0)
-        || !sameIdentity(identityFingerprint(publishedMetadata.metadata), stagedIdentity)) {
-      throw ownError("unsafe_report_path", "Published legacy report failed validation.");
-    }
-    await syncLegacyReportDirectory(directory, pathAnchor, directoryState.identity);
-    return absolutePath;
-  } catch (error) {
-    await handle?.close().catch(() => {});
-    if (!published) {
-      await unlinkExactStagedReport(
-        stagedPath,
-        stagedIdentity,
-        directory,
-        pathAnchor,
-        directoryState.identity,
-      );
-    }
-    if (error?.code === "ELOOP" || error?.code === "ENOTDIR") {
-      throw ownError("unsafe_report_path", "Legacy report destination path is unsafe.");
-    }
-    throw error;
-  }
+      return { data, identity: metadata.identity };
+    } catch (error) { data.fill(0); throw error; }
+  } finally { native.closeSourceFile(lease); }
 }
-
-async function readSafeLegacyReportPath(path, {
-  anchor = null,
-  label = "Legacy report path",
-} = {}) {
-  if (NOFOLLOW === 0) {
-    throw ownError("unsafe_report_path", "Legacy report reads require no-follow filesystem support.");
-  }
-  const absolutePath = resolve(path);
-  const pathAnchor = reportPathAnchor(absolutePath, anchor);
-  const inspected = await assertSafePathComponents(absolutePath, label, { anchor: pathAnchor });
-  if (inspected.status !== "present") {
-    const error = ownError("report_not_found", "Legacy report does not exist.");
-    error.path = absolutePath;
-    throw error;
-  }
-  if (!inspected.metadata.isFile() || inspected.metadata.isSymbolicLink()) {
-    throw ownError("unsafe_report_path", "Legacy report must be a regular file.");
-  }
-  let handle;
+function canonicalHash(native, target, name) {
+  const entry = canonicalBytes(native, target, name);
   try {
-    handle = await open(absolutePath, constants.O_RDONLY | NOFOLLOW);
-    const opened = await handle.stat();
-    if (!opened.isFile() || opened.isSymbolicLink()) {
-      throw ownError("unsafe_report_path", "Legacy report must be a regular file.");
-    }
-    const bytes = await handle.readFile();
-    const after = await handle.stat();
-    if (!sameIdentity(identityFingerprint(after), identityFingerprint(opened))
-        || after.size !== opened.size) {
-      throw ownError("unsafe_report_path", "Legacy report changed during read.");
-    }
-    const pathAfterRead = await assertSafePathComponents(absolutePath, label, { anchor: pathAnchor });
-    if (pathAfterRead.status !== "present"
-        || !pathAfterRead.metadata.isFile()
-        || pathAfterRead.metadata.isSymbolicLink()
-        || !sameIdentity(identityFingerprint(pathAfterRead.metadata), identityFingerprint(opened))) {
-      throw ownError("unsafe_report_path", "Legacy report path changed during read.");
-    }
-    return bytes.toString("utf8");
-  } catch (error) {
-    if (error?.code === "ELOOP" || error?.code === "ENOTDIR") {
-      throw ownError("unsafe_report_path", "Legacy report path is unsafe.");
-    }
-    if (error?.code === "ENOENT") {
-      const notFound = ownError("report_not_found", "Legacy report does not exist.");
-      notFound.path = absolutePath;
-      throw notFound;
-    }
-    throw error;
-  } finally {
-    await handle?.close();
-  }
+    return { sha256: digest(entry.data), identity: entry.identity, bytes: entry.data.length };
+  } finally { entry.data.fill(0); }
 }
-
-async function chmodOwnerOnlyDirectory(path, anchor) {
-  let handle;
-  try {
-    handle = await open(path, constants.O_RDONLY | DIRECTORY | NOFOLLOW);
-    const before = await handle.stat();
-    if (!before.isDirectory() || before.isSymbolicLink()) {
-      throw ownError("unsafe_directory", "Legacy report directory must be a real directory.");
-    }
-    const identity = metadataFingerprint(before);
-    await handle.chmod(0o700);
-    const after = await handle.stat();
-    if (!sameMetadata(metadataFingerprint(after), identity)) {
-      throw ownError("unsafe_directory", "Legacy report directory changed during validation.");
-    }
-    const pathAfter = await inspectPathComponents(path, { anchor });
-    if (pathAfter.status !== "present"
-        || !pathAfter.metadata.isDirectory()
-        || !sameMetadata(metadataFingerprint(pathAfter.metadata), identity)) {
-      throw ownError("unsafe_directory", "Legacy report directory path changed during validation.");
-    }
-  } catch (error) {
-    if (error?.code === "ELOOP" || error?.code === "ENOTDIR" || error?.code === "ENOENT") {
-      throw ownError("unsafe_directory", "Legacy report directory path is unsafe.");
-    }
-    throw error;
-  } finally {
-    await handle?.close();
-  }
-}
-
-function metadataFingerprint(metadata) {
-  return Object.freeze({
-    dev: String(metadata.dev),
-    ino: String(metadata.ino),
-    mtimeMs: metadata.mtimeMs,
-    nlink: metadata.nlink,
-    size: metadata.size,
-  });
-}
-
-function sameMetadata(left, right) {
-  return left.dev === right.dev
-    && left.ino === right.ino
-    && left.mtimeMs === right.mtimeMs
-    && left.nlink === right.nlink
-    && left.size === right.size;
-}
-
-function isOwner(metadata) {
-  return typeof process.getuid !== "function" || metadata.uid === process.getuid();
-}
-
 function safeEntry(file, state, details = {}) {
-  return Object.freeze({
-    destination: localLegacyReportRelativePath(file),
-    file,
-    state,
-    ...details,
-  });
+  return Object.freeze({ destination: localLegacyReportRelativePath(file), file, state, ...details });
+}
+function safeMigrationResult(apply, entries, status) {
+  return Object.freeze({ apply, entries: Object.freeze(entries), schemaVersion: "local-legacy-report-migration-v0.1", status });
 }
 
-function safeMigrationResult({ apply, entries, status }) {
-  return Object.freeze({
-    apply,
-    entries: Object.freeze(entries),
-    schemaVersion: "local-legacy-report-migration-v0.1",
-    status,
-  });
-}
-
-/**
- * The owner-only location for dated report artifacts that used to accumulate
- * in the repository root. It remains ignored and never becomes a release
- * input or a public web asset.
- */
 export function localLegacyReportDirectory(root = process.cwd()) {
-  return join(canonicalRoot(root), LOCAL_STATE_DIRECTORY, LOCAL_LEGACY_REPORT_DIRECTORY_NAME);
+  return join(resolve(root), LOCAL_STATE_DIRECTORY, LOCAL_LEGACY_REPORT_DIRECTORY_NAME);
 }
-
 export function localLegacyReportRelativePath(filename) {
   assertKnownFilename(filename);
   return `${LOCAL_STATE_DIRECTORY}/${LOCAL_LEGACY_REPORT_DIRECTORY_NAME}/${filename}`;
 }
-
 export function localLegacyReportPath(root, filename) {
   assertKnownFilename(filename);
   return join(localLegacyReportDirectory(root), filename);
 }
-
-/**
- * Publishes a canonical legacy report atomically into the owner-only report
- * directory. Every canonical report builder uses this entry point rather than
- * writing the destination pathname directly.
- */
-export async function writeLocalLegacyReport(root, filename, content) {
-  assertKnownFilename(filename);
-  const ownerRoot = canonicalRoot(root);
-  return writeSafeLegacyReportPath(localLegacyReportPath(root, filename), content, {
-    anchor: ownerRoot,
-    label: "Canonical legacy report path",
-    ensureDirectory: true,
-  });
-}
-
-/**
- * Safely rewrites an explicitly supplied report path. The parent must already
- * be a private owner directory; callers cannot accidentally turn a symlink
- * into a followed write.
- */
-export async function writeLegacyReportPath(path, content, options = {}) {
-  return writeSafeLegacyReportPath(path, content, options);
-}
-
-export async function readLegacyReportPath(path, options = {}) {
-  return readSafeLegacyReportPath(path, options);
-}
-
-export async function readLocalLegacyReport(root, filename) {
-  assertKnownFilename(filename);
-  const ownerRoot = canonicalRoot(root);
-  const sourcePath = await resolveLocalLegacyReportReadPath(root, filename);
-  return readSafeLegacyReportPath(sourcePath, {
-    anchor: ownerRoot,
-    label: sourcePath === localLegacyReportPath(root, filename)
-      ? "Canonical legacy report path"
-      : "Legacy report path",
-  });
-}
-
 export function legacyRootReportPath(root, filename) {
   assertKnownFilename(filename);
-  return join(canonicalRoot(root), filename);
-}
-
-/**
- * Selects the private canonical copy when it exists. The root fallback is
- * deliberately read-only compatibility for installations upgraded from the
- * former layout; writers always use the canonical location.
- */
-export async function resolveLocalLegacyReportReadPath(root, filename) {
-  const ownerRoot = canonicalRoot(root);
-  const canonicalPath = localLegacyReportPath(root, filename);
-  const canonical = await assertSafePathComponents(canonicalPath, "Canonical legacy report path", { anchor: ownerRoot });
-  if (canonical.status === "present") {
-    if (!canonical.metadata.isFile() || canonical.metadata.isSymbolicLink()) {
-      throw ownError("unsafe_report_path", "Canonical legacy report must be a regular file.");
-    }
-    return canonicalPath;
-  }
-
-  const legacyPath = legacyRootReportPath(root, filename);
-  const legacy = await assertSafePathComponents(legacyPath, "Legacy report path", { anchor: ownerRoot });
-  if (legacy.status === "present"
-      && (!legacy.metadata.isFile() || legacy.metadata.isSymbolicLink())) {
-    throw ownError("unsafe_report_path", "Legacy report must be a regular file.");
-  }
-  return legacyPath;
-}
-
-async function ensureOwnerOnlyDirectory(path, anchor) {
-  await assertSafePathComponents(path, "Legacy report directory", { anchor });
-  await mkdir(path, { mode: 0o700, recursive: true });
-  const inspected = await assertSafePathComponents(path, "Legacy report directory", { anchor });
-  if (inspected.status !== "present") {
-    throw ownError("unsafe_directory", "Legacy report directory could not be created safely.");
-  }
-  const metadata = inspected.metadata;
-  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-    throw ownError("unsafe_directory", "Legacy report directory must be a real directory.");
-  }
-  if (!isOwner(metadata)) {
-    throw ownError("foreign_owner", "Legacy report directory must be owned by the current user.");
-  }
-  // chmodOwnerOnlyDirectory re-opens the final directory with O_NOFOLLOW;
-  // passing the repository root keeps the ancestor check scoped to this tree.
-  await chmodOwnerOnlyDirectory(path, anchor);
-  await assertOwnerControlledDirectory(path);
+  return join(resolve(root), filename);
 }
 
 export async function ensureLocalLegacyReportDirectory(root = process.cwd()) {
-  const ownerRoot = canonicalRoot(root);
-  const stateDirectory = join(ownerRoot, LOCAL_STATE_DIRECTORY);
-  await ensureOwnerOnlyDirectory(stateDirectory, ownerRoot);
-  const reportDirectory = localLegacyReportDirectory(root);
-  await ensureOwnerOnlyDirectory(reportDirectory, ownerRoot);
-  for (const file of LOCAL_LEGACY_REPORT_FILENAMES) {
-    const destination = await assertSafePathComponents(
-      localLegacyReportPath(root, file),
-      "Canonical legacy report path",
-      { anchor: ownerRoot },
-    );
-    if (destination.status === "present"
-        && !destination.metadata.isFile()) {
-      throw ownError("unsafe_report_path", "Canonical legacy report must be a regular file.");
-    }
-  }
-  return reportDirectory;
+  const native = nativeBinding(), ownerRoot = resolve(root);
+  return withRoot(native, ownerRoot, () => withCanonical(native, ownerRoot, true, target => {
+    for (const file of LOCAL_LEGACY_REPORT_FILENAMES) inspectChild(native, target, file);
+    return target.path;
+  }));
 }
 
-/**
- * Reads a legacy source through one descriptor and a bounded byte window.
- * Reading by pathname and checking lstat afterwards is insufficient: a
- * same-owner append can make readFile allocate past the validated limit, and
- * pathname replacement can redirect the read before the post-read check.
- */
-async function readStableMigrationSource(path, expected, anchor) {
-  let handle;
-  try {
-    handle = await open(path, constants.O_RDONLY | NOFOLLOW);
-    const opened = await handle.stat();
-    const openedFingerprint = metadataFingerprint(opened);
-    if (!opened.isFile() || opened.isSymbolicLink() || !isOwner(opened) || opened.nlink !== 1) {
-      throw ownError("unsafe_source", "Legacy report source must be an owner-only regular file.");
-    }
-    if (!sameMetadata(openedFingerprint, expected)) {
-      throw ownError("source_changed", "A legacy report changed during migration.");
-    }
-    if (opened.size > MAX_MIGRATABLE_REPORT_BYTES) {
-      const error = ownError("source_too_large", "Legacy report source exceeds the migration byte limit.");
-      error.bytes = opened.size;
-      throw error;
-    }
+export async function writeLocalLegacyReport(root, filename, content) {
+  assertKnownFilename(filename);
+  validateContent(content);
+  await ensureLocalLegacyReportDirectory(root);
+  return writeLegacyReportPath(localLegacyReportPath(root, filename), content, { anchor: resolve(root) });
+}
 
-    const bytes = Buffer.allocUnsafe(opened.size);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
-      if (!Number.isSafeInteger(bytesRead) || bytesRead < 1 || bytesRead > bytes.length - offset) {
-        throw ownError("source_changed", "A legacy report changed during migration.");
+function validateContent(content) {
+  if (typeof content !== "string" && !Buffer.isBuffer(content) && !(content instanceof Uint8Array)) {
+    throw new TypeError("Legacy report content must be a string, Buffer, or Uint8Array");
+  }
+  const length = typeof content === "string" ? Buffer.byteLength(content) : content.byteLength;
+  if (length > MAX_MIGRATABLE_REPORT_BYTES) throw ownError("source_too_large");
+}
+export async function writeLegacyReportPath(path, content, { anchor = null } = {}) {
+  validateContent(content);
+  const absolute = resolve(path); assertAnchor(absolute, anchor);
+  const native = nativeBinding();
+  let held;
+  try { held = native.acquireProtectedDirectoryGuard(dirname(absolute)); }
+  catch { throw ownError("unsafe_report_path"); }
+  try {
+    inspectChild(native, { path: dirname(absolute), identity: held.identity }, basename(absolute));
+    await publish(absolute, content);
+    return absolute;
+  } finally { native.releaseProtectedDirectoryGuard(held.guard); }
+}
+
+export async function readLegacyReportPath(path, { anchor = null } = {}) {
+  const absolute = resolve(path); assertAnchor(absolute, anchor);
+  const native = nativeBinding();
+  let lease;
+  try {
+    lease = native.openLegacyStateFile(absolute);
+    const bytes = readFrozen(native, lease);
+    try { return bytes.toString("utf8"); } finally { bytes.fill(0); }
+  } catch (error) {
+    if (absent(error)) throw ownError("report_not_found");
+    if (["source_too_large", "source_changed"].includes(error?.code)) throw error;
+    throw ownError("unsafe_report_path");
+  } finally { if (lease) native.closeSourceFile(lease); }
+}
+
+export async function resolveLocalLegacyReportReadPath(root, filename) {
+  assertKnownFilename(filename);
+  const ownerRoot = resolve(root), native = nativeBinding();
+  return withRoot(native, ownerRoot, () => withCanonical(native, ownerRoot, false, target => {
+    if (target !== null && inspectChild(native, target, filename) !== null) return localLegacyReportPath(root, filename);
+    const legacy = legacyRootReportPath(root, filename), metadata = optionalInspect(native, legacy);
+    if (metadata !== null && (!metadata.isRegularFile || metadata.isReparsePoint
+        || !metadata.ownerMatches || metadata.identity.linkCount !== 1)) throw ownError("unsafe_report_path");
+    return legacy;
+  }));
+}
+export async function readLocalLegacyReport(root, filename) {
+  assertKnownFilename(filename);
+  const native = nativeBinding(), ownerRoot = resolve(root);
+  return withRoot(native, ownerRoot, () => withCanonical(native, ownerRoot, false, target => {
+    if (target !== null && inspectChild(native, target, filename) !== null) {
+      const entry = canonicalBytes(native, target, filename);
+      try { return entry.data.toString("utf8"); } finally { entry.data.fill(0); }
+    }
+    return readLegacyReportPath(legacyRootReportPath(root, filename), { anchor: ownerRoot });
+  }));
+}
+
+async function inspectOne(native, root, file, sources) {
+  let target, source;
+  try {
+    target = await withCanonical(native, root, false, directory => {
+      if (directory === null || inspectChild(native, directory, file) === null) return null;
+      return canonicalHash(native, directory, file);
+    });
+  } catch { return safeEntry(file, "destination_invalid"); }
+  const path = legacyRootReportPath(root, file);
+  let metadata;
+  try { metadata = optionalInspect(native, path); }
+  catch { return safeEntry(file, "unsafe_source"); }
+  if (metadata === null) return safeEntry(file, target === null ? "absent" : "already_migrated");
+  if (!metadata.isRegularFile || metadata.isReparsePoint) return safeEntry(file, "unsafe_source");
+  if (!metadata.ownerMatches) return safeEntry(file, "foreign_owner");
+  if (metadata.identity.linkCount !== 1) return safeEntry(file, "multiple_hard_links");
+  try {
+    source = native.openLegacyStateFile(path);
+    const stat = boundedStat(native, source);
+    if (stat.dev !== metadata.identity.volumeSerialNumber || stat.ino !== metadata.identity.fileId) {
+      throw ownError("source_changed");
+    }
+    const sha256 = sourceHash(native, source, stat);
+    if (target !== null) {
+      return safeEntry(file, target.bytes === stat.size && target.sha256 === sha256 ? "already_migrated" : "destination_conflict");
+    }
+    sources.set(file, { lease: source, stat }); source = null;
+    return safeEntry(file, "migratable", { bytes: stat.size, sha256 });
+  } catch (error) {
+    if (error?.code === "source_too_large") return safeEntry(file, "source_too_large", { bytes: error.bytes });
+    return safeEntry(file, ["source_changed", "WINDOWS_FILESYSTEM_ACCESS_DENIED", "WINDOWS_FILESYSTEM_SOURCE_BUSY"].includes(error?.code)
+      ? "source_changed" : "unsafe_source");
+  } finally { if (source) native.closeSourceFile(source); }
+}
+
+async function withInspection({ files, root }, callback) {
+  const names = selectedFiles(files), native = nativeBinding(), ownerRoot = resolve(root);
+  const sources = new Map();
+  return withRoot(native, ownerRoot, async () => {
+    try {
+      const entries = [];
+      // Bound both retained leases and aggregate bytes by the fixed nine-file
+      // inventory and per-file 16 MiB limit. Freeze every source before writes.
+      for (const file of names) entries.push(await inspectOne(native, ownerRoot, file, sources));
+      return await callback({ native, root: ownerRoot, entries, sources });
+    } finally {
+      let failure;
+      for (const source of [...sources.values()].reverse()) {
+        try { native.closeSourceFile(source.lease); } catch (error) { failure ??= error; }
       }
-      offset += bytesRead;
+      if (failure) throw ownError("legacy_report_storage_unavailable");
     }
-
-    // Probe one byte beyond the validated size.  This makes an append during
-    // the read fail closed rather than silently migrating an unbounded file.
-    const overflow = Buffer.allocUnsafe(1);
-    const { bytesRead: overflowBytes } = await handle.read(
-      overflow,
-      0,
-      overflow.length,
-      opened.size,
-    );
-    if (overflowBytes !== 0) {
-      throw ownError("source_changed", "A legacy report grew during migration.");
-    }
-
-    const after = await handle.stat();
-    if (!sameMetadata(metadataFingerprint(after), expected)) {
-      throw ownError("source_changed", "A legacy report changed during migration.");
-    }
-    const pathAfterRead = await inspectPathComponents(path, { anchor });
-    if (pathAfterRead.status === "unsafe") throw ownError("unsafe_source", "Legacy report source path is unsafe.");
-    if (pathAfterRead.status !== "present"
-        || !pathAfterRead.metadata.isFile()
-        || !sameMetadata(metadataFingerprint(pathAfterRead.metadata), expected)) {
-      throw ownError("source_changed", "A legacy report changed during migration.");
-    }
-    return bytes;
-  } catch (error) {
-    if (error?.code === "ELOOP" || error?.code === "ENOTDIR") {
-      throw ownError("unsafe_source", "Legacy report source path is unsafe.");
-    }
-    if (error?.code === "ENOENT") {
-      throw ownError("source_changed", "A legacy report changed during migration.");
-    }
-    throw error;
-  } finally {
-    await handle?.close();
-  }
-}
-
-async function chmodStagedReport(path, anchor) {
-  let handle;
-  try {
-    handle = await open(path, constants.O_RDONLY | NOFOLLOW);
-    const before = await handle.stat();
-    if (!before.isFile() || before.isSymbolicLink()) {
-      throw ownError("unsafe_destination", "Staged legacy report must be a regular file.");
-    }
-    const identity = metadataFingerprint(before);
-    await handle.chmod(0o600);
-    const after = await handle.stat();
-    if (!sameMetadata(metadataFingerprint(after), identity)) {
-      throw ownError("unsafe_destination", "Staged legacy report changed during migration.");
-    }
-    const pathAfter = await inspectPathComponents(path, { anchor });
-    if (pathAfter.status !== "present"
-        || !pathAfter.metadata.isFile()
-        || !sameMetadata(metadataFingerprint(pathAfter.metadata), identity)) {
-      throw ownError("unsafe_destination", "Staged legacy report path changed during migration.");
-    }
-  } catch (error) {
-    if (error?.code === "ELOOP" || error?.code === "ENOTDIR" || error?.code === "ENOENT") {
-      throw ownError("unsafe_destination", "Staged legacy report path is unsafe.");
-    }
-    throw error;
-  } finally {
-    await handle?.close();
-  }
-}
-
-async function inspectOne(root, file) {
-  const ownerRoot = canonicalRoot(root);
-  const sourcePath = legacyRootReportPath(root, file);
-  const destinationPath = localLegacyReportPath(root, file);
-  const [source, destination] = await Promise.all([
-    inspectPathComponents(sourcePath, { anchor: ownerRoot }),
-    inspectPathComponents(destinationPath, { anchor: ownerRoot }),
-  ]);
-
-  if (destination.status === "unsafe") return safeEntry(file, "destination_invalid");
-  if (source.status === "unsafe") return safeEntry(file, "unsafe_source");
-
-  const sourceMetadata = source.status === "present" ? source.metadata : null;
-  const destinationMetadata = destination.status === "present" ? destination.metadata : null;
-
-  if (destinationMetadata !== null) {
-    if (!destinationMetadata.isFile() || destinationMetadata.isSymbolicLink()) {
-      return safeEntry(file, "destination_invalid");
-    }
-    if (sourceMetadata === null) return safeEntry(file, "already_migrated");
-    return safeEntry(file, "destination_conflict");
-  }
-  if (sourceMetadata === null) return safeEntry(file, "absent");
-  if (!sourceMetadata.isFile() || sourceMetadata.isSymbolicLink()) {
-    return safeEntry(file, "unsafe_source");
-  }
-  if (!isOwner(sourceMetadata)) return safeEntry(file, "foreign_owner");
-  if (sourceMetadata.nlink !== 1) return safeEntry(file, "multiple_hard_links");
-  if (sourceMetadata.size > MAX_MIGRATABLE_REPORT_BYTES) {
-    return safeEntry(file, "source_too_large", { bytes: sourceMetadata.size });
-  }
-
-  const before = metadataFingerprint(sourceMetadata);
-  let bytes;
-  try {
-    bytes = await readStableMigrationSource(sourcePath, before, ownerRoot);
-  } catch (error) {
-    if (error?.code === "source_too_large") {
-      return safeEntry(file, "source_too_large", { bytes: error.bytes });
-    }
-    if (error?.code === "unsafe_source") return safeEntry(file, "unsafe_source");
-    if (error?.code === "source_changed") return safeEntry(file, "source_changed");
-    throw error;
-  }
-  return safeEntry(file, "migratable", {
-    bytes: before.size,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
   });
 }
 
 export async function inspectLocalLegacyReportMigration({
-  files = LOCAL_LEGACY_REPORT_FILENAMES,
-  root = process.cwd(),
+  files = LOCAL_LEGACY_REPORT_FILENAMES, root = process.cwd(),
 } = {}) {
-  const selected = [...new Set(files)];
-  for (const file of selected) assertKnownFilename(file);
-  const entries = await Promise.all(selected.map((file) => inspectOne(root, file)));
-  return safeMigrationResult({
-    apply: false,
-    entries,
-    status: entries.some(({ state }) => state === "migratable") ? "ready" : "nothing_to_migrate",
-  });
-}
-
-function migrationBlocker(entry) {
-  return !["absent", "already_migrated", "migratable"].includes(entry.state);
-}
-
-async function removeStagedLinks(staged) {
-  await Promise.all(staged.map(async ({ destinationPath }) => {
-    await unlink(destinationPath).catch(() => {});
-  }));
+  return withInspection({ files, root }, ({ entries }) => safeMigrationResult(false, entries,
+    entries.some(entry => entry.state === "migratable") ? "ready" : "nothing_to_migrate"));
 }
 
 /**
- * Moves known legacy report files without overwrite risk. Files are first
- * linked into the private directory and only then unlinked from the root, so
- * a failure leaves at least one intact copy. A dry run is the default.
+ * Explicit copy-first migration. Sources and ACLs stay unchanged. Exclusive
+ * native creation/readback preserves verified partial copies on interruption;
+ * repeat inspection accepts only safe exact copies and never overwrites them.
+ * Existing v0.1 `migrated` means verified canonical placement, not deletion.
  */
 export async function migrateLocalLegacyReports({
-  apply = false,
-  files = LOCAL_LEGACY_REPORT_FILENAMES,
-  root = process.cwd(),
+  apply = false, files = LOCAL_LEGACY_REPORT_FILENAMES, root = process.cwd(),
 } = {}) {
-  const inspection = await inspectLocalLegacyReportMigration({ files, root });
-  if (!apply) return inspection;
-  const blockers = inspection.entries.filter(migrationBlocker);
-  if (blockers.length > 0) {
-    return safeMigrationResult({
-      apply: true,
-      entries: inspection.entries,
-      status: "blocked",
-    });
-  }
-
-  const migratable = inspection.entries.filter(({ state }) => state === "migratable");
-  if (migratable.length === 0) {
-    return safeMigrationResult({
-      apply: true,
-      entries: inspection.entries,
-      status: "nothing_to_migrate",
-    });
-  }
-
-  const destinationDirectory = await ensureLocalLegacyReportDirectory(root);
-  const staged = [];
-  try {
-    for (const entry of migratable) {
-      const refreshed = await inspectOne(root, entry.file);
-      if (refreshed.state !== "migratable" || refreshed.sha256 !== entry.sha256) {
-        throw ownError("source_changed", "A legacy report changed during migration.");
-      }
-      const sourcePath = legacyRootReportPath(root, entry.file);
-      const destinationPath = localLegacyReportPath(root, entry.file);
-      await link(sourcePath, destinationPath);
-      await chmodStagedReport(destinationPath, canonicalRoot(root));
-      staged.push({ destinationPath, entry, sourcePath });
+  if (!apply) return inspectLocalLegacyReportMigration({ files, root });
+  return withInspection({ files, root }, async ({ native, root: ownerRoot, entries, sources }) => {
+    if (entries.some(entry => !["absent", "already_migrated", "migratable"].includes(entry.state))) {
+      return safeMigrationResult(true, entries, "blocked");
     }
-    await syncDirectory(destinationDirectory);
-  } catch (error) {
-    await removeStagedLinks(staged);
-    return safeMigrationResult({
-      apply: true,
-      entries: inspection.entries,
-      status: error?.code === "source_changed" ? "source_changed" : "failed_without_move",
-    });
-  }
-
-  const retainedSources = [];
-  const moved = [];
-  for (const stagedEntry of staged) {
+    if (sources.size === 0) return safeMigrationResult(true, entries, "nothing_to_migrate");
+    const copied = new Set();
+    let attempted = false;
     try {
-      await unlink(stagedEntry.sourcePath);
-      moved.push(stagedEntry.entry.file);
-    } catch {
-      retainedSources.push(stagedEntry.entry.file);
+      await withCanonical(native, ownerRoot, true, target => {
+        for (const entry of entries.filter(value => value.state === "migratable")) {
+          const { lease, stat } = sources.get(entry.file);
+          if (sourceHash(native, lease, stat) !== entry.sha256) throw ownError("source_changed");
+          // Never unlink by pathname or overwrite a concurrently created file.
+          attempted = true;
+          const identity = native.copyLegacyStateFile(lease, target.path, target.identity, entry.file);
+          const persisted = canonicalHash(native, target, entry.file);
+          if (persisted.bytes !== entry.bytes || persisted.sha256 !== entry.sha256
+              || JSON.stringify(identity) !== JSON.stringify(persisted.identity)
+              || sourceHash(native, lease, stat) !== entry.sha256) throw ownError("source_changed");
+          copied.add(entry.file);
+        }
+      });
+      return safeMigrationResult(true, entries.map(entry => copied.has(entry.file)
+        ? safeEntry(entry.file, "migrated", { bytes: entry.bytes, sha256: entry.sha256 }) : entry), "migrated");
+    } catch (error) {
+      return safeMigrationResult(true, entries.map(entry => copied.has(entry.file)
+        ? safeEntry(entry.file, "migrated", { bytes: entry.bytes, sha256: entry.sha256 }) : entry),
+      attempted ? "recovery_required" : error?.code === "source_changed" ? "source_changed" : "failed_without_move");
     }
-  }
-  await syncDirectory(canonicalRoot(root)).catch(() => {});
-  const entries = inspection.entries.map((entry) => {
-    if (moved.includes(entry.file)) return safeEntry(entry.file, "migrated", {
-      bytes: entry.bytes,
-      sha256: entry.sha256,
-    });
-    if (retainedSources.includes(entry.file)) return safeEntry(entry.file, "linked_source_retained", {
-      bytes: entry.bytes,
-      sha256: entry.sha256,
-    });
-    return entry;
-  });
-  return safeMigrationResult({
-    apply: true,
-    entries,
-    status: retainedSources.length === 0 ? "migrated" : "recovery_required",
   });
 }

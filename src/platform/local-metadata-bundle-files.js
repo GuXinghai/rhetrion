@@ -501,6 +501,39 @@ export function sha256Hex(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+// Shared only by platform artifact readers. This is the same native ACL and
+// pinned-handle boundary used by the adjacent bundle/receipt reader below.
+export function createWindowsOwnerOnlyArtifactReader({
+  sourceAccessFactory = () => createSourceFileAccess({ platform: "win32" }),
+} = {}) {
+  function access(failures) {
+    try { return validatedWindowsSourceAccess(sourceAccessFactory(), failures); }
+    catch (error) {
+      if (failures.issued(error)) throw error;
+      failures.fail("windows_protection_unavailable");
+    }
+  }
+  return Object.freeze({
+    async inspectDirectory(path, createError) {
+      const failures = failureContext(createError);
+      return inspectWindowsPath(access(failures), path, "directory", "parent", failures);
+    },
+    async read({ path, label, maximumBytes, createError }) {
+      const failures = failureContext(createError);
+      assertPositiveSafeInteger(maximumBytes, `${label}_size`, failures);
+      const sourceAccess = access(failures);
+      const parentPath = dirname(path);
+      const parentIdentity = await inspectWindowsPath(
+        sourceAccess, parentPath, "directory", "parent", failures,
+      );
+      return readWindowsOwnerOnlyArtifact({
+        sourceAccess, path, parentPath, parentIdentity, label, maximumBytes,
+        failures, fileSystem: DEFAULT_FILE_SYSTEM,
+      });
+    },
+  });
+}
+
 export function createOwnerOnlyLocalMetadataBundlePairReader({
   fileSystem = DEFAULT_FILE_SYSTEM,
   platform = process.platform,

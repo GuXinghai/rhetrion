@@ -8,15 +8,16 @@ import {
 
 function usage() {
   return [
-    "Usage: npm run migrate:legacy-reports -- [--apply] [--root <directory>]",
+    "Usage: pnpm run migrate:legacy-reports -- [--apply] [--root <directory>]",
     "",
-    "Previews migration of known owner-only report artifacts from the repository root",
-    "to .usage-monitor/legacy-reports/. Add --apply to move files without overwriting.",
+    "Previews bounded copies of known current-owner report artifacts from the repository root",
+    "to .usage-monitor/legacy-reports/. Add --apply to copy without overwriting or deleting sources.",
   ].join("\n");
 }
 
 function parseArguments(arguments_) {
   let apply = false;
+  let dryRun = false;
   let root = process.cwd();
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
@@ -24,7 +25,7 @@ function parseArguments(arguments_) {
       apply = true;
       continue;
     }
-    if (argument === "--dry-run") continue;
+    if (argument === "--dry-run") { dryRun = true; continue; }
     if (argument === "--root") {
       const value = arguments_[index + 1];
       if (!value || value.startsWith("--")) {
@@ -37,7 +38,10 @@ function parseArguments(arguments_) {
     if (argument === "--help" || argument === "-h") {
       return { help: true };
     }
-    throw new Error(`Unknown argument: ${argument}`);
+    throw Object.assign(new Error("Legacy report migration arguments are invalid."), { code: "legacy_report_arguments_invalid" });
+  }
+  if (apply && dryRun) {
+    throw Object.assign(new Error("Apply and dry run cannot be combined."), { code: "legacy_report_arguments_invalid" });
   }
   return { apply, help: false, root };
 }
@@ -60,7 +64,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       }
     }
   } catch (error) {
-    process.stderr.write(`${error.message}\n${usage()}\n`);
+    process.stderr.write(`${error?.code ?? "legacy_report_migration_failed"}\n${usage()}\n`);
     process.exitCode = 2;
   }
 }

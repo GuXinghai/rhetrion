@@ -72,7 +72,7 @@ export const LOCAL_INDEX_MODEL_RECOGNITION_VERSION = 2;
 // Names the shared extractor revision it was built with, so a change to the
 // extractor's semantics cannot leave facts that no reparse will replace.
 // test/local-index-refresh.test.js pins the two together.
-export const LOCAL_INDEX_PARSER_VERSION = "local-index-rollout-typed-v3+unified-rollout-typed-v22";
+export const LOCAL_INDEX_PARSER_VERSION = "local-index-rollout-typed-v3+unified-rollout-typed-v23";
 
 // Append-only: ordinals are the on-disk and wire representation.
 export const REASONING_EFFORTS = Object.freeze([
@@ -1788,6 +1788,36 @@ export function createLocalIndexWriter(database, { deviceSalt = null } = {}) {
         WHERE id = ?`).run(verifiedAtMs, sourceId);
     },
 
+    /** Called only after a successful complete source replay in this transaction. */
+    repairSourceGaps(sourceId) {
+      assertTransaction();
+      const row = database.prepare(`SELECT file_id, presence, quarantine_code,
+        size_bytes, scanned_bytes, verified_bytes FROM source WHERE id=?`).get(sourceId);
+      if (!row || row.presence !== "present" || row.quarantine_code !== null
+          || typeof row.file_id !== "string" || Number(row.scanned_bytes) !== Number(row.size_bytes)
+          || Number(row.verified_bytes) !== Number(row.size_bytes)) return 0;
+      // The original change binds each gap to a physical identity. Missing or
+      // ambiguous old provenance cannot be repaired by a newer replacement.
+      const repaired = Number(database.prepare(`UPDATE integrity_gap AS g SET repair_status='repaired'
+        WHERE g.source_id=? AND EXISTS (SELECT 1 FROM source s
+          WHERE s.id=g.source_id AND ${SOURCE_GAP_REPAIR_PREDICATE})`).run(sourceId).changes);
+      if (repaired > 0) database.prepare("UPDATE store_state SET calculation_revision=calculation_revision+1 WHERE id=1").run();
+      return repaired;
+    },
+
+    /** The caller has stably read an explicit API declaration on this exact file. */
+    supersedeExcludedApiSourceGaps(sourceId, verifiedFileId) {
+      assertTransaction();
+      if (typeof verifiedFileId !== "string") return 0;
+      const superseded = Number(database.prepare(`UPDATE integrity_gap AS g SET repair_status='superseded'
+        WHERE g.source_id=? AND EXISTS (SELECT 1 FROM source s
+          WHERE s.id=g.source_id AND s.file_id=? AND s.presence='absent'
+            AND s.scanned_bytes=0 AND s.quarantine_code IS NULL
+            AND ${SOURCE_GAP_IDENTITY_PREDICATE})`).run(sourceId, verifiedFileId).changes);
+      if (superseded > 0) database.prepare("UPDATE store_state SET calculation_revision=calculation_revision+1 WHERE id=1").run();
+      return superseded;
+    },
+
     markPresent(sourceId) {
       assertTransaction();
       return Number(database.prepare("UPDATE source SET presence = 'present' WHERE id = ? AND presence = 'absent'").run(sourceId).changes);
@@ -1810,4 +1840,30 @@ export function loadCatalog(database) {
     catalog.set(Buffer.from(row.source_local).toString("hex"), row);
   }
   return catalog;
+}
+
+// Scheduling and transactional resolution share the original physical-identity
+// proof. Legacy gaps without the original change remain explicitly open.
+const SOURCE_GAP_IDENTITY_PREDICATE = `g.repair_status IN ('open','queued')
+  AND g.byte_start=0 AND g.byte_end IS NOT NULL
+  AND EXISTS (SELECT 1 FROM source_change c WHERE c.source_id=g.source_id
+    AND c.mode='quarantine_gap' AND c.reason=g.reason AND c.created_at_ms=g.created_at_ms
+    AND c.old_file_id=c.new_file_id AND c.new_file_id=s.file_id AND c.old_size_bytes=g.byte_end
+    AND NOT EXISTS (SELECT 1 FROM source_change later WHERE later.source_id=g.source_id
+      AND later.change_id>c.change_id AND (later.new_file_id IS NULL OR later.new_file_id<>s.file_id
+        OR later.old_file_id IS NOT NULL AND later.old_file_id<>s.file_id)))`;
+
+const SOURCE_GAP_REPAIR_PREDICATE = `${SOURCE_GAP_IDENTITY_PREDICATE}
+  AND g.byte_end<=s.size_bytes AND s.quarantine_code IS NULL AND s.presence='present'`;
+
+export function readPendingSourceGapRepairs(database) {
+  return new Set(database.prepare(`SELECT DISTINCT g.source_id FROM integrity_gap g
+    JOIN source s ON s.id=g.source_id WHERE ${SOURCE_GAP_REPAIR_PREDICATE}`)
+    .all().map(row => Number(row.source_id)));
+}
+
+export function readPendingSourceGapExclusions(database) {
+  return new Set(database.prepare(`SELECT DISTINCT g.source_id FROM integrity_gap g
+    JOIN source s ON s.id=g.source_id WHERE ${SOURCE_GAP_IDENTITY_PREDICATE}`)
+    .all().map(row => Number(row.source_id)));
 }

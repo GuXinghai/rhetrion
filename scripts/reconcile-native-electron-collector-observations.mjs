@@ -7,12 +7,13 @@
  *
  * Default mode is read-only. `--apply-to-private-copy` appends only source
  * record multiplicities missing from the Electron copy and leaves the
- * Electron checkpoint and all other metadata unchanged.
+ * Electron checkpoint and all other metadata unchanged. Repeating explicit
+ * apply resumes only an authenticated operation in the same private copy.
  */
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, link, lstat, open, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { lstat, open, realpath } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -21,7 +22,9 @@ import {
   openLocalCollectorStateSession,
   readLocalCollectorState,
 } from "../src/local-collector-state.js";
-import { stableJson, syncDirectory } from "../src/storage.js";
+import { stableJson } from "../src/storage.js";
+import { loadWindowsReleaseOperationBinding } from "../src/platform/index.js";
+import { openOperation } from "./lib/release-operation.mjs";
 
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const SCHEMA = "usagemonitor-native-electron-collector-reconciliation-v1";
@@ -29,7 +32,6 @@ const PROOF_SCHEMA = "usagemonitor-native-electron-collector-conservation-r9-v1"
 const PROOF_INSPECTION = "read-only";
 const PROOF_SCOPE = "stopped-native-r9-versus-current-electron";
 const MAX_PROOF_BYTES = 256 * 1024;
-const FILE_MODE = 0o600;
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 const COPY_NAMES = Object.freeze({
   native: "native-local-collector-state-v1.sqlite",
@@ -37,6 +39,7 @@ const COPY_NAMES = Object.freeze({
   electronBefore: "electron-local-collector-state-before-reconcile.sqlite",
 });
 const RECEIPT_NAME = "collector-reconciliation-receipt-v1.json";
+const PENDING_NAME = `${RECEIPT_NAME}.pending`;
 
 function fail(message, code = "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_INVALID") {
   const error = new Error(message);
@@ -125,11 +128,13 @@ function copyPaths(copyRoot) {
   });
 }
 
-async function regularProof(path) {
+async function regularProof(path, native) {
   await privateRegularFile(path, { maximumBytes: MAX_PROOF_BYTES });
-  let value;
+  let value, bytes;
   try {
-    value = JSON.parse(await readFile(path, "utf8"));
+    const parent = native.inspectPath(dirname(path));
+    bytes = native.readProtectedChild(dirname(path), parent.identity, basename(path), MAX_PROOF_BYTES).data;
+    value = JSON.parse(bytes.toString("utf8"));
   } catch {
     fail("identity conservation proof is invalid", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_PROOF_INVALID");
   }
@@ -140,7 +145,7 @@ async function regularProof(path) {
       || !Number.isSafeInteger(value.electronRows) || value.electronRows < 0) {
     fail("identity conservation proof is not accepted", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_PROOF_INVALID");
   }
-  return Object.freeze({ nativeRows: value.nativeRows, electronRows: value.electronRows });
+  return Object.freeze({ nativeRows: value.nativeRows, electronRows: value.electronRows, sha256: sha256(bytes) });
 }
 
 async function hashFile(path) {
@@ -235,61 +240,81 @@ function sameStateMetadata(left, right) {
     && left.migrationDigest === right.migrationDigest;
 }
 
-async function readReceipt(path) {
+function optionalProtectedRead(context, name) {
   try {
-    await lstat(path);
+    return context.native.readProtectedChild(context.root, context.rootIdentity, name, MAX_PROOF_BYTES);
   } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    fail("reconciliation receipt is unavailable", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_RECEIPT_UNSAFE");
+    if (["ENOENT", "WINDOWS_FILESYSTEM_NOT_FOUND"].includes(error?.code)) return null;
+    fail("reconciliation evidence is unsafe", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_RECEIPT_UNSAFE");
   }
-  fail("reconciliation receipt already exists", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_RECEIPT_EXISTS");
 }
 
-async function writeReceipt(path, value) {
-  const temporary = `${path}.${process.pid}.tmp`;
-  let handle;
-  try {
-    handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, FILE_MODE);
-    await handle.writeFile(`${stableJson(value)}\n`, "utf8");
-    await handle.sync();
-  } catch (error) {
-    if (error?.code === "EEXIST") {
-      fail("reconciliation receipt temporary path exists", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_RECEIPT_UNSAFE");
-    }
-    throw error;
-  } finally {
-    await handle?.close();
-  }
-  try {
-    // POSIX rename replaces an existing destination. Link the fsynced temporary
-    // file into place instead so an interrupted or concurrent run cannot
-    // overwrite a receipt that belongs to another private-copy attempt.
-    await link(temporary, path);
-  } catch (error) {
-    await unlink(temporary).catch(() => {});
-    if (error?.code === "EEXIST") {
-      fail("reconciliation receipt already exists", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_RECEIPT_EXISTS");
-    }
-    throw error;
-  }
-  await unlink(temporary);
-  await chmod(path, FILE_MODE);
-  await syncDirectory(dirname(path));
+function receiptValue(entry) {
+  try { return JSON.parse(entry.data.toString("utf8")); }
+  catch { fail("reconciliation receipt is invalid", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_RECEIPT_UNSAFE"); }
 }
 
-async function updateReceipt(path, value) {
-  const temporary = `${path}.${process.pid}.update`;
-  let handle;
-  try {
-    handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, FILE_MODE);
-    await handle.writeFile(`${stableJson(value)}\n`, "utf8");
-    await handle.sync();
-  } finally {
-    await handle?.close();
+function receiptBytes(value) { return Buffer.from(`${stableJson(value)}\n`, "utf8"); }
+
+function assertReceipt(entry, expected) {
+  if (entry === null || stableJson(receiptValue(entry)) !== stableJson(expected)) {
+    fail("reconciliation receipt does not match this operation", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_RECEIPT_UNSAFE");
   }
-  await rename(temporary, path);
-  await chmod(path, FILE_MODE);
-  await syncDirectory(dirname(path));
+}
+
+function sameIdentity(left, right) { return stableJson(left) === stableJson(right); }
+
+async function withPrivateCopies(copyRoot, callback) {
+  const root = await privateDirectory(safeAbsolutePath(copyRoot, "--copy-root"));
+  let native, lease;
+  try {
+    native = loadWindowsReleaseOperationBinding();
+    lease = native.acquireProtectedDirectoryGuard(root);
+  } catch {
+    fail("protected private-copy access is unavailable", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_INPUT_UNSAFE");
+  }
+  const guards = [];
+  try {
+    for (const name of Object.values(COPY_NAMES)) {
+      await privateRegularFile(join(root, name));
+      try { guards.push(native.acquireProtectedChildGuard(root, lease.identity, name).guard); }
+      catch { fail("private reconciliation input is unsafe", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_INPUT_UNSAFE"); }
+    }
+    return await callback({ native, root, rootIdentity: lease.identity, paths: copyPaths(root) });
+  } finally {
+    let releaseError;
+    for (const guard of guards.reverse()) {
+      try { native.releaseCredentialAuditFileGuard(guard); }
+      catch (error) { releaseError ??= error; }
+    }
+    try { native.releaseProtectedDirectoryGuard(lease.guard); }
+    catch (error) { releaseError ??= error; }
+    if (releaseError) throw releaseError;
+  }
+}
+
+// The native expected-identity replacement owns bounded retries of only its
+// uncommitted rename. Never retry append, unlink the old receipt, or replay an
+// uncertain publication. The protected pending value survives a failed call.
+function updateReceipt(context, current, value) {
+  const { native, root, rootIdentity } = context;
+  const bytes = receiptBytes(value);
+  let pending = optionalProtectedRead(context, PENDING_NAME);
+  if (pending === null) {
+    native.createProtectedChild(root, rootIdentity, PENDING_NAME, bytes);
+    pending = optionalProtectedRead(context, PENDING_NAME);
+  }
+  assertReceipt(pending, value);
+  const observed = optionalProtectedRead(context, RECEIPT_NAME);
+  if (observed === null || !sameIdentity(current.identity, observed.identity)
+      || !current.data.equals(observed.data)) {
+    fail("reconciliation receipt changed", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_RECEIPT_UNSAFE");
+  }
+  if (!observed.data.equals(bytes)) {
+    native.replaceProtectedChild(root, rootIdentity, RECEIPT_NAME, current.identity, bytes);
+    assertReceipt(optionalProtectedRead(context, RECEIPT_NAME), value);
+  }
+  native.deleteProtectedChild(root, rootIdentity, PENDING_NAME, pending.identity);
 }
 
 function contentFreeResult({ source, destination, missing, applied, inserted = 0, conservation = null }) {
@@ -308,118 +333,170 @@ function contentFreeResult({ source, destination, missing, applied, inserted = 0
   });
 }
 
-async function preflight({ copyRoot, conservationProof }) {
-  const root = await privateDirectory(safeAbsolutePath(copyRoot, "--copy-root"));
-  const paths = copyPaths(root);
-  await Promise.all(Object.values(COPY_NAMES).map((name) => privateRegularFile(join(root, name))));
-  await readReceipt(paths.receipt);
+async function preflight(context, { conservationProof, resume = false }) {
+  const { root, paths, native: filesystem } = context;
+  const receipt = optionalProtectedRead(context, RECEIPT_NAME);
+  const operation = optionalProtectedRead(context, "operation.json");
+  if ((!resume && operation !== null) || (receipt !== null && (!resume || operation === null))) {
+    fail("reconciliation receipt requires a matching operation", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_RECEIPT_EXISTS");
+  }
   const proofPath = safeAbsolutePath(
     conservationProof ?? join(root, "collector-conservation.json"),
     "--conservation-proof",
   );
-  const proof = await regularProof(proofPath);
+  const proof = await regularProof(proofPath, filesystem);
   const [native, electron, electronBefore] = await Promise.all([
     stateSummary(paths.native), stateSummary(paths.electron), stateSummary(paths.electronBefore),
   ]);
-  if (proof.nativeRows !== native.recordCount || proof.electronRows !== electron.recordCount
-      || electronBefore.recordCount !== electron.recordCount || !sameStateMetadata(electronBefore, electron)) {
+  if (proof.nativeRows !== native.recordCount || proof.electronRows !== electronBefore.recordCount
+      || !sameStateMetadata(electronBefore, electron)) {
     fail("private copies do not match the accepted conservation proof", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_PROOF_MISMATCH");
   }
   const [electronHash, beforeHash] = await Promise.all([hashFile(paths.electron), hashFile(paths.electronBefore)]);
-  if (electronHash !== beforeHash) {
+  if (operation === null && electronHash !== beforeHash) {
     fail("Electron baseline copy does not match destination copy", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_BASELINE_MISMATCH");
   }
   const nativeHash = await hashFile(paths.native);
-  return Object.freeze({ root, paths, native, electron, electronBefore, baselineHash: beforeHash, nativeHash });
+  const missing = await missingRecords({ sourceFile: paths.native, destinationFile: paths.electronBefore });
+  const binding = {
+    schema: SCHEMA, rootIdentity: context.rootIdentity,
+    files: Object.fromEntries(Object.entries(COPY_NAMES).map(([key, name]) => [
+      key, filesystem.inspectProtectedChild(root, context.rootIdentity, name).identity,
+    ])),
+    sourceSha256: nativeHash, baselineSha256: beforeHash, proofSha256: proof.sha256,
+    checkpointDigest: electronBefore.checkpointDigest,
+  };
+  return Object.freeze({ paths, native, electronBefore, operation, binding, proofPath,
+    proofHash: proof.sha256, filesystem,
+    baselineHash: beforeHash, nativeHash, missing: missing.missing });
 }
 
 export async function planNativeElectronCollectorReconciliation(options = {}) {
-  const prepared = await preflight(options);
-  const missing = await missingRecords({ sourceFile: prepared.paths.native, destinationFile: prepared.paths.electron });
-  if (missing.sourceRecords !== prepared.native.recordCount) {
-    fail("source collector-state copy changed during inspection", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_INPUT_CHANGED");
+  return withPrivateCopies(options.copyRoot, async context => {
+    const prepared = await preflight(context, options);
+    await verifyInputs(prepared);
+    return contentFreeResult({ source: prepared.native, destination: prepared.electronBefore,
+      missing: prepared.missing, applied: false });
+  });
+}
+
+async function verifyInputs(prepared) {
+  if (await hashFile(prepared.paths.native) !== prepared.nativeHash
+      || await hashFile(prepared.paths.electronBefore) !== prepared.baselineHash
+      || (await regularProof(prepared.proofPath, prepared.filesystem)).sha256 !== prepared.proofHash) {
+    fail("private reconciliation input changed", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_INPUT_CHANGED");
   }
-  return contentFreeResult({ source: prepared.native, destination: prepared.electron, missing: missing.missing, applied: false });
+}
+
+async function verifyDestination(prepared, { complete = false } = {}) {
+  const baseline = await multiset(prepared.paths.electronBefore);
+  const source = await multiset(prepared.paths.native);
+  const destination = await multiset(prepared.paths.electron);
+  for (const [key, count] of baseline) {
+    if ((destination.get(key) ?? 0) < count) {
+      fail("baseline records changed", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_CONSERVATION_FAILED");
+    }
+  }
+  for (const [key, count] of destination) {
+    if (count > Math.max(baseline.get(key) ?? 0, source.get(key) ?? 0)) {
+      fail("destination has unrelated records", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_CONSERVATION_FAILED");
+    }
+  }
+  const after = await stateSummary(prepared.paths.electron);
+  const inserted = after.recordCount - prepared.electronBefore.recordCount;
+  if (!sameStateMetadata(after, prepared.electronBefore) || inserted < 0 || inserted > prepared.missing
+      || (complete && inserted !== prepared.missing)) {
+    fail("private-copy conservation failed", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_CONSERVATION_FAILED");
+  }
+  await verifyInputs(prepared);
+  return { inserted };
+}
+
+function initialReceipt(prepared) {
+  return {
+    schema: SCHEMA,
+    status: "preflight_passed",
+    sourceRecordCount: prepared.native.recordCount,
+    destinationRecordCountBefore: prepared.electronBefore.recordCount,
+    missingSourceRecordMultiplicity: prepared.missing,
+    identitySaltProven: true,
+    destinationCheckpointDigest: prepared.electronBefore.checkpointDigest,
+    destinationBaselineSha256: prepared.baselineHash,
+  };
+}
+
+function completedReceipt(prepared) {
+  const result = contentFreeResult({
+    source: prepared.native,
+    destination: prepared.electronBefore,
+    missing: prepared.missing,
+    applied: true,
+    inserted: prepared.missing,
+    conservation: { checkpointPreserved: true, metadataPreserved: true,
+      existingRecordsPreserved: true, recordCountAfter: prepared.electronBefore.recordCount + prepared.missing },
+  });
+  return { ...initialReceipt(prepared), status: "verified", insertedRecordMultiplicity: prepared.missing, result };
 }
 
 export async function reconcileNativeElectronCollectorPrivateCopy({
-  copyRoot,
-  conservationProof = null,
-  confirmAppendOnlyPrivateCopy = false,
+  copyRoot, conservationProof = null, confirmAppendOnlyPrivateCopy = false,
+  openStateSession = openLocalCollectorStateSession,
 } = {}) {
   if (confirmAppendOnlyPrivateCopy !== true) {
     fail("private-copy reconciliation requires explicit confirmation", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_CONFIRMATION_REQUIRED");
   }
-  const prepared = await preflight({ copyRoot, conservationProof });
-  const initialMissing = await missingRecords({ sourceFile: prepared.paths.native, destinationFile: prepared.paths.electron });
-  if (initialMissing.sourceRecords !== prepared.native.recordCount
-      || await hashFile(prepared.paths.native) !== prepared.nativeHash) {
-    fail("source collector-state copy changed during inspection", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_INPUT_CHANGED");
-  }
-  let receipt = {
-    schema: SCHEMA,
-    status: "preflight_passed",
-    sourceRecordCount: prepared.native.recordCount,
-    destinationRecordCountBefore: prepared.electron.recordCount,
-    missingSourceRecordMultiplicity: initialMissing.missing,
-    identitySaltProven: true,
-    destinationCheckpointDigest: prepared.electron.checkpointDigest,
-    destinationBaselineSha256: prepared.baselineHash,
-  };
-  await writeReceipt(prepared.paths.receipt, receipt);
-  const session = await openLocalCollectorStateSession({ stateFile: prepared.paths.electron });
-  let batch = [];
-  try {
-    const appendedScan = await missingRecords({
-      sourceFile: prepared.paths.native,
-      destinationFile: prepared.paths.electron,
-      async onMissing(record) {
-        batch.push(record);
-        if (batch.length >= 256) {
-          session.commit({ checkpoint: prepared.electron.checkpoint, records: batch });
-          batch = [];
+  if (typeof openStateSession !== "function") throw new TypeError("State session factory must be a function");
+  return withPrivateCopies(copyRoot, async context => {
+    const prepared = await preflight(context, { conservationProof, resume: true });
+    // Existing source-bound operation journal and OS-backed mutex serialize
+    // cooperating processes, including restart. No new durable format is used.
+    const operation = await openOperation({ directory: context.root, kind: "maintenance",
+      binding: prepared.binding, resume: prepared.operation !== null });
+    try {
+      const destination = await verifyDestination(prepared);
+      const initial = initialReceipt(prepared), completed = completedReceipt(prepared);
+      let current = optionalProtectedRead(context, RECEIPT_NAME);
+      const pending = optionalProtectedRead(context, PENDING_NAME);
+      if (pending !== null) {
+        assertReceipt(pending, completed);
+        if (destination.inserted !== prepared.missing) {
+          fail("pending receipt does not match destination", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_RECEIPT_UNSAFE");
         }
-      },
-    });
-    if (batch.length > 0) session.commit({ checkpoint: prepared.electron.checkpoint, records: batch });
-    if (appendedScan.sourceRecords !== prepared.native.recordCount
-        || await hashFile(prepared.paths.native) !== prepared.nativeHash) {
-      fail("source collector-state copy changed during append", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_INPUT_CHANGED");
-    }
-    receipt = { ...receipt, status: "append_committed", insertedRecordMultiplicity: session.inserted };
-    await updateReceipt(prepared.paths.receipt, receipt);
-  } finally {
-    await session.close();
-  }
-  const [destinationAfter, baselineAfterHash] = await Promise.all([
-    stateSummary(prepared.paths.electron), hashFile(prepared.paths.electronBefore),
-  ]);
-  const [baselineMissing, sourceMissing] = await Promise.all([
-    missingRecords({ sourceFile: prepared.paths.electronBefore, destinationFile: prepared.paths.electron }),
-    missingRecords({ sourceFile: prepared.paths.native, destinationFile: prepared.paths.electron }),
-  ]);
-  const conservation = {
-    checkpointPreserved: destinationAfter.checkpointDigest === prepared.electron.checkpointDigest,
-    metadataPreserved: sameStateMetadata(destinationAfter, prepared.electron),
-    existingRecordsPreserved: baselineMissing.missing === 0 && baselineAfterHash === prepared.baselineHash,
-    recordCountAfter: destinationAfter.recordCount,
-  };
-  if (!conservation.checkpointPreserved || !conservation.metadataPreserved
-      || !conservation.existingRecordsPreserved || sourceMissing.missing !== 0
-      || destinationAfter.recordCount !== prepared.electron.recordCount + session.inserted
-      || session.inserted !== initialMissing.missing) {
-    fail("private-copy reconciliation conservation failed", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_CONSERVATION_FAILED");
-  }
-  const result = contentFreeResult({
-    source: prepared.native,
-    destination: prepared.electron,
-    missing: initialMissing.missing,
-    applied: true,
-    inserted: session.inserted,
-    conservation,
+      }
+      if (current === null) {
+        if (pending !== null || destination.inserted !== 0) {
+          fail("reconciliation receipt is missing", "NATIVE_ELECTRON_COLLECTOR_RECONCILIATION_RECEIPT_UNSAFE");
+        }
+        context.native.createProtectedChild(context.root, context.rootIdentity, RECEIPT_NAME, receiptBytes(initial));
+        current = optionalProtectedRead(context, RECEIPT_NAME);
+      }
+      const value = receiptValue(current);
+      assertReceipt(current, value?.status === "verified" ? completed : initial);
+      if (value.status === "verified") {
+        await verifyDestination(prepared, { complete: true });
+        if (pending !== null) updateReceipt(context, current, completed);
+        return completed.result;
+      }
+      if (destination.inserted < prepared.missing) {
+        const session = await openStateSession({ stateFile: prepared.paths.electron });
+        let batch = [];
+        try {
+          await missingRecords({ sourceFile: prepared.paths.native, destinationFile: prepared.paths.electron,
+            async onMissing(record) {
+              batch.push(record);
+              if (batch.length >= 256) {
+                session.commit({ checkpoint: prepared.electronBefore.checkpoint, records: batch });
+                batch = [];
+              }
+            } });
+          if (batch.length > 0) session.commit({ checkpoint: prepared.electronBefore.checkpoint, records: batch });
+        } finally { await session.close(); }
+      }
+      await verifyDestination(prepared, { complete: true });
+      updateReceipt(context, current, completed);
+      return completed.result;
+    } finally { operation.close(); }
   });
-  await updateReceipt(prepared.paths.receipt, { ...receipt, status: "verified", result });
-  return result;
 }
 
 export function parseNativeElectronCollectorReconciliationArguments(argv) {

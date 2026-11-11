@@ -1,8 +1,12 @@
 import { createHash, createHmac } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
+import { lstat as nodeLstat, open as nodeOpen, realpath } from "node:fs/promises";
 import { dirname, join, parse, resolve } from "node:path";
 import { isProxy } from "node:util/types";
+import { exactLstat, exactOpen } from "./exact-filesystem-stats.js";
+
+const lstat = (path) => exactLstat(path, nodeLstat);
+const open = (path, flags, mode) => exactOpen(path, flags, nodeOpen, mode);
 
 function invalid() { throw new TypeError("Owner-only workspace discard preflight configuration is invalid"); }
 function own(object, key) {
@@ -64,10 +68,13 @@ function data(value, depth = 0) {
   }
   return Object.freeze(result);
 }
-function numberOwn(object, key) {
-  const value = own(object, key);
-  if (!Number.isFinite(value)) invalid();
-  return Number(value);
+function exactIdentity(value, { inode = false } = {}) {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(value)
+      || BigInt(value) > 18446744073709551615n || (inode && value === "0")) invalid();
+  return value;
+}
+function identityOwn(object, key) {
+  return exactIdentity(own(object, key), { inode: key === "ino" });
 }
 
 /**
@@ -171,10 +178,10 @@ function commitmentToken(domain, planToken, subject) {
 function workspaceDiscardEvidenceToken(planToken, role, evidence) {
   if (typeof planToken !== "string" || typeof role !== "string") invalid();
   const safe = data(evidence);
-  return commitmentToken("app-usagemonitor/export-workspace-discard-artifact-evidence/v1", planToken, {
+  return commitmentToken("app-usagemonitor/export-workspace-discard-artifact-evidence/v2", planToken, {
     role,
-    device: safe.device,
-    inode: safe.inode,
+    device: exactIdentity(safe.device),
+    inode: exactIdentity(safe.inode, { inode: true }),
     linkCount: safe.linkCount,
     byteSize: safe.byteSize,
     digest: safe.digest,
@@ -187,17 +194,17 @@ function workspaceDiscardDirectoryIdentityToken(planToken, directory) {
   const stats = plain(own(directory, "stats"));
   const parent = plain(own(directory, "parent"));
   const parentStats = plain(own(parent, "stats"));
-  return commitmentToken("app-usagemonitor/export-workspace-discard-directory-identity/v1", planToken, {
-    device: numberOwn(stats, "dev"),
-    inode: numberOwn(stats, "ino"),
-    parentDevice: numberOwn(parentStats, "dev"),
-    parentInode: numberOwn(parentStats, "ino"),
+  return commitmentToken("app-usagemonitor/export-workspace-discard-directory-identity/v2", planToken, {
+    device: identityOwn(stats, "dev"),
+    inode: identityOwn(stats, "ino"),
+    parentDevice: identityOwn(parentStats, "dev"),
+    parentInode: identityOwn(parentStats, "ino"),
   });
 }
 
 function workspaceDiscardConfirmationToken(planToken) {
   if (typeof planToken !== "string") invalid();
-  return token("app-usagemonitor/export-workspace-discard-confirmation/v1", planToken, 10).slice(0, 16);
+  return token("app-usagemonitor/export-workspace-discard-confirmation/v2", planToken, 10).slice(0, 16);
 }
 
 function assertOwnerDirectory(stats) {
@@ -258,7 +265,7 @@ async function inspectFile(path, maximumBytes) {
     if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size
         || after.mtimeMs !== opened.mtimeMs || after.nlink !== opened.nlink) fail("artifact_changed");
     return {
-      device: Number(after.dev), inode: Number(after.ino), linkCount: Number(after.nlink), byteSize: Number(after.size),
+      device: after.dev, inode: after.ino, linkCount: Number(after.nlink), byteSize: Number(after.size),
       modifiedMs: Math.trunc(after.mtimeMs), digest: digest.digest("hex"),
     };
   } catch (error) {
@@ -270,8 +277,8 @@ async function inspectFile(path, maximumBytes) {
 function evidenceSubject(directory, eligibility, inventory) {
   return stableJson({
     directory: {
-      device: Number(directory.stats.dev), inode: Number(directory.stats.ino),
-      parentDevice: Number(directory.parent.stats.dev), parentInode: Number(directory.parent.stats.ino),
+      device: identityOwn(directory.stats, "dev"), inode: identityOwn(directory.stats, "ino"),
+      parentDevice: identityOwn(directory.parent.stats, "dev"), parentInode: identityOwn(directory.parent.stats, "ino"),
     },
     eligibility,
     inventory: inventory.map((row) => ({
@@ -358,7 +365,7 @@ async function buildUnsafe({ workspaceDirectory, allowLeaseControls = false, all
   }
   const totalBytes = internalInventory.reduce((sum, row) => sum + row.byteSize, 0);
   const planToken = token(
-    "app-usagemonitor/export-workspace-discard-plan/v1",
+    "app-usagemonitor/export-workspace-discard-plan/v2",
     evidenceSubject(directory, eligibility, internalInventory),
     13,
   ).slice(0, 20);

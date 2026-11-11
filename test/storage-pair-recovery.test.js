@@ -1,11 +1,12 @@
+import { createProtectedFixtureTempDirectory as mkdtemp, writeSyntheticDestinationLock, writeInitialProtectedFixtureFile } from "./helpers/windows-owner-only-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdtemp, open, readFile, readdir, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { link, lstat, open, readFile, readdir, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { recoverOwnerOnlyPairTransactions, writeOwnerOnlyPairNoClobber } from "../src/storage.js";
+import { recoverOwnerOnlyPairTransactions, writeOwnerOnlyPairNoClobber, withExportDestinationLease } from "../src/storage.js";
 
 async function workspace() {
   const directory = await mkdtemp(join(tmpdir(), "usage-monitor-pair-"));
@@ -196,13 +197,36 @@ test("recovery removes an empty pre-commit control file without publishing outpu
     await crashAt(paths, "after_transaction_prepare");
     const root = join(paths.directory, ".app-usagemonitor-export-transactions");
     const [transaction] = await readdir(root);
-    await writeFile(join(root, transaction, "manifest.prepared"), "", { mode: 0o600 });
+    if (process.platform === "win32") writeInitialProtectedFixtureFile(join(root, transaction, "manifest.prepared"), "");
+    else await writeFile(join(root, transaction, "manifest.prepared"), "", { mode: 0o600 });
     await recoverOwnerOnlyPairTransactions({ directory: paths.directory });
     await assert.rejects(stat(paths.bundle), { code: "ENOENT" });
     await assert.rejects(stat(paths.receipt), { code: "ENOENT" });
   } finally {
     await rm(paths.directory, { recursive: true, force: true });
   }
+});
+
+test("Windows manifestless recovery preserves orphan links without a protected published counterpart", {
+  skip: process.platform !== "win32",
+}, async (t) => {
+  const paths = await workspace();
+  const outside = await mkdtemp(join(tmpdir(), "usage-monitor-orphan-counterpart-"));
+  t.after(() => rm(paths.directory, { recursive: true, force: true }));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await crashAt(paths, "after_transaction_prepare");
+  const root = join(paths.directory, ".app-usagemonitor-export-transactions");
+  const [transaction] = await readdir(root);
+  const stage = join(root, transaction, "bundle.stage");
+  const linked = join(outside, "retained");
+  await link(stage, linked);
+  await assert.rejects(recoverOwnerOnlyPairTransactions({ directory: paths.directory }),
+    /Invalid pre-commit export recovery hardlink/);
+  assert.equal(await readFile(stage, "utf8"), "bundle-content\n");
+  assert.equal(await readFile(linked, "utf8"), "bundle-content\n");
+  assert.equal((await lstat(stage)).nlink, 2);
+  await assert.rejects(stat(paths.bundle), { code: "ENOENT" });
+  await assert.rejects(stat(paths.receipt), { code: "ENOENT" });
 });
 
 test("recovery repairs the impossible bundle-only state in receipt-first order", async () => {
@@ -221,7 +245,8 @@ test("recovery fails closed without replacing a foreign destination artifact", a
   const paths = await workspace();
   try {
     await crashAt(paths, "after_manifest");
-    await writeFile(paths.receipt, "foreign\n", { mode: 0o600 });
+    if (process.platform === "win32") writeInitialProtectedFixtureFile(paths.receipt, "foreign\n");
+    else await writeFile(paths.receipt, "foreign\n", { mode: 0o600 });
     await assert.rejects(
       recoverOwnerOnlyPairTransactions({ directory: paths.directory }),
       /conflicting destination artifact/,
@@ -246,7 +271,7 @@ test("recovery never follows a substituted stage symlink", async () => {
     await symlink(outside, stage);
     await assert.rejects(
       recoverOwnerOnlyPairTransactions({ directory: paths.directory }),
-      /Invalid export recovery stage/,
+      process.platform === "win32" ? /Windows owner-only export protection is unavailable/ : /Invalid export recovery stage/,
     );
     assert.equal(await readFile(outside, "utf8"), "bundle-content\n");
   } finally {
@@ -354,7 +379,7 @@ test("recovery reaps an owner-only lock left by a dead process", async () => {
   const paths = await workspace();
   try {
     await crashAt(paths, "after_manifest");
-    await symlink("pid=99999999;token=11111111-1111-4111-8111-111111111111", join(paths.directory, ".app-usagemonitor-export.lock"));
+    await writeSyntheticDestinationLock(join(paths.directory, ".app-usagemonitor-export.lock"), 99999999, "11111111-1111-4111-8111-111111111111");
     await recoverOwnerOnlyPairTransactions({ directory: paths.directory });
     await assertRecovered(paths);
   } finally {
@@ -366,7 +391,7 @@ test("two stale-lock reapers elect one owner without removing the new active loc
   const paths = await workspace();
   try {
     await crashAt(paths, "after_manifest");
-    await symlink("pid=99999999;token=22222222-2222-4222-8222-222222222222", join(paths.directory, ".app-usagemonitor-export.lock"));
+    await writeSyntheticDestinationLock(join(paths.directory, ".app-usagemonitor-export.lock"), 99999999, "22222222-2222-4222-8222-222222222222");
     const attempts = await Promise.allSettled([
       recoverOwnerOnlyPairTransactions({ directory: paths.directory }),
       recoverOwnerOnlyPairTransactions({ directory: paths.directory }),
@@ -380,8 +405,43 @@ test("two stale-lock reapers elect one owner without removing the new active loc
   }
 });
 
-test("claim handoff cannot strand a claim when another caller acquires the vacant lock", async () => {
+test("stale handoff cannot remove a new active lock or strand a claim", async () => {
   const paths = await workspace();
+  if (process.platform === "win32") {
+    let inspected;
+    let resume;
+    let acquired;
+    let finish;
+    const staleInspected = new Promise((resolve) => { inspected = resolve; });
+    const resumeStale = new Promise((resolve) => { resume = resolve; });
+    const winnerAcquired = new Promise((resolve) => { acquired = resolve; });
+    const finishWinner = new Promise((resolve) => { finish = resolve; });
+    try {
+      const lock = join(paths.directory, ".app-usagemonitor-export.lock");
+      await writeSyntheticDestinationLock(lock, 99999999, "33333333-3333-4333-8333-333333333333");
+      const stale = withExportDestinationLease(paths.directory, () => assert.fail("stale reader became owner"), {
+        async lockFailpoint(name) {
+          if (name === "after_stale_inspection") { inspected(); await resumeStale; }
+        },
+      });
+      await staleInspected;
+      const winner = withExportDestinationLease(paths.directory, async () => {
+        acquired(); await finishWinner; return "winner";
+      });
+      await winnerAcquired;
+      const winnerBytes = await readFile(lock);
+      resume();
+      await assert.rejects(stale, /destination is busy/);
+      assert.deepEqual(await readFile(lock), winnerBytes);
+      finish();
+      assert.equal(await winner, "winner");
+      assert.deepEqual(await readdir(paths.directory), []);
+    } finally {
+      resume?.(); finish?.();
+      await rm(paths.directory, { recursive: true, force: true });
+    }
+    return;
+  }
   let releaseFirst;
   let releaseClaimOwner;
   let signalFirstScanned;
@@ -392,7 +452,7 @@ test("claim handoff cannot strand a claim when another caller acquires the vacan
   const continueClaimOwner = new Promise((resolveSignal) => { releaseClaimOwner = resolveSignal; });
   let firstScan = true;
   try {
-    await symlink("pid=99999999;token=33333333-3333-4333-8333-333333333333", join(paths.directory, ".app-usagemonitor-export.lock"));
+    await writeSyntheticDestinationLock(join(paths.directory, ".app-usagemonitor-export.lock"), 99999999, "33333333-3333-4333-8333-333333333333");
     const first = writeOwnerOnlyPairNoClobber({
       firstPath: paths.bundle,
       firstContent: "bundle-content\n",

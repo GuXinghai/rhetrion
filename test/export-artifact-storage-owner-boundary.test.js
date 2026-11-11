@@ -1,10 +1,10 @@
+import { createProtectedFixtureTempDirectory as mkdtemp, writeSyntheticDestinationLock } from "./helpers/windows-owner-only-fixture.js";
 import assert from "node:assert/strict";
 import {
   lstat,
   mkdir,
   rename,
   link,
-  mkdtemp,
   readFile,
   readdir,
   readlink,
@@ -192,7 +192,7 @@ test("lock handoff cleanup releases only its verified stale claim on both acquis
   const claimName = `.app-usagemonitor-export.lock.claim.${stalePid}.${staleToken}`;
   try {
     for (const sourceName of [claimName, lockName]) {
-      await symlink(`pid=${stalePid};token=${staleToken}`, join(directory, sourceName));
+      await writeSyntheticDestinationLock(join(directory, sourceName), stalePid, staleToken);
       let synchronizationCalls = 0;
       const storageContext = platform.createOwnerOnlyExportArtifactStorageContext(
         ownerStorageConfiguration({
@@ -218,7 +218,7 @@ test("lock handoff cleanup releases only its verified stale claim on both acquis
   }
 });
 
-test("post-symlink inspection preserves the primary error without deleting replacement locks", async () => {
+test("post-creation inspection preserves the primary error without deleting replacement locks", async () => {
   const directory = await mkdtemp(join(tmpdir(), "usage-monitor-lock-post-symlink-"));
   const lockPath = join(directory, ".app-usagemonitor-export.lock");
   try {
@@ -236,17 +236,26 @@ test("post-symlink inspection preserves the primary error without deleting repla
       statFailure.withExportDestinationLease(directory, async () => "never"),
       (error) => assertNoCanary(error, /lock inspection failed/u),
     );
-    // The first inspection did not capture an inode. Cleanup must leave even
-    // its own candidate for normal stale-lock recovery rather than guessing.
-    assert.equal((await lstat(lockPath)).isSymbolicLink(), true);
-    await unlink(lockPath);
+    if (process.platform === "win32") {
+      // Native create returns an exact identity before inspection can fail.
+      await assert.rejects(lstat(lockPath), { code: "ENOENT" });
+    } else {
+      assert.equal((await lstat(lockPath)).isSymbolicLink(), true);
+      await unlink(lockPath);
+    }
 
     const sameTargetReplacement = platform.createOwnerOnlyExportArtifactStorageContext(
       ownerStorageConfiguration({
         async lockStat(path) {
-          const target = await readlink(path);
-          await unlink(path);
-          await symlink(target, path);
+          if (process.platform === "win32") {
+            const bytes = await readFile(path);
+            await rename(path, join(directory, "retained-original-lock"));
+            sharedSyntheticWindowsProtection.filesystem.createFile(path, bytes);
+          } else {
+            const target = await readlink(path);
+            await unlink(path);
+            await symlink(target, path);
+          }
           throw new Error("canary same-target replacement");
         },
       }),
@@ -255,7 +264,7 @@ test("post-symlink inspection preserves the primary error without deleting repla
       sameTargetReplacement.withExportDestinationLease(directory, async () => "never"),
       (error) => assertNoCanary(error, /lock inspection failed/u),
     );
-    assert.equal((await lstat(lockPath)).isSymbolicLink(), true);
+    assert.equal((await lstat(lockPath)).isSymbolicLink(), process.platform !== "win32");
     await unlink(lockPath);
 
     const replacement = platform.createOwnerOnlyExportArtifactStorageContext(

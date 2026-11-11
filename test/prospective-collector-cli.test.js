@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { commitLocalCollectorState } from "../src/local-collector-state.js";
+import { assertWindowsOwnerOnly, createProtectedFixtureTempDirectory } from "./helpers/windows-owner-only-fixture.js";
 
 const SCRIPT = resolve("scripts/build-prospective-collector-transitions.js");
 
@@ -15,7 +16,8 @@ function runArguments(arguments_) {
   ], {
     cwd: process.cwd(),
     encoding: "utf8",
-    env: { PATH: process.env.PATH ?? "" },
+    env: process.env,
+    windowsHide: true,
   });
 }
 
@@ -27,7 +29,7 @@ function run(input, output) {
 }
 
 test("prospective CLI writes an owner-only deterministic empty evidence artifact", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-prospective-cli-"));
+  const directory = await createProtectedFixtureTempDirectory(join(tmpdir(), "app-usagemonitor-prospective-cli-"));
   try {
     const input = join(directory, "collector.jsonl");
     const firstOutput = join(directory, "first.json");
@@ -40,6 +42,9 @@ test("prospective CLI writes an owner-only deterministic empty evidence artifact
     assert.equal(await readFile(firstOutput, "utf8"), await readFile(secondOutput, "utf8"));
     if (process.platform !== "win32") {
       assert.equal((await stat(firstOutput)).mode & 0o777, 0o600);
+    } else {
+      assertWindowsOwnerOnly(firstOutput);
+      assertWindowsOwnerOnly(secondOutput);
     }
     assert.match(first.stdout, /^Built 0 account-partitioned prospective transitions/u);
     assert.equal(first.stdout.includes(input), false);
@@ -74,7 +79,7 @@ test("prospective CLI refuses symlinked and non-owner-only sources without echoi
 });
 
 test("prospective CLI uses the SQLite collector state unless an external input is explicit", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-prospective-state-"));
+  const directory = await createProtectedFixtureTempDirectory(join(tmpdir(), "app-usagemonitor-prospective-state-"));
   try {
     const stateFile = join(directory, "local-collector-state-v1.sqlite");
     const output = join(directory, "output.json");

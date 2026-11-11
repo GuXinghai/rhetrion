@@ -41,10 +41,22 @@ test("the v2 health is available with the companion's generation, and unavailabl
     assert.match(health.generation.fingerprint, /^generation-v2-[0-9a-f]{64}$/u);
     const identity = readLocalIndexGenerationIdentity({ indexFile: v2File });
     assert.deepEqual(
-      { id: health.generation.id, fingerprint: health.generation.fingerprint },
+      { id: health.generation.id, fingerprint: health.generation.fingerprint,
+        calculationRevision: health.generation.calculationRevision },
       identity,
       "the explainer and the companion must name the same publication",
     );
+    const database = openLocalIndexStore(v2File);
+    try { database.exec("UPDATE store_state SET calculation_revision=calculation_revision+1 WHERE id=1"); }
+    finally { database.close(); }
+    const revised = readHealth({ indexFile: v2File });
+    const revisedIdentity = readLocalIndexGenerationIdentity({ indexFile: v2File });
+    assert.equal(revised.generation.id, identity.id);
+    assert.equal(revised.generation.calculationRevision, identity.calculationRevision + 1);
+    assert.equal(revised.generation.calculationRevision, revisedIdentity.calculationRevision);
+    assert.equal(revised.generation.fingerprint, identity.fingerprint);
+    assert.equal(revised.generation.fingerprint, revisedIdentity.fingerprint,
+      "both projections retain the ingestion fingerprint alongside the changed calculation revision");
 
     const unavailable = {
       status: "unavailable",

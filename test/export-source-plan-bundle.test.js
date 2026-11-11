@@ -57,7 +57,7 @@ function planningOptions(paths, resourceGuard = guard()) {
 function rehashBundle(bundle) {
   const { sourcePlanBundleSha256: ignored, ...payload } = bundle;
   bundle.sourcePlanBundleSha256 = createHash("sha256")
-    .update("app-usagemonitor/export-source-plan-bundle/v0.2\0")
+    .update("app-usagemonitor/export-source-plan-bundle/v0.3\0")
     .update(stableJson(payload)).digest("hex");
   return bundle;
 }
@@ -408,4 +408,23 @@ test("bundle rejects wrong interval, hash, and mixed discovery configuration wit
   } finally {
     await rm(value.root, { recursive: true, force: true });
   }
+});
+
+test("old and future private bundles refuse before invoking either source verifier", async () => {
+  let calls = 0;
+  const context = isolatedBundleContext({
+    codexSourcePlan: { verifyCodexExportSourcePlan: async () => { calls++; } },
+    codexCollectorExport: { verifyCodexCollectorExportSourcePlan: async () => { calls++; } },
+  });
+  for (const version of ["v0.1", "v0.2", "v0.4"]) {
+    const bundle = rehashBundle({ schemaVersion: `export-source-plan-bundle-${version}`,
+      startAt: R7_FIXTURE_START_AT, endAt: R7_FIXTURE_END_AT,
+      codexPlan: { sources: [] }, collectorPlan: null });
+    const before = stableJson(bundle);
+    await assert.rejects(context.resolveExportSourcePlanBundle(bundle, {
+      startAt: R7_FIXTURE_START_AT, endAt: R7_FIXTURE_END_AT, resourceGuard: guard(),
+    }), { code: "export_source_plan_bundle_configuration" });
+    assert.equal(stableJson(bundle), before);
+  }
+  assert.equal(calls, 0);
 });

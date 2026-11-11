@@ -206,7 +206,7 @@ test("missing cache components remain null; explicit zero remains observed acros
     const refreshed = await refreshCodexHome(value.root, { indexFile: incremental });
     assert.equal(refreshed.sourcesRescanned, 1);
     assert.deepEqual(rows(incremental), expected);
-    assert.equal(LOCAL_UNIFIED_INDEX_PARSER_VERSION, "unified-rollout-typed-v22");
+    assert.equal(LOCAL_UNIFIED_INDEX_PARSER_VERSION, "unified-rollout-typed-v23");
   } finally { await rm(value.root, { recursive: true }); }
 });
 test("unknown and inconsistent cache evidence stays null apart from the approved cache-write assumption", async () => {
@@ -432,8 +432,8 @@ test("model catalog repair reparses retained Sol 6.1 sources once without changi
     assert.deepEqual(rows(indexFile), initialTokens);
   } finally { await rm(value.root, { recursive: true }); }
 });
-test("v22 keeps reviewed historical boundary provenance and refuses unqualified variants", () => {
-  for (const version of [15, 16, 17, 18, 19, 20, 21, 22]) {
+test("v23 keeps reviewed historical boundary provenance and refuses unqualified variants", () => {
+  for (const version of [15, 16, 17, 18, 19, 20, 21, 22, 23]) {
     for (const suffix of ["", "-partial", "-parent-model", "-parent-model-partial"]) {
       const parser = `unified-rollout-typed-v${version}${suffix}`;
       assert.equal(isLocalUnifiedIndexBoundaryParserVersion(parser), true, parser);
@@ -442,7 +442,7 @@ test("v22 keeps reviewed historical boundary provenance and refuses unqualified 
     }
   }
   for (const parser of [null, undefined, "", "unified-rollout-typed-v14",
-    "unified-rollout-typed-v23", "unified-rollout-typed-v018",
+    "unified-rollout-typed-v24", "unified-rollout-typed-v018",
     "unified-rollout-typed-v18-future", "unified-rollout-typed-v18 ",
     "unified-rollout-typed-v18-partial-parent-model"]) {
     assert.equal(isLocalUnifiedIndexBoundaryParserVersion(parser), false, String(parser));

@@ -17,6 +17,16 @@ const TIER_SOURCES = new Set([
   "unobserved",
 ]);
 
+// Product scope, independent of client surface or account identity. Missing
+// historical declarations retain the subscription model. Never inspect keys
+// or today's configuration to classify an earlier session.
+export function isCodexApiSession(payload) {
+  const provider = payload?.model_provider;
+  return typeof provider === 'string' && provider.trim().length > 0 && provider !== 'openai'
+    || ['apikey', 'api_key'].includes(payload?.auth_mode)
+    || payload?.billing_surface === 'openai_api';
+}
+
 function safeRawTier(value) {
   return typeof value === "string" && /^[a-zA-Z0-9._:-]{1,64}$/.test(value) ? value : null;
 }

@@ -133,6 +133,35 @@ use the existing plan-specific scalar when no plan-specific model vector exists;
 the latest plan's vector cannot fill that gap. Refresh publishes all lanes in the
 same report; there is no per-plan timer or source re-ingestion.
 
+The owner's 2026-11-10 decision also applies the local single-account model
+to workload expected consumption: an available, same-plan historical capacity
+marked `historical_unattributed` can be used without a matching current-account
+token. The existing estimate labels remain unchanged; no additional assumption
+badge or setting is introduced. Explicitly foreign-account capacities remain
+ineligible. Historical facts keep their existing attribution, and known
+account changes still delimit observed-quota comparison epochs. This permits
+a model input, not a historical identity assignment or an official allowance
+claim. Plan, reset, pricing-basis, freshness and missing-usage rules still apply.
+Creator-account attribution remains paused.
+
+A quota-history read failure may retain the previous confirmed workload
+comparison only for the same known account scope and plan. Its original start,
+observation endpoints, capacity and figures remain dated and stale; a newer
+single quota reading cannot extend that comparison. Unknown or intersecting
+usage gaps still withhold expected consumption. A successful history read
+replays the actual current epoch, including an intervening account switch.
+
+The owner's API-exclusion decision applies before usage statistics and quota
+calibration: explicit session API authentication or a custom provider excludes
+that session's emitted usage, quota, tool and work facts. CLI/IDE labels and
+missing account identity are not exclusion signals. Historical missing metadata
+retains the single-account subscription model without changing raw attribution.
+The numerator and calibration therefore use the same retained population; raw
+source files and absent-source historical provenance remain preserved.
+New API sources are omitted before index admission. API history needed to
+deduplicate subscription descendants remains a guarded transient dependency;
+it supplies no indexed statistical source of its own.
+
 
 Plan-scoped reports retain complete observed quota separately from comparable
 quota. A historical last observation cannot depend on the generic chart sampler

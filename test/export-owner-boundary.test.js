@@ -192,6 +192,7 @@ test("export compatibility metadata has one exact reviewed public API", () => {
       "ExportSourcePlanError",
       "summarizeExportSourcePlan",
       "createSourcePlanSummaryContract",
+      "normalizeExportSourceFilesystemId",
       "EXPORT_SUPPLEMENTAL_SOURCE_PLAN_VERSION",
       "SUPPLEMENTAL_SOURCE_KINDS",
       "ExportSupplementalSourcePlanError",

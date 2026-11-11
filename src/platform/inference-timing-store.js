@@ -186,7 +186,23 @@ export async function openTimingStore(directory, { createParser, digest, METHOD,
     db = databaseFactory(file, { timeout: 100, readOnly: !created });
     let key;
     if (!created) {
-      key = validateTimingIdentity(db, { schemaMethod, correlationKey, parserVersion });
+      try {
+        key = validateTimingIdentity(db, { schemaMethod, correlationKey, parserVersion });
+      } catch (error) {
+        // A read-only connection cannot roll back a hot journal. Recover only
+        // this exact SQLite category, on an isolated verified copy while native
+        // byte locks hold the originals. No arbitrary admission failure retries.
+        if (error?.code !== 'ERR_SQLITE_ERROR' || error.errcode !== 776
+            || typeof lease.recoverJournal !== 'function') throw error;
+        db.close();
+        dbClosed = databaseIsClosed(db);
+        safe(dbClosed, 'database_close_incomplete');
+        key = await lease.recoverJournal({ databaseFactory,
+          validate: copy => validateTimingIdentity(copy, { schemaMethod, correlationKey, parserVersion }) });
+        db = databaseFactory(file, { timeout: 100, readOnly: true });
+        dbClosed = false;
+        safe(key.equals(validateTimingIdentity(db, { schemaMethod, correlationKey, parserVersion })), 'correlation_mismatch');
+      }
       db.close();
       dbClosed = databaseIsClosed(db);
       safe(dbClosed, 'database_close_incomplete');
@@ -306,6 +322,17 @@ export async function ingestTimingFile(store, path, { maxBytes = CHUNK, signal, 
           && before.size === previous.size && before.mtime === previous.mtime
           && before.ctime === previous.ctime
           && (cursor === before.size || previous.exhausted === true)) {
+        return { bytes: 0, unchanged: true };
+      }
+      // `blocked` is terminal for this parser: neither later records nor an
+      // append can emit a measurement. Authenticate the held source and the
+      // committed prefix as usual, but do not replay a permanently excluded
+      // source's body. Leave its cursor/snapshot honest about bytes inspected.
+      if (!sourceChanged && rebuildKind === 'none' && !upgradingParser
+          && old.replay_parser_version === 0 && JSON.parse(old.state).blocked === true) {
+        signal?.throwIfAborted();
+        await verifyTimingSource(store, path, handle, before);
+        signal?.throwIfAborted();
         return { bytes: 0, unchanged: true };
       }
       // A source that was completely scanned can later gain a delayed record.

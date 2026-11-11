@@ -17,52 +17,86 @@ function stats(inode) {
     isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false,
     isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => false, isSocket: () => false };
 }
-function context(initial) {
+function context(initial, device = "44") {
   let inode = initial;
-  const read = () => exactFilesystemStats(stats(inode));
+  let sourceCalls = 0;
+  // Native U128 identities are already exact strings; the Node stat helper
+  // intentionally remains U64-only and is tested separately below.
+  const read = () => { sourceCalls++; return { ...exactFilesystemStats(stats("0")), dev: device, ino: inode }; };
   const owner = createCodexCollectorExportContext({ ...createLocalExportSourcePorts(), currentUid: () => null,
     createExportResourceGuard, exactSourceLstat: async () => read(), exactSourceOpen: async () => ({
       stat: async () => read(), close: async () => {}, read: async () => ({ bytesRead: 0 }),
     }),
   });
-  return { owner, replace: value => { inode = value; } };
+  return { owner, replace: value => { inode = value; }, replaceDevice: value => { device = value; },
+    get sourceCalls() { return sourceCalls; } };
 }
 const bounds = { collectorPath: "synthetic-ledger.jsonl", startAt: "2026-10-01T00:00:00.000Z", endAt: "2026-10-01T00:01:00.000Z" };
 function digest(plan) {
   const material = Object.fromEntries(["schemaVersion", "startAt", "endAt", "path", "device", "inode", "birthtimeMs", "prefixBytes", "prefixLines", "prefixSha256"].map(key => [key, plan[key]]));
-  return createHash("sha256").update("app-usagemonitor/codex-collector-source-plan/v0.1\0").update(JSON.stringify(material)).digest("hex");
+  return createHash("sha256").update("app-usagemonitor/codex-collector-source-plan/v0.3\0").update(JSON.stringify(material)).digest("hex");
 }
 test("exact source plans distinguish adjacent IDs above Number precision", async () => {
   const { owner, replace } = context("9007199254740992");
   const plan = await owner.createCodexCollectorExportSourcePlan(bounds);
   assert.equal(plan.inode, "9007199254740992");
   assert.equal(plan.device, "44");
-  assert.equal(plan.schemaVersion, "codex-collector-export-source-plan-v0.2");
+  assert.equal(plan.schemaVersion, "codex-collector-export-source-plan-v0.3");
   await owner.verifyCodexCollectorExportSourcePlan(plan);
   replace("9007199254740993");
   await assert.rejects(owner.verifyCodexCollectorExportSourcePlan(plan), error => error.code === "codex_collector_export_source_changed");
 });
-test("legacy safe numeric plans replay original digest and unsafe legacy values fail closed", async () => {
-  const { owner } = context("42");
+test("current collector plans restore their exact U128 identity and original digest", async () => {
+  const { owner } = context("18446744073709551617");
   const fresh = await owner.createCodexCollectorExportSourcePlan(bounds);
-  const legacy = { ...fresh, schemaVersion: "codex-collector-export-source-plan-v0.1", device: 44, inode: 42 };
-  legacy.sourcePlanSha256 = digest(legacy);
-  const bytes = JSON.stringify(legacy);
-  assert.equal((await owner.verifyCodexCollectorExportSourcePlan(legacy)).schemaVersion, legacy.schemaVersion);
-  owner.createCodexCollectorExportCursor(legacy);
+  const bytes = JSON.stringify(fresh);
+  owner.createCodexCollectorExportCursor(fresh);
   const workspaceOwner = createCodexCollectorWorkspaceContext({ codexCollectorExport: owner,
     createHash, resolvePath: resolve, bufferByteLength: Buffer.byteLength });
-  const supplemental = workspaceOwner.appendCodexCollectorWorkspaceSource(createSupplementalSourcePlan(), legacy);
+  const supplemental = workspaceOwner.appendCodexCollectorWorkspaceSource(createSupplementalSourcePlan(), fresh);
   const recovered = await workspaceOwner.resolveCodexCollectorWorkspaceSource({
-    collectorPath: legacy.path, resourceGuard: createExportResourceGuard(),
-    workspace: { getDescriptor: () => ({ coveredAt: { startAt: legacy.startAt, endAt: legacy.endAt } }), loadSupplementalSourcePlan: () => supplemental },
+    collectorPath: fresh.path, resourceGuard: createExportResourceGuard(),
+    workspace: { getDescriptor: () => ({ coveredAt: { startAt: fresh.startAt, endAt: fresh.endAt } }), loadSupplementalSourcePlan: () => supplemental },
   });
-  assert.deepEqual(recovered.collectorPlan, legacy);
-  assert.equal(JSON.stringify(legacy), bytes);
-  for (const inode of [9007199254740992, "42", "0042", "18446744073709551616"]) {
-    const invalid = { ...legacy, inode }; invalid.sourcePlanSha256 = digest(invalid);
-    assert.throws(() => owner.createCodexCollectorExportCursor(invalid), error => error.code === "codex_collector_export_plan_invalid");
+  assert.deepEqual(recovered.collectorPlan, fresh);
+  assert.equal(JSON.stringify(fresh), bytes);
+});
+
+test("adjacent U128 IDs and both field maxima stay distinct without Number conversion", async () => {
+  for (const first of ["18446744073709551616", "340282366920938463463374607431768211454"]) {
+    const { owner, replace } = context(first, "18446744073709551615");
+    const plan = await owner.createCodexCollectorExportSourcePlan(bounds);
+    await owner.verifyCodexCollectorExportSourcePlan(plan);
+    replace((BigInt(first) + 1n).toString(10));
+    const next = await owner.createCodexCollectorExportSourcePlan(bounds);
+    assert.notEqual(plan.sourcePlanSha256, next.sourcePlanSha256);
+    await assert.rejects(owner.verifyCodexCollectorExportSourcePlan(plan), { code: "codex_collector_export_source_changed" });
+    await owner.verifyCodexCollectorExportSourcePlan(next);
   }
+  const value = context("42", "9007199254740992");
+  const first = await value.owner.createCodexCollectorExportSourcePlan(bounds);
+  value.replaceDevice("9007199254740993");
+  const second = await value.owner.createCodexCollectorExportSourcePlan(bounds);
+  assert.notEqual(first.sourcePlanSha256, second.sourcePlanSha256);
+  await assert.rejects(value.owner.verifyCodexCollectorExportSourcePlan(first), { code: "codex_collector_export_source_changed" });
+  await value.owner.verifyCodexCollectorExportSourcePlan(second);
+});
+
+test("old, future, numeric and malformed collector identities refuse before source access", async () => {
+  const value = context("42");
+  const fresh = await value.owner.createCodexCollectorExportSourcePlan(bounds);
+  const before = value.sourceCalls;
+  const invalids = [
+    ...["v0.1", "v0.2", "v0.4"].map(version => ({ ...fresh, schemaVersion: `codex-collector-export-source-plan-${version}` })),
+    ...[42, 9007199254740992, "0042", "-1", "0x2a", "", "340282366920938463463374607431768211456"].map(inode => ({ ...fresh, inode })),
+    ...[44, "18446744073709551616", "044", "-1"].map(device => ({ ...fresh, device })),
+  ];
+  for (const invalid of invalids) {
+    invalid.sourcePlanSha256 = digest(invalid);
+    await assert.rejects(value.owner.verifyCodexCollectorExportSourcePlan(invalid), { code: "codex_collector_export_plan_invalid" });
+    assert.throws(() => value.owner.createCodexCollectorExportCursor(invalid), { code: "codex_collector_export_plan_invalid" });
+  }
+  assert.equal(value.sourceCalls, before);
 });
 
 test("exact stat conversion refuses unsafe Number identities before serialization", () => {

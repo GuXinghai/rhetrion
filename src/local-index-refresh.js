@@ -51,6 +51,8 @@ import {
   readCommitSeq,
   readPendingResponseModelRecoverySources,
   readPendingModelRecognitionSources,
+  readPendingSourceGapRepairs,
+  readPendingSourceGapExclusions,
   readLocalIndexIdentityBeforeMigration,
   reasoningEffortOrdinal,
 } from "./local-index-store.js";
@@ -237,7 +239,16 @@ function sameWalkedFileId(fileId, walked) {
     && Number(fileId.slice(separator + 1)) === Number(walked.ino);
 }
 
-function createInspectionCache(catalog, { disabled = null, roundedHits = null } = {}) {
+function createInspectionCache(database, catalog, { disabled = null, roundedHits = null } = {}) {
+  // Under this parser, a retained statistical fact proves that the source
+  // passed API exclusion. Empty/older sources must be classified from their
+  // header; no additional persistent classification/cache format is needed.
+  const eligible = new Set(database.prepare(`SELECT s.id FROM source s
+    WHERE s.parser_version=? AND (EXISTS(SELECT 1 FROM usage_event WHERE source_id=s.id)
+      OR EXISTS(SELECT 1 FROM quota_occurrence WHERE source_id=s.id)
+      OR EXISTS(SELECT 1 FROM tool_class_fact WHERE source_id=s.id)
+      OR EXISTS(SELECT 1 FROM work_lifecycle_fact WHERE source_id=s.id))`)
+    .all(LOCAL_INDEX_PARSER_VERSION).map(row => Number(row.id)));
   const byPath = new Map();
   for (const row of catalog.values()) {
     if (row.lineage_json !== null) byPath.set(row.path, row);
@@ -259,7 +270,7 @@ function createInspectionCache(catalog, { disabled = null, roundedHits = null } 
     if (record?.lineage === null || typeof record?.lineage !== "object"
         || record.statSize !== Number(walked.size)) return null;
     if (!Number.isSafeInteger(Number(walked.ino))) roundedHits?.set(walked.path, row.file_id);
-    return record;
+    return { ...record, subscriptionEligible: eligible.has(Number(row.id)) };
   };
 }
 
@@ -655,16 +666,27 @@ export async function refreshLocalIndex({
     let infos;
     let discoveryReceipt;
     const disabled = new Set();
+    let discoveryRetries = 0;
     for (;;) {
       const roundedHits = new Map();
-      infos = await timing.measure("index_discovery",()=>discover({
-        codexHome, startAt, endAt, signal, discoveryLimits,
-        diagnosticTimer: timing,
-        inspectionCache: createInspectionCache(catalog, { disabled, roundedHits }),
-      }));
+      try {
+        infos = await timing.measure("index_discovery",()=>discover({
+          codexHome, startAt, endAt, signal, discoveryLimits,
+          diagnosticTimer: timing,
+          excludeApiSessions: true,
+          inspectionCache: createInspectionCache(database, catalog, { disabled, roundedHits }),
+        }));
+      } catch (error) {
+        if (error?.code !== "codex_log_source_changed") throw error;
+        signal?.throwIfAborted();
+        if (discoveryRetries++ >= 2) throw fixedError("codex_rollout_source_changed");
+        continue;
+      }
       timing.flush();
       const receipt = localCodexLogScanner.codexRolloutDiscoveryReceipt(infos);
-      const fileIds = await timing.measure("index_file_ids",()=>resolveFileIds([...infos, ...receipt.quarantined]));
+      const excluded = receipt.excludedApiSources ?? [];
+      const fileIds = await timing.measure("index_file_ids",()=>resolveFileIds([...infos, ...receipt.quarantined,
+        ...excluded.filter(info => catalog.has(sourceLocal(deviceSalt, sourceIdentity(info)).toString('hex')))]));
       // A cached inspection found through a rounded inode is trusted only if
       // the exact id agrees; otherwise discover again without that entry.
       const stale = [];
@@ -678,7 +700,8 @@ export async function refreshLocalIndex({
       // Discovery results are frozen; carry the exact id on copies.
       const withId = (info) => ({ ...info, fileId: fileIds.get(info.path) ?? null });
       infos = infos.map(withId);
-      discoveryReceipt = { ...receipt, quarantined: receipt.quarantined.map(withId) };
+      discoveryReceipt = { ...receipt, quarantined: receipt.quarantined.map(withId),
+        excludedApiSources: excluded.map(withId) };
       break;
     }
     const discoveredAt = performance.now();
@@ -767,9 +790,14 @@ async function runRefresh({
   // Scoped recovery version lives beside the source's committed diagnostics.
   // Do not bump the global parser and invalidate every historical source.
   const modelRecovery=readPendingResponseModelRecoverySources(database, RESPONSE_MODEL_RECOVERY_VERSION);
+  const gapRecovery = readPendingSourceGapRepairs(database);
   for (const id of readPendingModelRecognitionSources(database)) modelRecovery.add(id);
   let modelRecoverySources=0,modelRecoveryBytes=0,modelRecoveryPending=0;
   for (const info of infos) {
+    if (info.excludedApiSession === true) {
+      classification.set(info, { mode: 'dependency', row: undefined });
+      continue;
+    }
     const row = catalog.get(hexOf(info));
     let decision = classifyFromStat(info, row, LOCAL_INDEX_PARSER_VERSION);
     // A timestamp change is not a fact change. Authenticate the entire committed
@@ -824,6 +852,9 @@ async function runRefresh({
         await handle?.close().catch(() => {});
       }
     }
+    if (["skip", "append"].includes(decision.mode) && gapRecovery.has(Number(row?.id))) {
+      decision = { mode: "rescan", reason: "quarantine_changed" };
+    }
     // A source registered by an interrupted cold build holds no verified
     // facts; it is new work, not a rescan, and lanes may take it.
     if (row !== undefined && row.verified_at_ms === null
@@ -859,7 +890,8 @@ async function runRefresh({
     }
     // Discovery rejected this source earlier and accepts it now; it holds no
     // facts, so it is new work.
-    if (row !== undefined && DISCOVERY_QUARANTINE_CODES.includes(row.quarantine_code)) {
+    if (row !== undefined && (DISCOVERY_QUARANTINE_CODES.includes(row.quarantine_code)
+        || row.quarantine_code === "codex_rollout_lineage_invalid" && row.lineage_json === null)) {
       decision = { mode: "new" };
     }
     classification.set(info, { ...decision, row });
@@ -867,6 +899,59 @@ async function runRefresh({
 
   finishClassify();
   const finishPlan = timing.start("index_plan");
+  const retiredSessions = new Set();
+  const rejectedKeys = new Set(discoveryReceipt.quarantined.map(hexOf));
+  const excludedGapSources = readPendingSourceGapExclusions(database);
+  const retired = (discoveryReceipt.excludedApiSources ?? []).flatMap(info => {
+    const row = catalog.get(hexOf(info));
+    if (rejectedKeys.has(hexOf(info)) || !row) return [];
+    const retireFacts = row.presence !== 'absent' || Number(row.scanned_bytes) !== 0;
+    return retireFacts || info.fileId === row.file_id && excludedGapSources.has(Number(row.id))
+      ? [{info,row,retireFacts}] : [];
+  });
+  let retirementChanges = 0;
+  if (retired.length > 0) {
+    writer.begin();
+    try {
+      for (const {info,row,retireFacts} of retired) {
+        signal?.throwIfAborted();
+        await withStableRolloutSource(info, async handle => {
+          let excluded = false;
+          await localCodexLogScanner.readRolloutLineage(handle, {
+            maximumTotalBytes:1024*1024,signal,onApiSession:value => {excluded=value;},
+          });
+          if (!excluded) throw fixedError('codex_rollout_source_changed');
+        },timing);
+        signal?.throwIfAborted();
+        const state = {sourceId:Number(row.id),sessionId:row.session_id};
+        const oldImpact = impactSummary(state);
+        if (retireFacts) {
+          counts.usageEventsRemoved += writer.deleteSourceFacts(state.sourceId);
+          if (row.session_id !== null) writer.clearLineageSnapshots(Number(row.session_id));
+          writer.commitSourceState(state.sourceId, {
+            sessionId:row.session_id,surfaceId:row.surface_id,path:row.path,rolloutKey:row.rollout_key,
+            fileId:row.file_id,birthtimeMs:row.birthtime_ms,sizeBytes:Number(row.size_bytes),
+            mtimeMs:Number(row.mtime_ms),ctimeMs:row.ctime_ms,scannedBytes:0,
+            quarantineCode:null,snapshotsPersisted:false,turnContextSeen:false,
+            carryTotals:null,replaceSegments:true,diagnostics:{},
+          });
+          writer.markAbsent(state.sourceId);
+          retiredSessions.add(sessionIdFor(info));
+          // Do not resurrect a retired API row while reconciling presence.
+          catalog.set(hexOf(info), {...row,presence:'absent',scanned_bytes:0,quarantine_code:null});
+        }
+        // Superseded means outside subscription coverage, not repaired usage.
+        // Keep every gap and its provenance, including unproved old identities.
+        const superseded = writer.supersedeExcludedApiSourceGaps(state.sourceId, info.fileId);
+        if (!retireFacts && superseded === 0) continue;
+        recordSourceImpact({state,info,row,mode:'fact_correction',reason:null,
+          oldImpact,newImpact:impactSummary(state),newScannedBytes:0,coverageRepaired:superseded > 0});
+        retirementChanges++;
+      }
+      if (retirementChanges > 0) writer.commit({kind:'refresh',sourcesChanged:retirementChanges});
+      else writer.rollback();
+    } catch (error) {writer.rollback();throw error;}
+  }
   // Sources discovery rejects now may hold facts from when they were accepted.
   // Remove those facts, keep the catalog row (and its ordinal), and record why.
   const rejected = [];
@@ -938,7 +1023,8 @@ async function runRefresh({
   };
   for (const info of infos) {
     const entry = classification.get(info);
-    if (typeof entry.row?.quarantine_code === "string" && entry.mode !== "quarantined") {
+    if (entry.mode === 'dependency'
+        || typeof entry.row?.quarantine_code === "string" && entry.mode !== "quarantined") {
       markChanged(info);
     }
   }
@@ -959,7 +1045,7 @@ async function runRefresh({
       markChanged(info);
     }
   }
-  const replacementSessions = new Set();
+  const replacementSessions = new Set(retiredSessions);
   for (const info of infos) {
     const entry = classification.get(info);
     if (entry.row !== undefined && entry.mode === "rescan"
@@ -974,7 +1060,7 @@ async function runRefresh({
     const plans = component.members.map((info) => {
       const entry = classification.get(info);
       let plan = { info, row: entry.row, mode: entry.mode, reason: entry.reason };
-      if (replacementSessions.has(sessionIdFor(info)) && plan.mode !== "rescan"
+      if (plan.mode !== 'dependency' && replacementSessions.has(sessionIdFor(info)) && plan.mode !== "rescan"
           && plan.mode !== "new") {
         plan = { ...plan, mode: "rescan", reason: "session_rescan" };
       }
@@ -1002,6 +1088,7 @@ async function runRefresh({
     };
     const rescanSession = (sessionId) => {
       for (const plan of plansBySession.get(sessionId) ?? []) {
+        if (plan.mode === 'dependency') continue;
         if (plan.mode !== "rescan" && plan.mode !== "new") {
           plan.mode = "rescan";
           plan.reason = "session_rescan";
@@ -1021,7 +1108,7 @@ async function runRefresh({
             && ["skip", "append"].includes(ancestor.mode)
             && Number(ancestor.row?.snapshots_persisted ?? 0) !== 1) {
           ancestor.mode = "rescan";
-          ancestor.reason = "snapshot_persistence";
+          ancestor.reason = "session_rescan";
           rescanSession(parentId);
         }
         if (parent?.lineage?.historyMode === "paginated") break;
@@ -1168,7 +1255,7 @@ async function runRefresh({
     return rows;
   }
 
-  function impactPartitions(state, oldImpact, newImpact, mode, { forceFull = false } = {}) {
+  function impactPartitions(state, oldImpact, newImpact, mode, { forceFull = false, coverageRepaired = false } = {}) {
     const partitions = [];
     const factDiffers = (oldFact, newFact) => forceFull
       ? oldFact.count > 0 || newFact.count > 0
@@ -1227,7 +1314,7 @@ async function runRefresh({
         status: "pending",
       });
     }
-    if (mode === "new" || mode === "quarantine_gap") {
+    if (mode === "new" || mode === "quarantine_gap" || coverageRepaired) {
       partitions.push({
         partitionKind: "coverage",
         partitionKey: `source:${state.sourceId}`,
@@ -1276,8 +1363,10 @@ async function runRefresh({
     return [{
       byteStart: 0,
       byteEnd: Number(info.size ?? 0),
-      eventLowerMs: oldImpact.usage.min,
-      eventUpperMs: oldImpact.usage.max,
+      // A rejected whole source may omit unobserved events and lifecycle
+      // boundaries outside its old usage extrema. Do not claim exact extents.
+      eventLowerMs: null,
+      eventUpperMs: null,
       reason,
       confidence: "bounded",
       createdAtMs: now(),
@@ -1285,7 +1374,7 @@ async function runRefresh({
   }
 
   function recordSourceImpact({
-    state, info, row, mode, reason, oldImpact, newImpact, newScannedBytes, gaps = [],
+    state, info, row, mode, reason, oldImpact, newImpact, newScannedBytes, gaps = [], coverageRepaired = false,
   }) {
     // A full replacement can rewrite fact content with the same count and
     // observed-time bounds. A replacement is therefore a bounded full-source
@@ -1297,8 +1386,9 @@ async function runRefresh({
       : changed.some((fact) => fact.oldMinAtMs === null && fact.newMinAtMs === null
         && (fact.oldCount > 0 || fact.newCount > 0))
         ? "bounded" : "exact";
-    const partitions = impactPartitions(state, oldImpact, newImpact, mode, { forceFull });
+    const partitions = impactPartitions(state, oldImpact, newImpact, mode, { forceFull, coverageRepaired });
     if (partitions.truncated) writer.markManifestIncomplete();
+    const createdAtMs = now();
     writer.recordSourceChange({
       sourceId: state.sourceId,
       mode,
@@ -1314,8 +1404,8 @@ async function runRefresh({
       confidence,
       factCounts: changed,
       partitions,
-      gaps,
-      createdAtMs: now(),
+      gaps: gaps.map(gap => ({ ...gap, createdAtMs })),
+      createdAtMs,
     });
   }
 
@@ -1405,7 +1495,7 @@ async function runRefresh({
   // 4. Reconcile discovery presence independently of fact changes. An
   // unchanged source can reappear after a narrower discovery window.
   const discovered = new Set([
-    ...infos.map(hexOf),
+    ...infos.filter(info => info.excludedApiSession !== true).map(hexOf),
     ...discoveryReceipt.quarantined.map(hexOf),
   ]);
   const absent = [...catalog.entries()]
@@ -1444,7 +1534,7 @@ async function runRefresh({
     deferred,
     walBytesPeak,
     walPinned: walBytesPeak >= walLimits.softBytes,
-    unchanged: writer.transactions === summaryBefore.transactions,
+    unchanged: writer.transactions === summaryBefore.transactions && retirementChanges === 0,
     mode: useLanes ? "lanes" : "sequential",
     laneCount: lanes,
     sources: infos.length,
@@ -1535,10 +1625,11 @@ async function runRefresh({
     }
 
     for (const { component, plans } of totalWork) {
-      const needsWork = plans.some((plan) => !["skip", "quarantined"].includes(plan.mode))
+      const needsWork = plans.some((plan) => !["skip", "quarantined", 'dependency'].includes(plan.mode))
         || plans.some((plan) => dependencyUnavailable(plan.info));
       if (!needsWork) {
         for (const plan of plans) {
+          if (plan.mode === 'dependency') continue;
           counts[plan.mode === "quarantined" ? "sourcesQuarantined" : "sourcesSkipped"] += 1;
           const row = plan.row;
           if (row?.quarantine_code) retainedInvalid.add(hexOf(plan.info));
@@ -1551,6 +1642,34 @@ async function runRefresh({
           const plan = plans[sourceIndex];
           if (signal?.aborted) throw fixedError("local_index_aborted");
           const { info, row, mode } = plan;
+          if (mode === 'dependency') {
+            // Read only when an admitted component is doing actual work.
+            // Preserve inherited counters/model/replay keys without creating
+            // an API source, session, cursor or publication in the index.
+            if (dependencyUnavailable(info)) {markUnavailable(info);continue;}
+            const collector = snapshots.collectorFor(info);
+            const paginated = info.lineage?.historyMode === 'paginated';
+            const historySeed = await historySeeds.resolveSeed(info, {includeSnapshots:collector !== null});
+            const logicalSeed = paginated ? null : {...seedForNew(info),seedTier:await lineageSeedTier(info)};
+            snapshots.replaceFor(info, historySeed?.seedSnapshots ?? []);
+            const memoryInherited = snapshots.inheritedFor(info);
+            const ancestors = info.lineage?.isInlineFork === true ? ancestorSessionLocals(info) : [];
+            const inherited = {has:key => memoryInherited?.has(key) === true
+              || ancestors.some(id => selectSnapshot.get(id,snapshotLocal(deviceSalt,key)) !== undefined)};
+            const outcome = await withStableRolloutSource(info, handle => extractRolloutUsage(handle, {
+              size:Number(info.size),isFork:info.lineage?.isInlineFork === true,
+              inheritedSnapshots:inherited,collectSnapshots:collector,
+              ...selectRolloutUsageSeed(info,{historySeed,logicalSeed}),
+              ...(maximumLineBytes === undefined ? {} : {maximumLineBytes}),signal,onEvent:()=>{},
+            }),timing);
+            if (outcome.read.aborted || signal?.aborted) throw fixedError('local_index_aborted');
+            if (rolloutContentQuarantineReason(outcome) !== null) {markUnavailable(info);continue;}
+            if (logicalHeads.get(info.lineage?.sessionId) === info) {
+              finalBySessionId.set(info.lineage.sessionId,{model:outcome.finalModel,
+                effort:outcome.finalEffort,tier:outcome.finalTier});
+            }
+            continue;
+          }
           if (mode === "quarantined") {
             counts.sourcesQuarantined += 1;
             markUnavailable(info);
@@ -1746,13 +1865,16 @@ async function runRefresh({
               replaceSegments: !resuming,
               diagnostics,
             }));
+            const repaired = startOffset === 0 && outcome.read.nextOffset === Number(info.size)
+              ? writer.repairSourceGaps(state.sourceId) : 0;
             const newImpact = impactSummary(state);
-            const impactMode = candidate
+            const impactMode = repaired > 0 ? "source_replace" : candidate
               ? "semantic_noop"
               : mode === "new" ? "new" : resuming ? "append" : "source_replace";
             recordSourceImpact({
               state, info, row, mode: impactMode, reason: plan.reason ?? null,
               oldImpact, newImpact, newScannedBytes: outcome.read.nextOffset,
+              coverageRepaired: repaired > 0,
             });
             counts.bytesScanned += Math.max(0, outcome.read.nextOffset - startOffset);
             counts[mode === "new" ? "sourcesNew" : resuming ? "sourcesResumed" : "sourcesRescanned"] += 1;
@@ -1897,11 +2019,13 @@ async function runRefresh({
                   replaceSegments: true,
                   diagnostics,
                 }));
+                const repaired = cursor.nextOffset === Number(info.size) ? writer.repairSourceGaps(state.sourceId) : 0;
                 const newImpact = impactSummary(state);
                 recordSourceImpact({
                   state, info, row: undefined, mode: "new",
                   reason: "cold_build", oldImpact, newImpact,
                   newScannedBytes: cursor.nextOffset,
+                  coverageRepaired: repaired > 0,
                 });
                 counts.bytesScanned += cursor.nextOffset;
                 counts.sourcesNew += 1;

@@ -594,6 +594,7 @@ export async function extractRolloutUsage(path, {
   // continuity lens compares positive-input requests, so only the next one is
   // a meaningful boundary.
   function emitUsage(event, rawUsage) {
+    if (responsePlan.excludedApiSession) return;
     // Product-approved assumption: historical Codex counters can omit cache
     // writes. Apply it only after choosing the charged usage, keeping raw
     // cumulative counters unchanged for replay and delta decisions.
@@ -635,6 +636,7 @@ export async function extractRolloutUsage(path, {
   }
 
   function emitToolObservations(observations, observedAtMs, sourceOffset) {
+    if (responsePlan.excludedApiSession) return;
     let pending = null;
     for (const [toolOrdinal, observation] of observations.entries()) {
       const event = {
@@ -949,7 +951,7 @@ export async function extractRolloutUsage(path, {
       // Inline forks carry copied ancestor turns before their own first
       // context. They are not new work; paginated own segments are retained.
       if (work !== null && (!isFork || turnContextSeenHere)) {
-        return onWork?.({ ...work, sourceOffset: lineEndOffset });
+        if (!responsePlan.excludedApiSession) return onWork?.({ ...work, sourceOffset: lineEndOffset });
       }
       if (record.payload?.type === "thread_settings_applied") {
         const settings = record.payload?.thread_settings;

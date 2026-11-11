@@ -30,10 +30,41 @@ local-only and never leave the owner-only file.
 | `PRAGMA application_id` | `1431128370` (`0x554D4932`) | Format guard. A mismatch fails with `local_index_family_mismatch`. |
 | `meta.family` | `local-index-store` | Logical family, written once at creation. |
 | `PRAGMA user_version` | `11` | Format version. Ordinary runtime opens only 11. The first writable open of a v9 store runs v9→v10→v11; a v10 store runs v10→v11. Read-only older opens remain refused. The historical v8→v9 copy tool is retired under v11. |
-| Parser stamp | `local-index-rollout-typed-v3+unified-rollout-typed-v22` | Bounds legacy overlap by occurrence, rejects conflicting response copies and retains captured request speed. Existing present sources reparse under the new semantics; original records and retained absent-source facts remain untouched. |
-| Telemetry publication parser label | `unified-rollout-typed-v22` | The shared extractor revision fits the existing v1.1/v1.2 wire contract. Internal store stamps and the publication fingerprint retain store provenance; no hosted schema is widened. |
+| Parser stamp | `local-index-rollout-typed-v3+unified-rollout-typed-v23` | Excludes explicitly API-key/custom-provider sessions from usage, quota, tools and work; discovery also omits them from new index admission. Existing older subscription sources reparse atomically; original records and unavailable historical evidence remain untouched. |
+| Telemetry publication parser label | `unified-rollout-typed-v23` | The shared extractor revision fits the existing v1.1/v1.2 wire contract. Internal store stamps and the publication fingerprint retain store provenance; no hosted schema is widened. |
 | Commit sequence | `store_state.commit_seq` | Monotonic publication counter. Readers key their caches and the companion generation id off it. |
 | Calculation revision | `store_state.calculation_revision` | Monotonic semantic-change counter, committed with facts. Equality can support a calculation reuse proof; it does not replace the publication fence. |
+
+Discovery and extractor v23 apply the same source-selection rule. A session
+metadata declaration of nonempty `model_provider` other than
+`openai`, `auth_mode` equal to `apikey`/`api_key`, or
+`billing_surface: openai_api` excludes its emitted usage, quota, tool and work
+facts. Unknown/missing declarations keep the existing subscription model;
+neither CLI/IDE surface nor account attribution is an exclusion condition.
+This is product scope, not proof of a provider's private billing system.
+Independent API sources receive a bounded guarded header inspection and stay
+out of new source/session/cursor admission. Their additions, appends and removal
+do not publish a new index generation. An API history explicitly needed by a
+subscription source remains in the guarded discovery dependency closure; its
+bounded state and replay keys are read transiently only when that component
+does work, without registering the API source. Subscription descendants retain
+normal replay, history-cutoff, quarantine and cancellation checks. The
+model-performance parser uses the same
+metadata rule at revision 20 with its existing blocked-source state.
+
+Present older-parser subscription sources receive the ordinary atomic full
+replay. Already cataloged API sources are corrected atomically after a guarded
+header recheck: remove their derived facts from all rollups, clear their derived
+diagnostics/cursor and retain an absent catalog tombstone plus the ordinary
+impact receipt. Later API growth does not advance that tombstone. A future
+subscription declaration receives ordinary readmission and replay; no current
+configuration classifies history. Failed or cancelled corrections preserve
+last-good state. Existing inspection records may skip headers only when their
+exact source state, current parser and retained statistical facts establish
+subscription admission; no classification field is persisted. No DDL, schema
+version, cache shape, account assignment or direct profile mutation is involved.
+An unavailable historical source
+cannot be reclassified without its evidence and retains its old provenance.
 
 Fail-closed rules, in the order `openLocalIndexStore` applies them:
 
@@ -367,7 +398,7 @@ source cursor are provisional; recovery and source replacement remove them with
 the other affected facts. Work includes tools and necessary waiting, and parallel
 intervals count once. Inference performance timing remains independent.
 
-Workload policy `task-workload-v12` projects, rather than rewrites, these facts.
+Workload policy `task-workload-v16` projects, rather than rewrites, these facts.
 Retained unambiguous ancestry identifies copied task boundaries, including
 paginated forks; a copied completion must also match the ancestor's reported
 duration. New child work remains included, and unsupported/cyclic ancestry does
@@ -494,29 +525,35 @@ text; specific errors remain in diagnostics.
 The task-boundary detector retains its independent fifteen-minute unresolved
 lookback. Neither window adds a scheduler or alters historical accounting.
 
-Browser readers accept v2–v6 last-good results as stale, retaining v5+ unallocated
+Browser readers accept v2–v8 last-good results as stale, retaining v5+ unallocated
 summaries without mixing older daily bars with new summaries. Legacy current
 grades and trend units are not reinterpreted, and stale/unavailable
 projections cannot display fresh recent grades or estimates. The next refresh
-replaces the whole result with v7. Workload projections are recomputed and no independent durable
+replaces the whole result with v9. Workload projections are recomputed and no independent durable
 segmentation anchor or SQLite migration is introduced. Startup state remains v3.
-Startup
-reads extend beyond seven days when necessary. Its startup identity, frozen
-capacity and capacity history persist in `private/overview-workload-state.json`
-as `overview-workload-state-v3`, including the first accepted startup quota
-baseline even when it came from a direct live read. Subsequent refreshes retain
-that baseline instead of replacing it with a later indexed occurrence. A
-baseline retains its source plan label, including `unknown`; projection never
-persists an inherited label as an explicit observation. V1/v2
-reads preserve capacity history, while writes are forward-only and refuse an
-unknown newer state. Capacity history retains every validated plan and version;
-plan selection and display-window slicing affect calculation inputs only.
+Startup reads extend beyond seven days when necessary. The existing
+`private/overview-workload-account-state.json` account-keyed container stores
+`overview-workload-state-v3` payloads and capacity history. Scoped comparisons
+replay the ordered current account epoch; a saved baseline alone cannot prove
+an epoch. The old unscoped `overview-workload-state.json` remains untouched and
+is not imported. A baseline retains its source plan label, including `unknown`;
+projection never persists an inherited label as an explicit observation.
+Capacity history retains every validated plan and version; plan selection and
+display-window slicing affect calculation inputs only.
 The existing 4096-entry bound refuses a further version with a visible
 resource-limit outcome and retains the last-good state rather than pruning it.
-The same state
-root, using the existing validated Windows protected private boundary. The
-outer legacy state directory need not be rewritten. Write failures are visible
-publication errors.
+The container uses the existing validated Windows protected private boundary.
+The outer legacy state directory need not be rewritten. Write failures are
+visible publication errors. Unknown newer state is refused.
+
+Under the owner's local single-account model, the workload reader can use the
+selected same-plan `historical_unattributed` capacity without an account token.
+An explicitly different account token remains refused. This changes model
+selection only: raw facts retain their attribution, current quota/account
+boundaries remain in force, and no extra assumption label is added. Missing
+usage still makes expected consumption unavailable. Existing persistent
+container and payload formats are unchanged. See the
+[expected-line contract](../design/composition-aware-expected-line.md#historical-plan-comparison-populations).
 
 The startup comparison reads retained direct `app_server_read` quota snapshots
 and their validated reset events through the secure collector facade, in addition
@@ -854,6 +891,36 @@ identifiers. Modes, reasons, partition kinds, basis kinds, statuses and repair
 scopes are closed vocabularies enforced by both the DDL and the writer; impact
 keys use internal store ids and time ranges.
 
+Fresh successful discovery may readmit unchanged sources previously rejected
+by discovery for invalid lineage. A changing or unreadable cutoff dependency
+refuses the pass and receives at most two discovery retries under the same
+cancellation/deadline, rather than establishing durable invalid lineage.
+Stable invalid cutoffs still quarantine.
+
+When a retained API source is explicitly excluded from subscription statistics,
+its open historical gaps may become `superseded`, rather than `repaired`.
+This requires a stable read of the explicit API declaration, the original
+same-file change provenance, and no subsequent physical replacement. The gap
+and its provenance remain retained; coverage invalidation publishes in the same
+transaction. A previously retired source can complete this bounded resolution.
+Unknown, absent subscription or mismatched-source gaps stay open. Repeated
+refreshes, API-only appends and process restarts do not republish settled gaps.
+
+A complete authenticated replay can close an open/queued whole-source gap in
+the same transaction as its facts, cursor and coverage impact. The original
+quarantine change must bind the gap's reason, creation time, byte extent and
+unchanged physical identity; missing provenance, partial reads and subsequent
+identity replacements cannot close it. Already admitted sources with eligible
+old gaps are scheduled for full replay too. There is no schema migration or
+direct gap-flag recovery workflow.
+
+Whole-source quarantine bounds are unknown. Legacy bounded usage extrema do
+not establish the omitted work or unseen-event range. Workload calculations
+keep such gaps conservative until verified repair. Only explicitly exact
+timestamp bounds may limit an effect to intersecting receipt windows; quota
+observations remain independently readable. Expected usage is unavailable when
+its comparison intervals include missing usage, even if a capacity is supplied.
+
 ## Work projections
 
 Schema 11 replaces `work_rollup` with the tiered v2 key and adds
@@ -908,6 +975,23 @@ cancellation lifecycle; an in-progress work report does not block publication
 of companion figures. Each work result still checks its own generation and
 reporting anchor. Process-local reuse of individually authenticated header
 relations does not authorize completed work-projection reuse.
+
+The existing refresh timing stream separates `snapshot_workload_quota`
+(retained direct-quota evidence reading) from `snapshot_workload` (synchronous
+workload SQL and analysis). These inclusive spans contain only fixed stage,
+outcome and duration fields; observers cannot alter publication or computation.
+They add no persisted state and do not establish event-loop latency or a speed
+improvement. Fork-ancestor snapshot recovery uses the existing `session_rescan`
+impact reason; the closed durable reason vocabulary is unchanged.
+
+Within one work read, indexed source paths for the initially requested sessions
+are selected in batches of at most 256 UUIDs, matched case-insensitively. Only
+the current batch is retained, with at most 33 distinct paths per session; the
+33rd remains the ancestry reader's refusal sentinel. Consumed lists are dropped.
+Verified parents outside the requested set are still queried lazily, so unrelated
+historical sources do not populate a small-window lookup. Path selection does
+not replace fresh native source authentication, header/state validation,
+cancellation or the publication fence, and introduces no persistent cache.
 
 The backend runs full companion-only projection in a cancellable read-only
 worker so synchronous report SQL and aggregation do not occupy the companion

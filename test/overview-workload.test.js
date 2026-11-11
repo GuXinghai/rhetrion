@@ -93,6 +93,55 @@ test('recent receipts persist in their window and absence never invents a zero r
   assert.equal(analyzeWorkload({...input,nowMs:nowMs+61*M}).trend.state,'unknown');
 });
 
+test('exact usage gaps affect intersecting pairs without invalidating independent training and recent windows',()=>{
+  const input=recentWindowFixture(),baseline=analyzeWorkload(input);
+  input.usageGaps=[{lowerMs:nowMs-90*M,upperMs:nowMs-90*M}];
+  const before=structuredClone(input),value=analyzeWorkload(input);
+  assert.ok(value.classification.centers);
+  assert.deepEqual(value.current,baseline.current);assert.deepEqual(value.trend,baseline.trend);
+  assert.equal(sumDaily(value),sumDaily(baseline));assertConserved(value);
+  assert.equal(value.comparison.actualPp,baseline.comparison.actualPp);
+  assert.equal(value.comparison.expectedPp,null);assert.equal(value.comparison.coverage,'partial');
+  assert.ok(value.errors.some(e=>e.code==='workload_history_incomplete'));
+  assert.deepEqual(input,before);
+  assert.deepEqual(analyzeWorkload({...input,usageGaps:[...input.usageGaps,...input.usageGaps]}),value);
+});
+
+test('usage-gap timestamps honor start-exclusive and end-inclusive receipt windows',()=>{
+  const input=recentWindowFixture(),baseline=analyzeWorkload(input).current;
+  for(const at of [nowMs-15*M,nowMs+1])
+    assert.deepEqual(analyzeWorkload({...input,usageGaps:[{lowerMs:at,upperMs:at}]}).current,baseline);
+  for(const at of [nowMs-15*M+1,nowMs]){
+    const value=analyzeWorkload({...input,usageGaps:[{lowerMs:at,upperMs:at}]});
+    assert.equal(value.current.state,'unknown');assert.equal(value.current.usdPerHour,null);
+    assert.equal(value.trend.ratePpPerHour,4);
+  }
+});
+
+test('cross-day usage gaps retain observed quota without inventing weighted allocations or expected zero',()=>{
+  const start=Date.parse('2026-11-01T06:30:00Z'),end=Date.parse('2026-11-01T09:30:00Z');
+  const value=analyzeWorkload({nowMs:end,liveSinceMs:start,timeZone:'America/Los_Angeles',
+    quota:[{atMs:start,usedPercent:10,resetKey:'r'},{atMs:end,usedPercent:13,resetKey:'r'}],
+    capacity:{usd:100,availableAtMs:start},
+    usage:[{atMs:start+M,usd:1,priced:true},{atMs:end,usd:2,priced:true}],
+    usageGaps:[{lowerMs:start+M,upperMs:start+M}]});
+  assert.equal(sumDaily(value),0);assert.equal(value.unallocated.plans[0].pp,3);
+  assert.equal(value.unallocated.records[0].reason,'history_incomplete');assertConserved(value);
+  assert.equal(value.comparison.actualPp,3);assert.equal(value.comparison.expectedPp,null);
+});
+
+test('unknown usage coverage refuses expected consumption while retaining independent observed quota',()=>{
+  const value=analyzeWorkload({...recentWindowFixture(),usageCoverageFromMs:nowMs});
+  assert.equal(value.comparison.actualPp,14);assert.equal(value.comparison.expectedPp,null);
+  assert.equal(value.comparison.coverage,'partial');
+});
+
+test('malformed or unbounded usage-gap inputs fail explicitly',()=>{
+  for(const usageGaps of [null,{},[{lowerMs:1,upperMs:0}],[{lowerMs:null,upperMs:2}],
+    [{lowerMs:-1,upperMs:2}],[{lowerMs:0,upperMs:Infinity}],Array(10001).fill({lowerMs:0,upperMs:1})])
+    assert.throws(()=>analyzeWorkload({...recentWindowFixture(),usageGaps}),/workload_usage_gaps_invalid/);
+});
+
 test('elapsed API intensity ignores task duration and retains plan-era capacity guards',()=>{
   const input=recentWindowFixture(),original=analyzeWorkload(input);
   input.events.push(event('start',nowMs-5*M,{key:'parallel',session:'other'}));

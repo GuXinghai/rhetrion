@@ -1,13 +1,14 @@
 import test from 'node:test';
 import { appendFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, appendFile, chmod, symlink, rm, realpath } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, appendFile, symlink, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createParser } from '../tools/reports/inference-timing/parser.mjs';
 import { openStore, ingestFile, report } from '../tools/reports/inference-timing/store.mjs';
 import { argumentsFor } from '../tools/reports/inference-timing/run.mjs';
+import { createProtectedFixtureDirectory, grantSyntheticEveryoneRead } from './helpers/windows-owner-only-fixture.js';
 
 const BASE = Date.parse('2026-09-01T12:00:00Z');
 const key = Buffer.alloc(32, 7);
@@ -170,10 +171,13 @@ test('forks are excluded and retained fields contain no raw identities or item c
   assert.doesNotMatch(JSON.stringify({ result, state: parser.state() }), /PRIVATE_SENTINEL|synthetic-session|synthetic-turn|response-one/);
 });
 async function setup(t) {
-  const dir = await mkdtemp(join(await realpath(tmpdir()), 'timing-test-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'timing-test-'));
+  let store;
+  t.after(async () => { try { store?.close(); } finally { await rm(root, { recursive: true, force: true }); } });
+  const dir = join(root, 'protected');
+  createProtectedFixtureDirectory(dir);
   const file = join(dir, 'synthetic.jsonl'); await writeFile(file, lines(fixture()), { mode: 0o600 });
-  const store = await openStore(join(dir, 'out')); t.after(() => store.close());
+  store = await openStore(join(dir, 'out'));
   return { dir, file, store };
 }
 test('incremental restart equals cold scan; unchanged scan reads no rollout bytes', async t => {
@@ -194,8 +198,10 @@ test('partial trailing line is deferred, then read exactly once', async t => {
   assert.equal(report(store).turns.length, 1);
 });
 test('unfinished reconstruction survives closing and reopening the database', async t => {
-  const dir = await mkdtemp(join(await realpath(tmpdir()), 'timing-restart-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'timing-restart-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dir = join(root, 'protected');
+  createProtectedFixtureDirectory(dir);
   const file = join(dir, 'synthetic.jsonl'), output = join(dir, 'out');
   const x = fixture(); await writeFile(file, lines(x.slice(0, 5)), { mode: 0o600 });
   const first = await openStore(output);
@@ -220,11 +226,18 @@ test('cancellation rolls back both rows and checkpoint and can retry', async t =
   assert.equal(report(store).turns.length, 0);
   await ingestFile(store, file); assert.equal(report(store).turns.length, 1);
 });
-test('truncation, rewrites and replacement preserve last good result', async t => {
+test('source rewrites preserve the last good result until bounded replay completes', async t => {
   const { file, store } = await setup(t); await ingestFile(store, file);
   const before = report(store);
-  await writeFile(file, 'x'); await assert.rejects(ingestFile(store, file), /source_replaced/);
-  assert.deepEqual(report(store), before);
+  const changed = fixture(); changed[4].payload.usage.output_tokens = 200;
+  changed[4].payload.turn_token_usage.output_tokens = 200;
+  changed[7].payload.turn_token_usage.output_tokens = 300;
+  await writeFile(file, lines(changed));
+  await ingestFile(store, file, { maxBytes: 128 });
+  assert.deepEqual(report(store).turns, before.turns);
+  assert.equal(store.db.prepare('SELECT rebuild_kind FROM source').get().rebuild_kind, 'source');
+  await ingestFile(store, file);
+  assert.equal(report(store).turns[0].tokens, 300);
 });
 test('duplicate physical source does not duplicate logical turn', async t => {
   const { dir, file, store } = await setup(t); await ingestFile(store, file);
@@ -261,7 +274,8 @@ test('unknown schema, unsafe permissions and symlinks are refused', async t => {
   const { dir, file, store } = await setup(t);
   store.db.exec('PRAGMA user_version=999');
   await assert.rejects(openStore(join(dir, 'out')), /incompatible_database/);
-  await chmod(join(dir, 'out'), 0o755); await assert.rejects(openStore(join(dir, 'out')), /unsafe_directory/);
+  grantSyntheticEveryoneRead(join(dir, 'out'));
+  await assert.rejects(openStore(join(dir, 'out')), { code: 'security_policy' });
   const link = join(dir, 'link.jsonl'); await symlink(file, link); await assert.rejects(ingestFile(store, link));
 });
 test('method-1 experiment database is preserved and refused by the new writer', async t => {
@@ -271,8 +285,10 @@ test('method-1 experiment database is preserved and refused by the new writer', 
   assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 1);
 });
 test('legacy reconstruction persists scalar windows across close and reopen', async t => {
-  const dir = await mkdtemp(join(await realpath(tmpdir()), 'timing-legacy-restart-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'timing-legacy-restart-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dir = join(root, 'protected');
+  createProtectedFixtureDirectory(dir);
   const file = join(dir, 'synthetic.jsonl'), out = join(dir, 'out'), rows = legacyFixture();
   await writeFile(file, lines(rows.slice(0, 6)), { mode: 0o600 });
   const first = await openStore(out);

@@ -3,7 +3,7 @@ import { normalizeQuotaResetEvent } from "./reset-events.js";
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 export const WORKLOAD_POLICY = Object.freeze({
-  version: "task-workload-v15", bucketMs: 5 * MINUTE, historyMs: 168 * HOUR,
+  version: "task-workload-v16", bucketMs: 5 * MINUTE, historyMs: 168 * HOUR,
   // currentMs retains the historical unresolved-task lookback; recent display
   // windows must not change task-boundary detection when their lengths change.
   currentMs: 15 * MINUTE, shortTermMs: 15 * MINUTE, trendMs: 60 * MINUTE,
@@ -385,11 +385,25 @@ export function analyzeWorkload({ nowMs, events = [], usage = [], quota = [], ca
   comparisonBaseline = null, comparisonQuota = [], comparisonResetEvents = [],
   comparisonAccountKey = null,
   comparisonContinuityThroughMs = null, comparisonEvidenceError = null, estimationPlanType = null,
-  quotaResetEvents = comparisonResetEvents, usageCoverageFromMs = 0 }) {
+  quotaResetEvents = comparisonResetEvents, usageCoverageFromMs = 0, usageGaps = [] }) {
   if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new TypeError("workload_clock_invalid");
   const fromMs = Math.max(0, nowMs - WORKLOAD_POLICY.historyMs);
   const dateFormatter=new Intl.DateTimeFormat("en-CA",{timeZone,year:"numeric",month:"2-digit",day:"2-digit"});
   const errors = [];
+  // Inclusive timestamp bounds apply to start-exclusive/end-inclusive receipt
+  // windows. An unknown extent is represented by the reader's coverage fence.
+  if (!Array.isArray(usageGaps) || usageGaps.length > 10_000 || usageGaps.some(g =>
+    !Number.isSafeInteger(g?.lowerMs) || !Number.isSafeInteger(g?.upperMs)
+    || g.lowerMs < 0 || g.upperMs < g.lowerMs || g.upperMs >= Number.MAX_SAFE_INTEGER)) {
+    throw new TypeError("workload_usage_gaps_invalid");
+  }
+  const gaps = unionWorkIntervals(usageGaps.map(g => ({startMs:g.lowerMs,endMs:g.upperMs+1})),0,nowMs+1);
+  function completeUsage(from,to) {
+    if(from<usageCoverageFromMs)return false;
+    let lo=0,hi=gaps.length;
+    while(lo<hi){const mid=(lo+hi)>>1;if(gaps[mid].endMs<=from+1)lo=mid+1;else hi=mid;}
+    return lo===gaps.length||gaps[lo].startMs>to;
+  }
   const work = taskWorkIntervals(events, { nowMs, liveSinceMs, sourceFresh, usage });
   if (work.conflicts) errors.push({ code: "work_boundary_conflict", stage: "work", count: work.conflicts });
   // Complete change intervals may start before the display/cluster window.
@@ -416,7 +430,7 @@ export function analyzeWorkload({ nowMs, events = [], usage = [], quota = [], ca
     const to = Math.min(nowMs, atMs + WORKLOAD_POLICY.bucketMs), from = Math.max(fromMs, atMs);
     const values = byBucket.get(atMs)??[];
     bins.push({ atMs, fromMs: from, toMs: to, workMs: measure(from, to),
-      complete: from>=usageCoverageFromMs && completeWork(from,to),
+      complete: completeUsage(from,to) && completeWork(from,to),
       usd: values.reduce((sum, u) => sum + (hasPrice(u) ? u.usd : 0), 0), priced: values.every(hasPrice),
       actualPp: 0, coveredWorkMs: 0, actualCovered: false });
   }
@@ -478,7 +492,7 @@ export function analyzeWorkload({ nowMs, events = [], usage = [], quota = [], ca
     if(delta<=0)continue;
     const summary=summaryFor(b);summary.closedIntervals++;summary.observedPp+=delta;
     const ms = measure(a.atMs, b.atMs);
-    const incompleteHistory=a.atMs<usageCoverageFromMs;
+    const incompleteHistory=!completeUsage(a.atMs,b.atMs);
     const unknown = incompleteHistory||!completeWork(a.atMs,b.atMs);
     if (ms > 0 && !unknown) { actualPp += delta; actualWorkMs += ms; }
     const estimate=forEstimate(a)&&forEstimate(b),inferred=a.planAttribution==='inferred'||b.planAttribution==='inferred';
@@ -544,7 +558,7 @@ export function analyzeWorkload({ nowMs, events = [], usage = [], quota = [], ca
   const elapsedSamples=new Map(),sampleMs=WORKLOAD_POLICY.shortTermMs;
   for(const u of selectedUsage){
     const atMs=Math.floor((u.atMs-1)/sampleMs)*sampleMs;
-    if(atMs<Math.max(fromMs,usageCoverageFromMs)||atMs+sampleMs>nowMs)continue;
+    if(atMs<fromMs||atMs+sampleMs>nowMs||!completeUsage(atMs,atMs+sampleMs))continue;
     const sample=elapsedSamples.get(atMs)??{atMs,workMs:sampleMs,amounts:[],priced:true};
     sample.priced&&=hasPrice(u);if(hasPrice(u))sample.amounts.push(u.usd);
     elapsedSamples.set(atMs,sample);
@@ -553,7 +567,7 @@ export function analyzeWorkload({ nowMs, events = [], usage = [], quota = [], ca
   const recentModel=fitWorkload([...elapsedSamples.values()].map(({amounts,...sample})=>({...sample,usd:sumAmounts(amounts)})));
   function recentLoad(windowMs) {
     const start=nowMs-windowMs, recent=usageBetween(start,nowMs);
-    const candidate=sourceFresh&&start>=usageCoverageFromMs&&recent.length>0&&recent.every(hasPrice)
+    const candidate=sourceFresh&&completeUsage(start,nowMs)&&recent.length>0&&recent.every(hasPrice)
       ?sumAmounts(recent.map(u=>u.usd))/hours(windowMs):null;
     const usdRate=finite(candidate)&&candidate>=0?candidate:null;
     const state=usdRate===null?'unknown':'available';
@@ -667,16 +681,17 @@ export function analyzeWorkload({ nowMs, events = [], usage = [], quota = [], ca
     if(range&&u.atMs>range[0]&&u.atMs<=range[1])comparisonUsage.push(u);
   }
   const comparisonPriced=comparisonUsage.every(u=>u.priced&&finite(u.usd));
+  const comparisonHistoryComplete=comparisonRanges.every(([from,to])=>completeUsage(from,to));
   const expectedKnown=comparisonPriced||comparisonUsage.some(u=>u.priced&&finite(u.usd));
   const partial=blocked||comparisonConflict||resetGap||resetAmbiguous
-    ||identityChanged||comparisonEvidenceError!==null||!comparisonPriced;
+    ||identityChanged||comparisonEvidenceError!==null||!comparisonPriced||!comparisonHistoryComplete;
   const hasConfirmed=observedFrom!==null&&(!partial||comparisonRanges.length>0);
   const comparison={startedAtMs,baseline,inferred:comparisonInferred,observedFrom:observedFrom===null?null:iso(observedFrom),
     observedThrough:observedThrough===null?null:iso(observedThrough),capacityUsd:comparisonUsd,
     coverage:observedFrom===null?"unavailable":partial?"partial":"complete",
     confirmedThrough:confirmedThrough===null?null:iso(confirmedThrough),
     actualPp:hasConfirmed?cumulativePp:null,
-    expectedPp:hasConfirmed&&comparisonUsd!==null&&expectedKnown
+    expectedPp:hasConfirmed&&comparisonUsd!==null&&expectedKnown&&comparisonHistoryComplete
       ?100*comparisonUsage.reduce((s,u)=>s+(u.priced&&finite(u.usd)?u.usd:0),0)/comparisonUsd:null};
   if(comparisonConflict)errors.push({code:"comparison_quota_conflict",stage:"quota"});
   if(resetGap)errors.push({code:"comparison_reset_gap",stage:"quota"});
@@ -685,7 +700,8 @@ export function analyzeWorkload({ nowMs, events = [], usage = [], quota = [], ca
   if(comparisonEvidenceError!==null)errors.push({code:["quota_history_read_failed","quota_history_too_large","quota_history_invalid"].includes(comparisonEvidenceError)?comparisonEvidenceError:"quota_history_read_failed",stage:"quota"});
   if(!comparisonPriced)errors.push({code:"price_missing",stage:"pricing"});
   if (segmentPriceMissing||selectedUsage.some(u=>!hasPrice(u))) errors.push({code:"price_missing",stage:"pricing"});
-  if(pairs.some(([a])=>a.atMs<usageCoverageFromMs))errors.push({code:'workload_history_incomplete',stage:'index'});
+  if(pairs.some(([a,b])=>!completeUsage(a.atMs,b.atMs))||!comparisonHistoryComplete)
+    errors.push({code:'workload_history_incomplete',stage:'index'});
   const allowancePoints=new Map();
   for(const q of observations)allowancePoints.set(`${Math.floor(q.atMs/WORKLOAD_POLICY.bucketMs)}:${q.stageKey??q.resetKey}`,q);
   const allowanceRows=[...allowancePoints.values()].sort((a,b)=>a.atMs-b.atMs);

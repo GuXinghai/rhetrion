@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
-  mkdtemp,
   readFile,
   rm,
   stat,
@@ -10,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { assertWindowsOwnerOnly, createProtectedFixtureTempDirectory } from "./helpers/windows-owner-only-fixture.js";
 
 const CANONICAL = resolve(
   "tools/reports/build-prospective-collector-transitions.js",
@@ -25,9 +25,8 @@ function run(entrypoint, arguments_) {
     {
       cwd: process.cwd(),
       encoding: "utf8",
-      env: {
-        PATH: process.env.PATH ?? "",
-      },
+      env: process.env,
+      windowsHide: true,
     },
   );
   return {
@@ -39,7 +38,7 @@ function run(entrypoint, arguments_) {
 }
 
 test("canonical prospective report tool preserves the legacy CLI contract", async () => {
-  const directory = await mkdtemp(
+  const directory = await createProtectedFixtureTempDirectory(
     join(tmpdir(), "app-usagemonitor-prospective-tool-parity-"),
   );
   try {
@@ -81,8 +80,13 @@ test("canonical prospective report tool preserves the legacy CLI contract", asyn
       await readFile(legacyOutput, "utf8"),
       await readFile(canonicalOutput, "utf8"),
     );
-    assert.equal((await stat(canonicalOutput)).mode & 0o777, 0o600);
-    assert.equal((await stat(legacyOutput)).mode & 0o777, 0o600);
+    if (process.platform === "win32") {
+      assertWindowsOwnerOnly(canonicalOutput);
+      assertWindowsOwnerOnly(legacyOutput);
+    } else {
+      assert.equal((await stat(canonicalOutput)).mode & 0o777, 0o600);
+      assert.equal((await stat(legacyOutput)).mode & 0o777, 0o600);
+    }
 
     const canonicalMissing = run(CANONICAL, [
       "--input",

@@ -976,6 +976,15 @@ export async function seedWindowsNormalCandidateCodexFixture({ profile } = {}, {
   const sessions = win32.join(codexHome, "sessions");
   const fixture = win32.join(sessions, source.fileName);
   const namesFile = win32.join(codexHome, "session_index.jsonl");
+  const projectsFile = win32.join(codexHome, ".codex-global-state.json");
+  const projectsContent = JSON.stringify({
+    "local-projects": { [SYNTHETIC_PROJECT_NAME]: {
+      id: SYNTHETIC_PROJECT_NAME, name: SYNTHETIC_PROJECT_NAME, rootPaths: [project],
+    } },
+    "thread-project-assignments": { [source.sessionId]: {
+      projectKind: "local", projectId: SYNTHETIC_PROJECT_NAME,
+    } },
+  });
   const namesContent = `${JSON.stringify({ id: source.sessionId,
     thread_name: SYNTHETIC_TASK_NAME, updated_at: new Date(source.startedAtMs).toISOString() })}\n`;
   try {
@@ -996,6 +1005,11 @@ export async function seedWindowsNormalCandidateCodexFixture({ profile } = {}, {
     if (!directory?.isDirectory?.() || directory.isSymbolicLink?.()) {
       fail("SYNTHETIC_FIXTURE_UNAVAILABLE");
     }
+    // Project membership is explicit Codex metadata; Git enriches labels only.
+    await writeFixture(projectsFile, projectsContent, { mode: 0o600, flag: "wx" });
+    const projects = await metadata(projectsFile);
+    if (!projects?.isFile?.() || projects.isSymbolicLink?.() || projects.nlink !== 1
+        || projects.size !== Buffer.byteLength(projectsContent)) fail("SYNTHETIC_FIXTURE_UNAVAILABLE");
     await writeFixture(namesFile, namesContent, { mode: 0o600, flag: "wx" });
     const names = await metadata(namesFile);
     if (!names?.isFile?.() || names.isSymbolicLink?.() || names.nlink !== 1
@@ -1017,7 +1031,7 @@ export async function seedWindowsNormalCandidateCodexFixture({ profile } = {}, {
     if (ownerFailure !== null) fail(`SYNTHETIC_FIXTURE_OWNER_${ownerFailure.slice('synthetic_owner_'.length).toUpperCase()}`);
     fail("SYNTHETIC_FIXTURE_UNAVAILABLE");
   }
-  return Object.freeze({ codexHome, fixture, sessions, project, namesFile });
+  return Object.freeze({ codexHome, fixture, sessions, project, namesFile, projectsFile });
 }
 
 /** Seed only the fixed first-run acknowledgement into the protected state store. */

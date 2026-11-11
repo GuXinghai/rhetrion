@@ -4,11 +4,11 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { safeValidationErrors } from "./safe-validation-errors.js";
 
-export const EXPORT_WORKSPACE_DISCARD_PLAN_VERSION = "local-export-workspace-discard-plan-v0.1";
-export const EXPORT_WORKSPACE_DISCARD_PREFLIGHT_VERSION = "usage-export-workspace-discard-preflight-v0.1";
-export const EXPORT_WORKSPACE_DISCARD_JOURNAL_VERSION = "usage-export-workspace-discard-journal-v0.1";
-export const EXPORT_WORKSPACE_DISCARD_COMMIT_MARKER_VERSION = "usage-export-workspace-discard-commit-marker-v0.1";
-export const EXPORT_WORKSPACE_DISCARD_RECEIPT_VERSION = "usage-export-workspace-discard-receipt-v0.1";
+export const EXPORT_WORKSPACE_DISCARD_PLAN_VERSION = "local-export-workspace-discard-plan-v0.2";
+export const EXPORT_WORKSPACE_DISCARD_PREFLIGHT_VERSION = "usage-export-workspace-discard-preflight-v0.2";
+export const EXPORT_WORKSPACE_DISCARD_JOURNAL_VERSION = "usage-export-workspace-discard-journal-v0.2";
+export const EXPORT_WORKSPACE_DISCARD_COMMIT_MARKER_VERSION = "usage-export-workspace-discard-commit-marker-v0.2";
+export const EXPORT_WORKSPACE_DISCARD_RECEIPT_VERSION = "usage-export-workspace-discard-receipt-v0.2";
 export const EXPORT_WORKSPACE_DISCARD_ORDER_VERSION = "sqlite-sidecars-then-database-v1";
 export const EXPORT_WORKSPACE_DISCARD_CONFIRMATION_TOKEN_PATTERN = "^[A-Z2-7]{16}$";
 
@@ -20,10 +20,10 @@ export const EXPORT_WORKSPACE_DISCARD_ROLES = Object.freeze({
 });
 
 const urls = Object.freeze({
-  preflight: new URL("../../schemas/export-workspace-discard-v0.1/preflight-summary.schema.json", import.meta.url),
-  journal: new URL("../../schemas/export-workspace-discard-v0.1/journal.schema.json", import.meta.url),
-  commitMarker: new URL("../../schemas/export-workspace-discard-v0.1/commit-marker.schema.json", import.meta.url),
-  receipt: new URL("../../schemas/export-workspace-discard-v0.1/receipt.schema.json", import.meta.url),
+  preflight: new URL("../../schemas/export-workspace-discard-v0.2/preflight-summary.schema.json", import.meta.url),
+  journal: new URL("../../schemas/export-workspace-discard-v0.2/journal.schema.json", import.meta.url),
+  commitMarker: new URL("../../schemas/export-workspace-discard-v0.2/commit-marker.schema.json", import.meta.url),
+  receipt: new URL("../../schemas/export-workspace-discard-v0.2/receipt.schema.json", import.meta.url),
 });
 
 function digest(url) {
@@ -36,10 +36,10 @@ export const EXPORT_WORKSPACE_DISCARD_COMMIT_MARKER_SCHEMA_SHA256 = digest(urls.
 export const EXPORT_WORKSPACE_DISCARD_RECEIPT_SCHEMA_SHA256 = digest(urls.receipt);
 
 const require = createRequire(import.meta.url);
-export const exportWorkspaceDiscardPreflightSchema = require("../../schemas/export-workspace-discard-v0.1/preflight-summary.schema.json");
-export const exportWorkspaceDiscardJournalSchema = require("../../schemas/export-workspace-discard-v0.1/journal.schema.json");
-export const exportWorkspaceDiscardCommitMarkerSchema = require("../../schemas/export-workspace-discard-v0.1/commit-marker.schema.json");
-export const exportWorkspaceDiscardReceiptSchema = require("../../schemas/export-workspace-discard-v0.1/receipt.schema.json");
+export const exportWorkspaceDiscardPreflightSchema = require("../../schemas/export-workspace-discard-v0.2/preflight-summary.schema.json");
+export const exportWorkspaceDiscardJournalSchema = require("../../schemas/export-workspace-discard-v0.2/journal.schema.json");
+export const exportWorkspaceDiscardCommitMarkerSchema = require("../../schemas/export-workspace-discard-v0.2/commit-marker.schema.json");
+export const exportWorkspaceDiscardReceiptSchema = require("../../schemas/export-workspace-discard-v0.2/receipt.schema.json");
 
 const ajv = new Ajv({ allErrors: true, strict: true });
 const validators = {

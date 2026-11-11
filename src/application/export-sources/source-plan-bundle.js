@@ -25,7 +25,7 @@ const {
 const { verifyCodexCollectorExportSourcePlan } = codexCollectorExport;
 const { createCodexExportSourcePlan, verifyCodexExportSourcePlan } = codexSourcePlan;
 
-const EXPORT_SOURCE_PLAN_BUNDLE_VERSION = "export-source-plan-bundle-v0.2";
+const EXPORT_SOURCE_PLAN_BUNDLE_VERSION = "export-source-plan-bundle-v0.3";
 
 const BUNDLE_KEYS = Object.freeze([
   "schemaVersion",
@@ -128,7 +128,7 @@ function exactKeys(value, keys) {
 function bundleDigest(value) {
   const { sourcePlanBundleSha256: ignored, ...payload } = value;
   return createHash("sha256")
-    .update("app-usagemonitor/export-source-plan-bundle/v0.2\0")
+    .update("app-usagemonitor/export-source-plan-bundle/v0.3\0")
     .update(stableJson(payload))
     .digest("hex");
 }

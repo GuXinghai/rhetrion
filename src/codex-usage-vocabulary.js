@@ -108,7 +108,9 @@
 // prefix, report incomplete response coverage, and require exact continuation.
 // v22: retain captured request attribution, bound legacy overlap to exact
 // response evidence, and leave unallocated cumulative prefixes unattributed.
-export const LOCAL_UNIFIED_INDEX_PARSER_VERSION = "unified-rollout-typed-v22";
+// v23: exclude explicit API-key/custom-provider sessions from product usage,
+// tools, workload and quota calibration. Retain source bytes/catalog evidence.
+export const LOCAL_UNIFIED_INDEX_PARSER_VERSION = "unified-rollout-typed-v23";
 
 export const LOCAL_UNIFIED_INDEX_SOURCE_IDENTITY_VERSION =
   "codex-immutable-rollout-v1";
@@ -120,22 +122,22 @@ export const LOCAL_UNIFIED_INDEX_SOURCE_IDENTITY_VERSION =
 // degraded row is recorded. Kept in lockstep with the main constant: salvaged
 // rows run the same delta derivation.
 export const LOCAL_UNIFIED_INDEX_PARTIAL_PARSER_VERSION =
-  "unified-rollout-typed-v22-partial";
+  "unified-rollout-typed-v23-partial";
 
 // Per-row provenance variants retain the inherited-model assumption without
-// changing the physical schema. Ingest cursors keep the base v22 stamp.
+// changing the physical schema. Ingest cursors keep the base v23 stamp.
 export const LOCAL_UNIFIED_INDEX_PARENT_MODEL_PARSER_VERSION =
-  "unified-rollout-typed-v22-parent-model";
+  "unified-rollout-typed-v23-parent-model";
 
 export const LOCAL_UNIFIED_INDEX_PARENT_MODEL_PARTIAL_PARSER_VERSION =
-  "unified-rollout-typed-v22-parent-model-partial";
+  "unified-rollout-typed-v23-parent-model-partial";
 
 // Cache continuity and dormant successor preparation both accept these exact
-// row-level provenance variants. Keep the reviewed v15-v21 families readable after a
-// v22 reparse; future parser labels remain unsupported until their semantics
+// row-level provenance variants. Keep the reviewed v15-v22 families readable after a
+// v23 reparse; future parser labels remain unsupported until their semantics
 // are reviewed explicitly.
 const QUALIFIED_LOCAL_PARSER_VERSIONS = new Set([
-  ...["unified-rollout-typed-v15", "unified-rollout-typed-v16", "unified-rollout-typed-v17", "unified-rollout-typed-v18", "unified-rollout-typed-v19", "unified-rollout-typed-v20", "unified-rollout-typed-v21"].flatMap((version) =>
+  ...["unified-rollout-typed-v15", "unified-rollout-typed-v16", "unified-rollout-typed-v17", "unified-rollout-typed-v18", "unified-rollout-typed-v19", "unified-rollout-typed-v20", "unified-rollout-typed-v21", "unified-rollout-typed-v22"].flatMap((version) =>
     [version, `${version}-partial`, `${version}-parent-model`, `${version}-parent-model-partial`]),
   LOCAL_UNIFIED_INDEX_PARSER_VERSION,
   LOCAL_UNIFIED_INDEX_PARTIAL_PARSER_VERSION,

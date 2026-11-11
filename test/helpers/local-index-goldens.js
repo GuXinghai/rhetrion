@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { refreshLocalIndex } from "../../src/local-index-refresh.js";
@@ -11,7 +11,9 @@ import { readLocalIndexReport } from "../../src/local-index-report.js";
 import { openLocalIndexStore, withReadSnapshot } from "../../src/local-index-store.js";
 import { readLocalIndexWorkUsage } from "../../src/local-index-work-usage.js";
 import { createWorkspace } from "./local-index-facts.js";
-import { readPricingOracleFacts, reportSpeedOracle, workPricingOracle } from "./local-index-pricing-oracle.js";
+import { deriveCodexTransitionSeriesCooperatively } from "../../src/codex-transition-miner.js";
+import { projectBoundedWeeklyCalibrationSummary } from "../../src/reporting/index.js";
+import { cacheImpactPricingOracle, readPricingOracleFacts, reportSpeedOracle, workPricingOracle } from "./local-index-pricing-oracle.js";
 
 // Golden outputs of the shipping (v1) implementation at commit cf94e9a8, over
 // one committed synthetic corpus. They were generated once, while that
@@ -50,7 +52,9 @@ export const GOLDEN_LIMITS = Object.freeze({
 export function pinGoldenSalt(workspace) {
   writeFileSync(
     workspace.secretFile,
-    createHash("sha256").update("usagemonitor local index goldens").digest(),
+    // This historical input predates the product rename. Changing the text
+    // changes every work identity even if production derivation stays correct.
+    createHash("sha256").update("tibotattle local index goldens").digest(),
     { mode: 0o600, flag: "wx" },
   );
 }
@@ -209,12 +213,23 @@ export async function readGoldenViewsFromStore() {
     });
     const database = openLocalIndexStore(file, { readOnly: true });
     try {
-      const views = { corpus: workspace.receipt.digest, reports: {}, layers: {}, work: {}, standardWork: {}, speedWork: {}, speedReports: {} };
+      const views = {
+        corpus: workspace.receipt.digest,
+        syntheticSalt: readFileSync(workspace.secretFile).toString("hex"),
+        reports: {}, cacheImpactOracles: {}, layers: {}, standardCalibration: {}, historicalFastCalibration: {}, calibrationEvidence: {},
+        work: {}, standardWork: {}, speedWork: {}, speedReports: {},
+      };
       const facts = readPricingOracleFacts(database);
       for (const [name, nowMs] of GOLDEN_CLOCKS) {
-        views.reports[name] = goldenReportView(withReadSnapshot(database, () => readLocalIndexReport(
+        const report = withReadSnapshot(database, () => readLocalIndexReport(
           database, { nowMs, declaredSpeedBaselines: GOLDEN_LEDGER },
-        )));
+        ));
+        views.reports[name] = goldenReportView(report);
+        const oracle = goldenReportView({ ...report, ...cacheImpactPricingOracle(database, nowMs, GOLDEN_LEDGER) });
+        views.cacheImpactOracles[name] = {
+          cacheSwitchImpact: oracle.cacheSwitchImpact,
+          cacheContinuityImpact: oracle.cacheContinuityImpact,
+        };
         views.work[name] = goldenWorkView(await readLocalIndexWorkUsage({
           database, indexFile: file, codexHome: workspace.codexHome,
           secretFile: workspace.secretFile, nowMs,
@@ -232,11 +247,46 @@ export async function readGoldenViewsFromStore() {
         const corpus = await openLocalIndexCalibrationCorpus({
           indexFile: file, endMs, limits: GOLDEN_LIMITS, declaredSpeedBaselines: baselines,
         });
-        views.layers[name] = goldenLayerView(await buildCalibrationLayer({
-          calibrationCorpus: corpus, endMs, limits: GOLDEN_LIMITS,
-          declaredSpeedBaselines: baselines,
-          generation: "golden", generationFingerprint: "golden",
-        }));
+        try {
+          // This fixed corpus fits one bounded public miner invocation. Capture
+          // the historical research input before the desktop build closes it;
+          // neither a copied implementation nor a production test hook is needed.
+          if (corpus.retainedUsageEvents > 10_000) throw new Error("Golden corpus exceeded its resident test bound");
+          const series = await deriveCodexTransitionSeriesCooperatively({
+            startAt: corpus.coveredAt.startAt, endAt: new Date(endMs).toISOString(),
+            rawUsageEvents: await corpus.readUsageSlice(0, corpus.retainedUsageEvents),
+            rateLimitSnapshots: corpus.weeklyRateLimitSnapshots,
+            windowDurationMins: 10_080,
+            includeSnapshotIntervals: false, includeNormalizedInputs: false,
+            inputEncoding: "accounting_prepriced_compact_v3",
+            planAttributionIndex: corpus.planAttribution.index,
+          });
+          const dataset = {
+            attribution: corpus.planAttribution.summary,
+            scope: { startAt: corpus.coveredAt.startAt, endAt: new Date(endMs).toISOString() },
+            summary: { deduplicatedRateLimitSnapshotsByWindow: { 10080: series.deduplicatedSnapshotCount } },
+            transitions: series.transitions,
+          };
+          const layer = await buildCalibrationLayer({
+            calibrationCorpus: corpus, endMs, limits: GOLDEN_LIMITS,
+            declaredSpeedBaselines: baselines,
+            generation: "golden", generationFingerprint: "golden",
+          });
+          views.layers[name] = goldenLayerView(layer);
+          views.standardCalibration[name] = projectBoundedWeeklyCalibrationSummary(dataset, {
+            forcedCandidateId: "standard_api", composition: layer.weeklyCalibration.composition,
+          });
+          views.historicalFastCalibration[name] = projectBoundedWeeklyCalibrationSummary(dataset, {
+            forcedCandidateId: "speed_upper",
+          });
+          views.calibrationEvidence[name] = {
+            observedUltrafastEvents: facts.filter(row => row.speed === "ultrafast").length,
+            unavailableLowerBoundaries: series.transitions.filter(row => row.lastPriorCumulativeQuotaWeightedLowerUsd === null
+              || row.firstNextCumulativeQuotaWeightedLowerUsd === null).length,
+          };
+        } finally {
+          corpus.dispose();
+        }
       }
       return views;
     } finally {

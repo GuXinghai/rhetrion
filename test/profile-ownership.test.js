@@ -7,6 +7,7 @@ import {
   PROFILE_OWNERSHIP_MAX_PATH_BYTES, PROFILE_OWNERSHIP_SCHEMA, reviewProfileOwnership,
 } from "../scripts/lib/profile-ownership.mjs";
 import { localCompanionStatePaths } from "../src/local-installation-diagnostics.js";
+import { X_IMPORT_ASSETS } from "../apps/electron/x-import/setup.js";
 
 const ID = "00000000-0000-4000-8000-000000000001";
 const category = code => error => classifyProfileOwnershipFailure(error) === `PROFILE_OWNERSHIP_${code}`;
@@ -81,14 +82,18 @@ test("reviewed desktop filename constants remain attributed to their source owne
 
 test("X import file ownership stays tied to the installed helper and registry-writing entrypoint", async () => {
   const source = await readFile(new URL("../apps/electron/desktop-x-import.js", import.meta.url), "utf8");
-  const declared = source.match(/const FILES = \[([^\]]+)\]/u);
-  assert.ok(declared);
-  const names = [...declared[1].matchAll(/'([^']+)'/gu)].map(match => match[1]);
-  assert.ok(source.includes("upsert('native-host.json'"));
-  assert.ok(source.includes("HKCU\\\\Software\\\\Google\\\\Chrome\\\\NativeMessagingHosts"));
-  const result = review(tree([...names, "native-host.json"].map(name => `desktop-settings/x-import/${name}`)));
+  const setup = await readFile(new URL("../apps/electron/x-import/setup.js", import.meta.url), "utf8");
+  const registration = await readFile(new URL("../apps/electron/x-import/registration.js", import.meta.url), "utf8");
+  const controls = [...setup.matchAll(/(?:RECEIPT|INTENT) = '([^']+)'/gu)].map(match => match[1]);
+  assert.equal(controls.length, 2);
+  const names = [...X_IMPORT_ASSETS, ...controls];
+  assert.ok(source.includes("assets['native-host.json']"));
+  assert.ok(source.includes("createXImportSetup({"));
+  assert.ok(source.includes("createXImportRegistration({"));
+  assert.ok(registration.includes("HKCU\\\\Software\\\\Google\\\\Chrome\\\\NativeMessagingHosts"));
+  const result = review(tree(names.map(name => `desktop-settings/x-import/${name}`)));
   assert.equal(issue(result, "unknown_entry"), undefined);
-  assert.equal(owner(result, "x_import").files, names.length + 1);
+  assert.equal(owner(result, "x_import").files, names.length);
   assert.equal(owner(result, "x_import").review, "helper_and_external_registry_binding");
   assert.ok(issue(result, "external_bindings_unverified"));
 });

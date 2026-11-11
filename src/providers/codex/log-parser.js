@@ -323,6 +323,16 @@ export function createCodexLogParser({ lineReader, createSha256 }) {
       reconciliation,
     );
     const responsePlan = reconciliation.finish();
+    // The source was still read through the bounded authenticated scanner.
+    // Excluded API sessions supply no usage, quota, tool or work statistics.
+    if (responsePlan.excludedApiSession) {
+      // A subscription child can still replay this API parent's records.
+      // Keep the existing content-free replay keys, never its usage totals.
+      if (collectOwnSnapshots) await collectCumulativeSnapshotKeys(
+        source, rolloutSnapshots, resourceGuard, maximumTotalBytes, signal,
+      );
+      return { openTasksAtEnd: 0 };
+    }
     diagnostics.responseUnverifiedPrefixTurns =
       (diagnostics.responseUnverifiedPrefixTurns ?? 0)
       + responsePlan.diagnostics.unverifiedPrefixTurns;

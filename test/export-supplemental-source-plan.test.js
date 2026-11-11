@@ -17,6 +17,7 @@ import {
 import { localCodexCheckpointState, localExportWorkspace } from
   "../src/local-node-runtime.js";
 import { stableJson } from "../src/storage.js";
+import { createProtectedFixtureTempDirectory, writeInitialProtectedFixtureFile } from "./helpers/windows-owner-only-fixture.js";
 
 const {
   buildExportWorkspaceDescriptor,
@@ -82,7 +83,7 @@ function usageRecord(id = "a", tokens = 10) {
   };
 }
 
-function supplementalPlan() {
+function supplementalPlan({ device = "1", inode = "2" } = {}) {
   return createSupplementalSourcePlan({
     sources: [
       {
@@ -92,8 +93,8 @@ function supplementalPlan() {
         parserVersion: "codex-collector-ledger-v0.1",
         binding: {
           kind: "file_prefix",
-          device: 1,
-          inode: 2,
+          device,
+          inode,
           birthtimeMs: 3,
           prefixBytes: 11,
           prefixSha256: digest("collector-prefix"),
@@ -199,7 +200,7 @@ async function completeCodexSource(workspace, source) {
 test("new supplemental plans are Codex-only, strict, deterministic, and resource-accountable", async () => {
   const plan = supplementalPlan();
   assert.deepEqual(summarizeSupplementalSourcePlan(plan), {
-    schemaVersion: "supplemental-export-source-plan-v2",
+    schemaVersion: "supplemental-export-source-plan-v3",
     supplementalSourcePlanSha256: plan.supplementalSourcePlanSha256,
     sourceCount: 1,
     sourceFiles: 1,
@@ -258,7 +259,7 @@ test("new supplemental plans are Codex-only, strict, deterministic, and resource
   }
 });
 
-test("retired source kinds decode as legacy state but cannot enter new plans or workspaces", async () => {
+test("retired source kinds remain inspectable metadata but cannot enter new plans or workspaces", async () => {
   const source = {
     ordinal: 0,
     sourceKey: digest("retired-source-key"),
@@ -274,9 +275,9 @@ test("retired source kinds decode as legacy state but cannot enter new plans or 
   };
   const sources = [source];
   const legacy = {
-    schemaVersion: "supplemental-export-source-plan-v1",
+    schemaVersion: "supplemental-export-source-plan-v3",
     supplementalSourcePlanSha256: createHash("sha256")
-      .update("app-usagemonitor/supplemental-export-source-plan/v1\0")
+      .update("app-usagemonitor/supplemental-export-source-plan/v3\0")
       .update(stableJson(sources))
       .digest("hex"),
     sources,
@@ -449,51 +450,102 @@ test("opening revalidates the descriptor-bound supplemental plan exactly", async
 });
 
 test("retired physical v4 workspaces are refused without modifying retained evidence", async () => {
-  const value = await fixture();
-  let source; let legacy; let reopened;
+  const root = await createProtectedFixtureTempDirectory(join(tmpdir(), "export-workspace-retired-"));
+  let legacy;
   try {
-    const current = await createExportWorkspace({ directory: value.workspace, descriptor: value.descriptor,
-      sourcePlan: value.sourcePlan, supplementalSourcePlan: value.supplemental });
-    current.close();
-    const legacyDirectory = join(value.root, "legacy-workspace");
-    await mkdir(legacyDirectory, { mode: 0o700 });
-    source = new DatabaseSync(join(value.workspace, "workspace.sqlite3"), { readOnly: true });
-    legacy = new DatabaseSync(join(legacyDirectory, "workspace.sqlite3"));
+    const databaseFile = join(root, "workspace.sqlite3");
+    writeInitialProtectedFixtureFile(databaseFile, "");
+    legacy = new DatabaseSync(databaseFile);
     legacy.exec(await readFile(new URL("./fixtures/export-workspace-v4-schema.sql", import.meta.url), "utf8"));
-    legacy.exec("PRAGMA foreign_keys=OFF");
-    for (const { name } of source.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()) {
-      assert.match(name, /^[a-z_]+$/);
-      for (const row of source.prepare(`SELECT * FROM ${name}`).all()) {
-        const columns = Object.keys(row); assert.ok(columns.every(key => /^[a-z][a-z0-9_]*$/.test(key)));
-        const data = columns.map(key => row[key]);
-        if (name === "workspace_meta" && row.key === "descriptor") {
-          const descriptor = JSON.parse(row.value_json);
-          descriptor.workspaceVersion = "usage-export-workspace-v0.4";
-          descriptor.supplementalSourcePlan.schemaVersion = "supplemental-export-source-plan-v1";
-          data[columns.indexOf("value_json")] = stableJson(descriptor);
-        }
-        legacy.prepare(`INSERT INTO ${name} (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`).run(...data);
-      }
-    }
-    legacy.close(); legacy = null; source.close(); source = null;
-    const databaseFile = join(legacyDirectory, "workspace.sqlite3");
+    legacy.prepare("INSERT INTO workspace_meta(key, value_json) VALUES (?, ?)")
+      .run("retained_evidence", stableJson({ synthetic: "archived_v4_evidence" }));
+    assert.equal(legacy.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
+    legacy.close(); legacy = null;
     const originalBytes = await readFile(databaseFile);
-    await assert.rejects(openExportWorkspace({ directory: legacyDirectory }), error => error.code === "export_workspace_schema");
+    const originalEntries = await readdir(root);
+    await assert.rejects(openExportWorkspace({ directory: root }), error => error.code === "export_workspace_schema");
     assert.deepEqual(await readFile(databaseFile), originalBytes);
-    legacy = new DatabaseSync(join(legacyDirectory, "workspace.sqlite3"), { readOnly: true });
+    assert.deepEqual(await readdir(root), originalEntries);
+    legacy = new DatabaseSync(databaseFile, { readOnly: true });
     assert.equal(legacy.prepare("PRAGMA user_version").get().user_version, 4);
-  } finally { reopened?.close(); source?.close(); legacy?.close(); await rm(value.root, { recursive: true, force: true }); }
+    assert.deepEqual(JSON.parse(legacy.prepare("SELECT value_json FROM workspace_meta WHERE key='retained_evidence'").get().value_json),
+      { synthetic: "archived_v4_evidence" });
+  } finally { legacy?.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 test("future workspace schemas are refused before writable pragmas alter the original database", async () => {
-  const root = await mkdtemp(join(tmpdir(), "export-workspace-future-"));
+  const root = await createProtectedFixtureTempDirectory(join(tmpdir(), "export-workspace-future-"));
   try {
     const databaseFile = join(root, "workspace.sqlite3");
+    writeInitialProtectedFixtureFile(databaseFile, "");
     const database = new DatabaseSync(databaseFile);
-    database.exec("PRAGMA journal_mode=WAL; PRAGMA application_id=1431522612; PRAGMA user_version=6; CREATE TABLE future_identity(value TEXT) STRICT;");
+    database.exec("PRAGMA journal_mode=WAL; PRAGMA application_id=1431522612; PRAGMA user_version=999; CREATE TABLE future_identity(value TEXT) STRICT;");
     database.close();
     const before = createHash("sha256").update(await readFile(databaseFile)).digest("hex");
     await assert.rejects(openExportWorkspace({ directory: root }), error => error.code === "export_workspace_schema");
     assert.equal(createHash("sha256").update(await readFile(databaseFile)).digest("hex"), before);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("supplemental U64/U128 maxima survive SQLite and restart as exact canonical text", async () => {
+  const device = "18446744073709551615";
+  const inode = "340282366920938463463374607431768211455";
+  const value = await fixture({ supplemental: supplementalPlan({ device, inode }) });
+  let workspace;
+  try {
+    workspace = await createExportWorkspace({ directory: value.workspace, descriptor: value.descriptor,
+      sourcePlan: value.sourcePlan, supplementalSourcePlan: value.supplemental });
+    const databaseFile = workspace.databaseFile;
+    assert.equal(workspace.getDescriptor().workspaceVersion, "local-export-workspace-v2");
+    workspace.close(); workspace = null;
+    const database = new DatabaseSync(databaseFile);
+    try {
+      assert.equal(database.prepare("PRAGMA user_version").get().user_version, 8);
+      const row = database.prepare("SELECT device, inode, typeof(device) AS device_type, typeof(inode) AS inode_type FROM supplemental_source_plan").get();
+      assert.deepEqual({ ...row }, { device, inode, device_type: "text", inode_type: "text" });
+      for (const [field, invalid] of [["device", "18446744073709551616"], ["inode", "340282366920938463463374607431768211456"],
+        ["inode", "u64:42"], ["inode", "0042"], ["device", "-1"]]) {
+        assert.throws(() => database.prepare(`UPDATE supplemental_source_plan SET ${field}=?`).run(invalid), /CHECK constraint failed/);
+      }
+    } finally { database.close(); }
+    workspace = await openExportWorkspace({ directory: value.workspace });
+    assert.deepEqual(workspace.loadSupplementalSourcePlan(), value.supplemental);
+    assert.deepEqual(workspace.loadSupplementalSourceCheckpoint(value.supplemental.sources[0].sourceKey).binding,
+      value.supplemental.sources[0].binding);
+  } finally { workspace?.close(); await rm(value.root, { recursive: true, force: true }); }
+});
+
+test("old supplemental versions, numeric IDs and malformed field widths are refused without rewriting", () => {
+  const plan = supplementalPlan();
+  for (const version of ["v1", "v2", "v4"]) {
+    const invalid = { ...plan, schemaVersion: `supplemental-export-source-plan-${version}` };
+    const before = stableJson(invalid);
+    assert.throws(() => normalizeSupplementalSourcePlan(invalid), { code: "export_supplemental_source_schema" });
+    assert.equal(stableJson(invalid), before);
+  }
+  for (const [field, invalid] of [["device", 1], ["inode", 2], ["inode", 9007199254740992],
+    ["device", "18446744073709551616"], ["inode", "340282366920938463463374607431768211456"],
+    ["inode", "0042"], ["inode", "-1"], ["device", "0x01"]]) {
+    assert.throws(() => supplementalPlan({ [field]: invalid }), { code: "export_supplemental_source_schema" });
+  }
+});
+
+test("prior physical schemas 5, 6 and 7 are refused before changing retained bytes", async () => {
+  for (const version of [5, 6, 7]) {
+    const root = await createProtectedFixtureTempDirectory(join(tmpdir(), "export-workspace-prior-"));
+    try {
+      const file = join(root, "workspace.sqlite3");
+      writeInitialProtectedFixtureFile(file, "");
+      const database = new DatabaseSync(file);
+      try {
+        database.exec(`PRAGMA application_id=1431522612; PRAGMA user_version=${version}; CREATE TABLE retained_evidence(value TEXT) STRICT;`);
+        database.prepare("INSERT INTO retained_evidence VALUES (?)").run("synthetic retained state");
+      } finally { database.close(); }
+      const before = await readFile(file);
+      const entries = await readdir(root);
+      await assert.rejects(openExportWorkspace({ directory: root }), { code: "export_workspace_schema" });
+      assert.deepEqual(await readFile(file), before);
+      assert.deepEqual(await readdir(root), entries);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
 });

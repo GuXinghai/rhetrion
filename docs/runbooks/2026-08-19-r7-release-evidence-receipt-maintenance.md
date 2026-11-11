@@ -36,8 +36,13 @@ regeneration.
 Any remaining new-receipt or evidence-generation entrypoint must fail closed
 before creating or reading fixtures, reading or writing repository state, or
 opening any provider source. Treat generation as unavailable until the source
-guard and its negative tests establish that ordering. This document records the
-accepted target; it is not evidence that the guard has already passed.
+guard and its negative tests establish that ordering. Receipt entrypoints and
+the direct materialized matrix/worker now refuse before option, fixture or
+provider access. The unused filesystem sampler has been removed; historical
+receipt parsing and focused Codex operation/watchdog utilities remain separate
+from generation. See the scoped source checks in the
+[regression closeout receipt](../receipts/2026-11-11-regression-closeout.md);
+these checks do not refresh or qualify historical evidence.
 
 This boundary does not change Codex collection, accounting, quota observation,
 or dashboard behavior. Routine source, documentation, and release checks must

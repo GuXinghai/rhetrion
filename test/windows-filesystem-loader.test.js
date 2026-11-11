@@ -23,6 +23,7 @@ import {
   isWindowsFilesystemNotFound,
   loadWindowsFilesystemBinding,
   loadWindowsSourceReadBinding,
+  loadWindowsTimingRecoveryBinding, WINDOWS_TIMING_RECOVERY_METHODS,
   loadWindowsReleaseOperationBinding, WINDOWS_RELEASE_OPERATION_METHODS,
   loadWindowsLegacyStateReadBinding, WINDOWS_LEGACY_STATE_READ_METHODS,
   loadWindowsBrowserProfileBinding, WINDOWS_BROWSER_PROFILE_METHODS,
@@ -818,6 +819,26 @@ test("adapter validates native identities and keeps operation errors fixed", () 
   assert.equal(isWindowsFilesystemAlreadyExists({ code: "EEXIST" }), true);
 });
 
+test("exact deletion is optional for old bindings and never falls back to path deletion", () => {
+  const old = createWindowsFilesystemAdapter({platform:"win32",architecture:"x64",binding:binding()});
+  assert.equal(old.deleteExactFile,undefined);
+  let calls = 0;
+  const evidence = {device:"18446744073709551615",inode:"9007199254740993",byteSize:17,sha256:"a".repeat(64)};
+  const adapter = createWindowsFilesystemAdapter({platform:"win32",architecture:"x64",binding:binding({
+    deleteExactFile(path,actual,peer){
+      calls++; assert.equal(path,"synthetic-target");assert.equal(peer,"synthetic-peer");
+      assert.deepEqual(actual,evidence);return {deleted:true};
+    },
+  })});
+  assert.deepEqual(adapter.deleteExactFile("synthetic-target",evidence,"synthetic-peer"),{deleted:true});
+  assert.equal(calls,1);
+  for(const patch of [{inode:"9007199254740993.0"},{device:"18446744073709551616"},{sha256:"bad"},{byteSize:-1}])
+    assert.throws(()=>adapter.deleteExactFile("synthetic-target",{...evidence,...patch}));
+  assert.equal(calls,1);
+  assert.equal(adapter.productionSafe,false);
+  assert.equal(adapter.pathWalkRaceSafe,false);
+});
+
 test("adapter forwards every root-bound protected-child operation", () => {
   const calls = [];
   const protectedMetadata = Object.freeze({ marker: "inspect" });
@@ -978,4 +999,31 @@ test('source-read manifest verifies every method and rejects edited capability a
       readManifest: () => JSON.stringify({ ...sidecar, sourceRead }),
     }), { code: 'WINDOWS_FILESYSTEM_INVALID_MANIFEST' });
   }
+});
+
+test('timing recovery requires an exact optional manifest and complete native lifecycle', () => {
+  const native = binding({ sourceReadContractVersion: 'windows-source-read-v1',
+    openSourceFile() {}, statSourceFile() {}, readSourceFile() {}, closeSourceFile() {},
+    timingRecoveryContractVersion: 'windows-timing-recovery-v1',
+    ...Object.fromEntries(WINDOWS_TIMING_RECOVERY_METHODS.map(name => [name, () => {}])) });
+  const sidecar = createWindowsFilesystemBindingManifest({ bytes: BINDING_BYTES, binding: native });
+  const options = { platform: 'win32', architecture: 'x64',
+    bindingPath: 'C:\\checkout\\native\\windows-filesystem\\build\\Release\\windows_filesystem.node',
+    readManifest: () => JSON.stringify(sidecar), readBindingBytes: () => BINDING_BYTES, requireBinding: () => native };
+  assert.equal(loadWindowsTimingRecoveryBinding(options), native);
+  const { timingRecovery, ...oldManifest } = sidecar;
+  assert.equal(loadWindowsSourceReadBinding({ ...options, readManifest: () => JSON.stringify(oldManifest) }), native);
+  assert.throws(() => loadWindowsTimingRecoveryBinding({ ...options, readManifest: () => JSON.stringify(oldManifest) }),
+    { code: 'WINDOWS_FILESYSTEM_TIMING_RECOVERY_UNQUALIFIED' });
+  for (const changed of [{ ...timingRecovery, approved: false }, { ...timingRecovery, extra: true },
+    { ...timingRecovery, contractVersion: 'future' }]) {
+    assert.throws(() => loadWindowsTimingRecoveryBinding({ ...options,
+      readManifest: () => JSON.stringify({ ...sidecar, timingRecovery: changed }) }), { code: 'WINDOWS_FILESYSTEM_INVALID_MANIFEST' });
+  }
+  for (const name of WINDOWS_TIMING_RECOVERY_METHODS) {
+    assert.throws(() => loadWindowsTimingRecoveryBinding({ ...options, requireBinding: () => ({ ...native, [name]: undefined }) }),
+      { code: 'WINDOWS_FILESYSTEM_MANIFEST_BINDING_MISMATCH' });
+  }
+  assert.throws(() => loadWindowsTimingRecoveryBinding({ ...options, readBindingBytes: () => Buffer.from('changed') }),
+    { code: 'WINDOWS_FILESYSTEM_BINDING_INTEGRITY_MISMATCH' });
 });

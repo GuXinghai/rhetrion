@@ -104,7 +104,7 @@ async function fixture({ poison = false, sidecars = [], complete = false } = {})
     // A zeroed rollback journal is closed/inactive and must not change the
     // narrow database state inspected by the discard preflight.
     const bytes = sidecar === "journal" ? Buffer.alloc(512) : Buffer.from(`closed-${sidecar}-sidecar`);
-    await writeFile(join(workspace, `workspace.sqlite3-${sidecar}`), bytes, { mode: 0o600 });
+    writeInitialProtectedFixtureFile(join(workspace, `workspace.sqlite3-${sidecar}`), bytes);
   }
   return {
     root, home, workspace, output, identity, source, descriptor, sourcePlan,
@@ -112,6 +112,62 @@ async function fixture({ poison = false, sidecars = [], complete = false } = {})
       .map(async (path) => [path, await readFile(path)]))),
   };
 }
+
+test("discard creates protected owner-only journal, marker and completion receipt", async () => {
+  const value = await fixture();
+  assert.ok(resolve(value.root).startsWith(resolve(tmpdir()) + "\\"));
+  try {
+    const plan = await planLocalExportWorkspaceDiscard({workspaceDirectory:value.workspace});
+    let checked = false;
+    await discardLocalExportWorkspace({workspaceDirectory:value.workspace,confirmationToken:plan.confirmationToken,
+      async failpoint(stage) {
+        if(stage!=="after_journal_commit")return;
+        for(const name of await readdir(value.workspace)){
+          if(name.endsWith(".json")&&name!=="workspace-discard-receipt.json")
+            assertWindowsOwnerOnly(join(value.workspace,name));
+        }
+        checked = true;
+      }});
+    assert.equal(checked,true);
+    assertWindowsOwnerOnly(join(value.workspace,"workspace-discard-receipt.json"));
+  } finally { await rm(value.root,{recursive:true,force:true}); }
+});
+
+test("discard preserves replacements after the final linked-file and quarantine checks", async (t) => {
+  for (const boundary of ["after_quarantine_link", "after_inventory_quarantine"]) await t.test(boundary, async () => {
+    const value = await fixture();
+    assert.ok(resolve(value.root).startsWith(resolve(tmpdir()) + "\\"));
+    try {
+      const holder = join(value.root, "replacement-holder");
+      createProtectedFixtureDirectory(holder);
+      const replacement = join(holder, "replacement.sqlite3");
+      const bytes = Buffer.from("unrelated replacement must survive");
+      writeInitialProtectedFixtureFile(replacement, bytes);
+      const identity = assertWindowsOwnerOnly(replacement).identity;
+      const plan = await planLocalExportWorkspaceDiscard({ workspaceDirectory: value.workspace });
+      let target = null;
+      await assert.rejects(discardLocalExportWorkspace({
+        workspaceDirectory: value.workspace, confirmationToken: plan.confirmationToken,
+        async failpoint(stage, detail) {
+          if (stage !== boundary || detail?.role !== "workspace_database") return;
+          const entry = boundary === "after_quarantine_link" ? "workspace.sqlite3"
+            : (await readdir(value.workspace)).find(name => name.includes("quarantine-")
+              && name.endsWith(String(detail.ordinal).padStart(2, "0")));
+          assert.ok(entry);
+          target = join(value.workspace, entry);
+          await rename(replacement, target);
+        },
+      }), { code: "export_workspace_discard_execute_replacement" });
+      assert.ok(target);
+      assert.deepEqual(await readFile(target), bytes);
+      assert.deepEqual(assertWindowsOwnerOnly(target).identity, identity);
+      assert.ok(!(await readdir(value.workspace)).includes("workspace-discard-receipt.json"));
+      await assert.rejects(recoverLocalExportWorkspaceDiscard({ workspaceDirectory: value.workspace }),
+        { code: "export_workspace_discard_execute_replacement" });
+      assert.deepEqual(await readFile(target), bytes);
+    } finally { await rm(value.root, { recursive: true, force: true }); }
+  });
+});
 
 async function snapshot(directory) {
   const rows = [];
@@ -599,7 +655,14 @@ test("WAL-backed poisoned eligibility remains authorized after sidecars are remo
     const exit = await exited;
     assert.ok(exit.signal === "SIGKILL"
       || (process.platform === "win32" && exit.signal === null && exit.code !== 0));
-    for (const suffix of ["wal", "shm"]) await chmod(`${databasePath}-${suffix}`, 0o600);
+    // Freeze the synthetic sidecar bytes under the same protected Windows
+    // DACL contract before planning. chmod cannot protect a Windows DACL.
+    for (const suffix of ["wal", "shm"]) {
+      const sidecar = `${databasePath}-${suffix}`, bytes = await readFile(sidecar);
+      await rename(sidecar, join(value.root, `retained-${suffix}`));
+      writeInitialProtectedFixtureFile(sidecar, bytes);
+      assertWindowsOwnerOnly(sidecar);
+    }
 
     const immutable = new DatabaseSync(`${pathToFileURL(databasePath).href}?immutable=1`, { readOnly: true });
     try {
@@ -805,6 +868,37 @@ test("storage and lease failures surface only fixed content-free discard errors"
     await rm(writeFailure.root, { recursive: true, force: true });
     await rm(leaseFailure.root, { recursive: true, force: true });
   }
+});
+
+test("current discard recovery preserves v0.1 controls at prepared, committed and terminal boundaries", async (t) => {
+  for (const stage of ["after_journal_prepare", "after_journal_commit", "after_inventory_quarantine",
+    "after_receipt_publish", "after_journal_quarantine", "after_journal_unlink",
+    "after_commit_marker_quarantine", "after_commit_marker_unlink"]) await t.test(stage, async () => {
+    const value = await fixture();
+    const options = { workspaceDirectory: value.workspace };
+    try {
+      const plan = await planLocalExportWorkspaceDiscard(options);
+      await assert.rejects(discardLocalExportWorkspace({ ...options,
+        confirmationToken: plan.confirmationToken,
+        failpoint(name) { if (name === stage) throw new Error("synthetic old-control boundary"); },
+      }), /synthetic old-control boundary/);
+      for (const name of await readdir(value.workspace)) {
+        if (!name.endsWith(".json") && !name.endsWith("quarantine-journal") && !name.endsWith("quarantine-commit")) continue;
+        const path = join(value.workspace, name);
+        const control = JSON.parse(await readFile(path, "utf8"));
+        control.schemaVersion = control.schemaVersion.replace("v0.2", "v0.1");
+        control.planVersion = control.planVersion.replace("v0.2", "v0.1");
+        await writeFile(path, stableJson(control));
+      }
+      const before = await snapshot(value.workspace);
+      await assert.rejects(recoverLocalExportWorkspaceDiscard(options),
+        (error) => error instanceof ExportWorkspaceDiscardExecutionError
+          && ["export_workspace_discard_execute_journal_invalid", "export_workspace_discard_execute_receipt_invalid"]
+            .includes(error.code));
+      assert.deepEqual(await snapshot(value.workspace), before);
+      for (const [path, bytes] of value.protected) assert.deepEqual(await readFile(path), bytes);
+    } finally { await rm(value.root, { recursive: true, force: true }); }
+  });
 });
 
 test("workspace discard implementation contains no recursive deletion primitive", async () => {

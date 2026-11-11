@@ -5,13 +5,13 @@ import {
   mkdtemp,
   readFile,
   rm,
-  stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { assertWindowsOwnerOnly, createProtectedFixtureDirectory } from "./helpers/windows-owner-only-fixture.js";
 
 const SCRIPT = fileURLToPath(
   new URL("../src/build-weekly-calibration-audit.js", import.meta.url),
@@ -49,7 +49,7 @@ async function createFixture() {
   const codexHome = join(root, "codex-home");
   const isolatedHome = join(root, "home");
   const archivedSessions = join(codexHome, "archived_sessions");
-  await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
+  createProtectedFixtureDirectory(stateDirectory);
   await mkdir(join(codexHome, "sessions"), { recursive: true, mode: 0o700 });
   await mkdir(archivedSessions, { recursive: true, mode: 0o700 });
   await mkdir(isolatedHome, { recursive: true, mode: 0o700 });
@@ -167,7 +167,7 @@ test("weekly calibration audit CLI prices selected resets without retaining priv
 
     const outputText = await readFile(fixture.outputPath, "utf8");
     const output = JSON.parse(outputText);
-    assert.equal((await stat(fixture.outputPath)).mode & 0o777, 0o600);
+    assertWindowsOwnerOnly(fixture.outputPath);
     assert.equal(
       output.schemaVersion,
       "weekly-calibration-high-error-audit-v0.1",

@@ -1,7 +1,7 @@
-import { validFilesystemId, sameFilesystemId } from "./source-validation.js";
 import {
   CODEX_COLLECTOR_CANDIDATE_VERSION,
   ExportResourceLimitError,
+  normalizeExportSourceFilesystemId,
 } from "../../export/index.js";
 import {
   QUOTA_RESET_CLASSIFICATION_POLICY,
@@ -26,8 +26,7 @@ const {
   resolvePath: resolve,
 } = configuration;
 
-const CODEX_COLLECTOR_SOURCE_PLAN_VERSION = "codex-collector-export-source-plan-v0.2";
-const LEGACY_SOURCE_PLAN_VERSION = "codex-collector-export-source-plan-v0.1";
+const CODEX_COLLECTOR_SOURCE_PLAN_VERSION = "codex-collector-export-source-plan-v0.3";
 const CODEX_COLLECTOR_SOURCE_CURSOR_VERSION = "codex-collector-export-cursor-v0.1";
 
 const COLLECTOR_RECORD_VERSION = "0.3";
@@ -151,15 +150,18 @@ function stablePlanMaterial(plan) {
 
 function sourcePlanDigest(plan) {
   return createHash("sha256")
-    .update("app-usagemonitor/codex-collector-source-plan/v0.1\0")
+    .update("app-usagemonitor/codex-collector-source-plan/v0.3\0")
     .update(stablePlanMaterial(plan))
     .digest("hex");
 }
 
 function sameIdentity(stats, expected) {
-  return sameFilesystemId(stats.dev, expected.device)
-    && sameFilesystemId(stats.ino, expected.inode)
+  return validIdentity(stats.dev, "device") && stats.dev === expected.device
+    && validIdentity(stats.ino, "inode") && stats.ino === expected.inode
     && Math.trunc(stats.birthtimeMs) === expected.birthtimeMs;
+}
+function validIdentity(value, field) {
+  return typeof value === "string" && normalizeExportSourceFilesystemId(value, field) === value;
 }
 
 function assertSafeSourceStats(stats) {
@@ -256,12 +258,12 @@ async function hashAndCountPrefix(handle, prefixBytes, resourceGuard) {
 
 function validatePlan(plan) {
   if (!exactKeys(plan, PLAN_KEYS)
-      || ![CODEX_COLLECTOR_SOURCE_PLAN_VERSION, LEGACY_SOURCE_PLAN_VERSION].includes(plan.schemaVersion)
+      || plan.schemaVersion !== CODEX_COLLECTOR_SOURCE_PLAN_VERSION
       || typeof plan.path !== "string" || plan.path.length === 0
       || !canonicalIso(plan.startAt) || !canonicalIso(plan.endAt)
       || Date.parse(plan.endAt) < Date.parse(plan.startAt)
-      || !validFilesystemId(plan.device, plan.schemaVersion === LEGACY_SOURCE_PLAN_VERSION)
-      || !validFilesystemId(plan.inode, plan.schemaVersion === LEGACY_SOURCE_PLAN_VERSION)
+      || !validIdentity(plan.device, "device")
+      || !validIdentity(plan.inode, "inode")
       || !Number.isFinite(plan.birthtimeMs) || plan.birthtimeMs < 0
       || !Number.isSafeInteger(plan.prefixBytes) || plan.prefixBytes < 0
       || !Number.isSafeInteger(plan.prefixLines) || plan.prefixLines < 0
@@ -318,9 +320,8 @@ async function createCodexCollectorExportSourcePlan({
   const canonicalPath = resolve(collectorPath);
   const { handle, stats } = await openSafeSource(canonicalPath);
   try {
-    // Collector v0.2 persists both identities as unsigned 64-bit decimals.
-    // Refuse wider native file IDs before reading source bytes.
-    if (!validFilesystemId(stats.dev) || !validFilesystemId(stats.ino)) fail("source_changed");
+    // Native volume/file identities stay exact at their distinct U64/U128 bounds.
+    if (!validIdentity(stats.dev, "device") || !validIdentity(stats.ino, "inode")) fail("source_changed");
     // Prefix discovery scans backward from EOF. Enforce the declared source
     // ceiling before the first discovery read so a sparse or unterminated file
     // cannot turn planning into an unbounded pre-policy scan.

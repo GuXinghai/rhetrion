@@ -38,6 +38,7 @@ import {
 } from "../src/platform/index.js";
 import { exportCompatibilityTuple } from "../src/export-contract.js";
 import { createSyntheticWindowsExportProtection } from "./helpers/synthetic-windows-export-protection.mjs";
+import { createProtectedFixtureDirectory } from "./helpers/windows-owner-only-fixture.js";
 
 const { createLocalExportWorkspace } = localExportSourcePipeline.controller;
 const { verifyLocalExportSet } = localExportSetVerification;
@@ -46,7 +47,7 @@ const { openExportWorkspace } = localExportWorkspace;
 const SECRET = Buffer.alloc(32, 61);
 const PRIVATE_MATERIALIZER_CANARY = "PRIVATE_MATERIALIZER_PROMPT_DO_NOT_EXPORT";
 const syntheticWindowsArtifactProtection = process.platform === "win32"
-  ? createSyntheticWindowsExportProtection()
+  ? createSyntheticWindowsExportProtection({ protectFixtures: true })
   : null;
 
 function sha256(bytes) {
@@ -643,7 +644,8 @@ test("materializer enforces the encoded artifact cap before publishing", async (
 test("materializer rejects a destination containing an opposite plain chunk representation", async () => {
   const value = await fixture();
   try {
-    await mkdir(value.output, { mode: 0o700 });
+    if (process.platform === "win32") createProtectedFixtureDirectory(value.output);
+    else await mkdir(value.output, { mode: 0o700 });
     const opposite = join(value.output, "chunk-000000.bundle.json");
     await writeFile(opposite, "{}", { mode: 0o600 });
     await assert.rejects(
@@ -665,7 +667,8 @@ test("materializer rejects a destination containing an opposite plain chunk repr
 test("materializer bounds destination enumeration before scanning arbitrary entries", async () => {
   const value = await fixture({ resourceLimits: { maximumDirectoryEntries: 5 } });
   try {
-    await mkdir(value.output, { mode: 0o700 });
+    if (process.platform === "win32") createProtectedFixtureDirectory(value.output);
+    else await mkdir(value.output, { mode: 0o700 });
     for (let index = 0; index < 6; index += 1) {
       await writeFile(join(value.output, `unrelated-${index}`), "x", { mode: 0o600 });
     }

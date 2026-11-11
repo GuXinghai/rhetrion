@@ -27,6 +27,7 @@ import * as platformOwner from
   "../src/platform/export-set-verification-storage.js";
 import { ExportResourceLimitError } from "../src/export/resource-policy.js";
 import { BundleVerificationError } from "../src/export/bundle-verifier.js";
+import { DatabaseSync } from "node:sqlite";
 
 const REPOSITORY_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -427,13 +428,10 @@ test("verification-index setup failures close and remove partial state", async (
   const root = await mkdtemp(join(tmpdir(), "set-verification-index-fault-"));
   const canary = `${root}/DO_NOT_EXPOSE`;
   try {
-    const probeFile = join(root, "probe");
-    const probe = await open(probeFile, "w", 0o600);
-    const fileHandlePrototype = Object.getPrototypeOf(probe);
-    await probe.close();
-    await rm(probeFile, { force: true });
-    t.mock.method(fileHandlePrototype, "chmod", async () => {
-      throw new Error(canary);
+    const execute = DatabaseSync.prototype.exec;
+    t.mock.method(DatabaseSync.prototype, "exec", function (sql) {
+      if (sql.startsWith("CREATE TABLE ids")) throw new Error(canary);
+      return Reflect.apply(execute, this, [sql]);
     });
     const storage =
       platformOwner.createExportSetVerificationStorageContext();

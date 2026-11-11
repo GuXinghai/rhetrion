@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { LocalCompanionClient } from "../web/public/data-client.js";
 import { once } from "node:events";
 import { createWindowsProcessExitObserver } from "../../test/helpers/windows-process-exit-observer.js";
@@ -24,7 +25,9 @@ import { join, resolve } from "node:path";
 import {
   LOCAL_COMPANION_SCHEMA_VERSION,
 } from "../../src/local-companion-data.js";
-import { readLocalIndexProjection } from "../../src/local-index-backend.js";
+import { readLocalIndexProjection, readLocalIndexWorkload } from "../../src/local-index-backend.js";
+import { commitLocalCollectorState, prepareLocalCollectorState } from "../../src/local-collector-state.js";
+import { localCompanionStatePaths } from "../../src/local-installation-diagnostics.js";
 import {
   DESKTOP_SHELL_STATUS_SCHEMA_VERSION,
 } from "../../src/desktop-shell-status.js";
@@ -410,6 +413,54 @@ async function fixture() {
   return { root, resourceRoot, stateRoot, codexHome, staticRoot };
 }
 
+test("the production snapshot builder forwards the retained workload account scope", async () => {
+  const files = await fixture(), paths = localCompanionStatePaths(files.stateRoot);
+  const nowMs = Date.now(), start = nowMs - 6 * 60_000, through = nowMs - 60_000;
+  const scope = "synthetic-production-workload-scope";
+  const scopeToken = createHash("sha256").update(scope).digest("hex");
+  const quotaRecord = (scopeId, observedAt, usedPercent) => ({ schemaVersion: "0.3",
+    kind: "codex_quota_snapshot", provider: "openai_codex", eventKey: `synthetic-${observedAt}-${usedPercent}`,
+    source: "app_server_read", observedAt: new Date(observedAt).toISOString(),
+    accountScope: { status: "available", version: "openai-account-v1", scopeId },
+    windows: [{ limitId: "codex", slot: "secondary", planType: "plus", usedPercent,
+      windowDurationMins: 10080, resetsAt: Math.floor((nowMs + 7 * 86400_000) / 1000) }] });
+  await prepareLocalCollectorState({ stateFile: paths.collectorStateFile, clock: () => start });
+  await commitLocalCollectorState({ stateFile: paths.collectorStateFile, checkpoint: {},
+    records: [quotaRecord(scope, nowMs, 49)], clock: () => nowMs });
+  const previous = readLocalIndexWorkload({ indexFile: paths.localIndexStoreFile, nowMs: through });
+  previous.status = "available";
+  previous.comparison = { startedAtMs: start, baseline: null, planType: "plus", capacityUsd: 100,
+    actualPp: 6, expectedPp: 3, observedFrom: new Date(start).toISOString(),
+    observedThrough: new Date(through).toISOString(), confirmedThrough: new Date(through).toISOString(),
+    inferred: false, coverage: "complete" };
+  const app = createLocalCompanionServer({ ...files, environment: {}, workloadLiveSinceMs: start,
+    unifiedProjectionReader: async () => ({ status: "deferred" }),
+    codexSpeedBaseline: { readWindows: async () => [] },
+    runtimeModelEvidence: { status: () => ({ status: "available" }), close: async () => {} },
+    refreshRunner: async () => ({}) });
+  try {
+    // The index is deliberately absent. A default-builder read failure can
+    // retain this dated value only when the composition forwards its scope.
+    await app.dataStore.reload({ purpose: "startup", previousWorkload: previous,
+      previousWorkloadScope: scopeToken });
+    const first = app.dataStore.getOverview().workload;
+    assert.equal(first.status, "stale");
+    assert.deepEqual(first.comparison, previous.comparison);
+    // The next call obtains both previous fields from the real data store.
+    await app.dataStore.reload({ purpose: "startup" });
+    assert.deepEqual(app.dataStore.getOverview().workload.comparison, previous.comparison);
+    await commitLocalCollectorState({ stateFile: paths.collectorStateFile, checkpoint: {},
+      records: [quotaRecord("synthetic-other-scope", nowMs + 1, 40)], clock: () => nowMs + 1 });
+    await app.dataStore.reload({ purpose: "startup" });
+    assert.equal(app.dataStore.getOverview().workload.comparison.actualPp, null);
+    assert.equal(app.dataStore.getOverview().workload.comparison.expectedPp, null);
+  } finally {
+    app.beginShutdown();
+    await Promise.all([app.shutdownRuntime(), app.closeWorkUsage(), app.closeModelPerformance(), app.closeProjectionReader()]);
+    await rm(files.root, { recursive: true });
+  }
+});
+
 
 function rawRequest({ port, path, method = "GET", headers = {}, body = "" }) {
   return new Promise((resolveRequest, rejectRequest) => {
@@ -687,11 +738,10 @@ test("loopback server exposes only fixed API, static, and report routes", async 
       ".usage-monitor",
       "legacy-reports",
     );
-    await mkdir(privateReportDirectory, { recursive: true });
-    await writeFile(
+    createProtectedFixtureDirectory(privateReportDirectory);
+    writeInitialProtectedFixtureFile(
       join(privateReportDirectory, "2026-07-24-simple-quota-gradient-report.html"),
       "<!doctype html><title>Canonical gradient detail</title>",
-      { mode: 0o600 },
     );
     const canonicalReport = await fetch(`${base}/reports/gradient`);
     assert.equal(canonicalReport.status, 200);

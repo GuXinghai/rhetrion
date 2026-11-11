@@ -1,3 +1,4 @@
+import { createProtectedFixtureTempDirectory as mkdtemp, writeInitialProtectedFixtureFile } from "./helpers/windows-owner-only-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -7,7 +8,6 @@ import {
   copyFile,
   link,
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
   rename,
@@ -107,7 +107,7 @@ async function fixture({ maximumRecordsPerChunk, includeSidecar = false, manifes
     ...(maximumRecordsPerChunk ? { maximumRecordsPerChunk } : {}),
   });
   if (includeSidecar) {
-    await writeFile(join(workspace, "workspace.sqlite3-journal"), "closed-sidecar-preserved-until-delete", { mode: 0o600 });
+    writeInitialProtectedFixtureFile(join(workspace, "workspace.sqlite3-journal"), "closed-sidecar-preserved-until-delete");
   }
   await writeFile(join(output, "unrelated-sibling.txt"), "preserve sibling", { mode: 0o600 });
   const protectedFiles = [source, identityFile, collectorFile, activityFile, reportFile];
@@ -116,6 +116,35 @@ async function fixture({ maximumRecordsPerChunk, includeSidecar = false, manifes
     root, home, workspace, output, identityFile, collectorFile, activityFile, reportFile, source, protectedBytes,
   };
 }
+
+test("deletion preserves a replacement or changed bytes after the final quarantine check", async (t) => {
+  for (const mutation of ["replacement", "same_object_bytes"]) await t.test(mutation, async () => {
+    const value = await fixture();
+    assert.ok(resolve(value.root).startsWith(resolve(tmpdir()) + "\\"));
+    try {
+      const replacement = join(value.root, "replacement.sqlite3");
+      const bytes = Buffer.from("unrelated quarantined replacement must survive");
+      writeInitialProtectedFixtureFile(replacement, bytes);
+      const plan = await planLocalExportDeletion({workspaceDirectory:value.workspace, outputDirectory:value.output});
+      let target = null;
+      await assert.rejects(deleteLocalExport({
+        workspaceDirectory:value.workspace, outputDirectory:value.output, confirmationToken:plan.confirmationToken,
+        async failpoint(stage, detail) {
+          if (stage !== "after_inventory_quarantine" || detail?.role !== "workspace_database") return;
+          const entry = (await readdir(value.workspace)).find(name => name.startsWith(".app-usagemonitor-deletion-quarantine-"));
+          assert.ok(entry); target = join(value.workspace, entry);
+          if (mutation === "replacement") await rename(replacement, target);
+          else await writeFile(target, bytes);
+        },
+      }), {code:"export_deletion_execute_replacement"});
+      assert.ok(target); assert.deepEqual(await readFile(target), bytes);
+      assert.ok(!(await readdir(value.output)).includes("local-export-deletion-receipt.json"));
+      await assert.rejects(recoverLocalExportDeletion({workspaceDirectory:value.workspace, outputDirectory:value.output}),
+        {code:"export_deletion_execute_replacement"});
+      assert.deepEqual(await readFile(target), bytes);
+    } finally { await rm(value.root,{recursive:true,force:true}); }
+  });
+});
 
 async function assertDeletedState(value) {
   assert.deepEqual(await readdir(value.workspace), []);
@@ -161,8 +190,9 @@ test("a formerly valid token becomes stale after byte-identical inode replacemen
     const plan = await planLocalExportDeletion({ workspaceDirectory: value.workspace, outputDirectory: value.output });
     const artifact = join(value.output, exportSetChunkBasenames(0).bundle);
     const bytes = await readFile(artifact);
-    await unlink(artifact);
-    await writeFile(artifact, bytes, { mode: 0o600 });
+    await rename(artifact, join(value.root, "retained-original-artifact"));
+    if (process.platform === "win32") writeInitialProtectedFixtureFile(artifact, bytes);
+    else await writeFile(artifact, bytes, { mode: 0o600 });
     const next = await planLocalExportDeletion({ workspaceDirectory: value.workspace, outputDirectory: value.output });
     assert.notEqual(next.confirmationToken, plan.confirmationToken);
     await assert.rejects(deleteLocalExport({
@@ -419,7 +449,7 @@ test("SIGKILL recovery covers an authenticated closed SQLite sidecar", async () 
     }), /pause to add authenticated sidecar fixture/);
 
     const sidecarPath = join(value.workspace, "workspace.sqlite3-journal");
-    await writeFile(sidecarPath, "closed-sqlite-sidecar", { mode: 0o600 });
+    writeInitialProtectedFixtureFile(sidecarPath, "closed-sqlite-sidecar");
     const sidecarStats = await stat(sidecarPath, { bigint: true });
     const sidecarBytes = await readFile(sidecarPath);
     const journalPath = join(value.output, ".app-usagemonitor-deletion-journal.json");
@@ -644,6 +674,10 @@ test("durable deletion controls and final receipt exclude paths, pseudonyms, ide
     }), /pause for privacy scan/);
     const controls = `${await readFile(join(value.output, ".app-usagemonitor-deletion-journal.json"), "utf8")}
 ${await readFile(join(value.output, ".app-usagemonitor-deletion-commit.json"), "utf8")}`;
+    assert.equal(JSON.parse(await readFile(join(value.output, ".app-usagemonitor-deletion-journal.json"), "utf8")).schemaVersion,
+      "usage-export-deletion-journal-v0.4");
+    assert.equal(JSON.parse(await readFile(join(value.output, ".app-usagemonitor-deletion-commit.json"), "utf8")).schemaVersion,
+      "usage-export-deletion-commit-marker-v0.2");
     const forbidden = [
       value.root,
       "PRIVATE_SESSION",

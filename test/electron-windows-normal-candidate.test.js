@@ -1600,7 +1600,7 @@ test("normal candidate adds one content-free Codex source before launch", async 
     createDirectory: async (path, options) => {
       calls.push({ kind: "directory", path, options });
     },
-    metadata: async (path) => !path.endsWith(".jsonl")
+    metadata: async (path) => !/\.jsonl?$/u.test(path)
       ? { isDirectory: () => true, isSymbolicLink: () => false }
       : {
         isFile: () => true,
@@ -1654,6 +1654,19 @@ test("normal candidate adds one content-free Codex source before launch", async 
       kind: "directory",
       path: fixture.sessions,
       options: { recursive: true, mode: 0o700 },
+    },
+    {
+      kind: "file",
+      path: fixture.projectsFile,
+      value: JSON.stringify({
+        "local-projects": { "synthetic-windows-project": {
+          id: "synthetic-windows-project", name: "synthetic-windows-project", rootPaths: [fixture.project],
+        } },
+        "thread-project-assignments": { "70000000-0000-4000-8000-000000000001": {
+          projectKind: "local", projectId: "synthetic-windows-project",
+        } },
+      }),
+      options: { mode: 0o600, flag: "wx" },
     },
     {
       kind: "file",
@@ -1732,23 +1745,26 @@ test("normal candidate fixture stays inside the rolling seven-day window", () =>
 });
 
 test("normal candidate fixture passes Codex discovery, onboarding, and local refresh preflight", async () => {
-  const captured = { content: null, fileName: null };
+  const captured = { content: null, fileName: null, latest: null };
   await seedWindowsNormalCandidateCodexFixture({
     profile: { home: String.raw`C:\runner\owned\profile\home` },
   }, {
     runGit: async () => {},
     createDirectory: async () => {},
-    metadata: async (path) => !path.endsWith(".jsonl")
+    metadata: async (path) => !/\.jsonl?$/u.test(path)
       ? { isDirectory: () => true, isSymbolicLink: () => false }
       : {
         isFile: () => true,
         isSymbolicLink: () => false,
         nlink: 1,
-        size: Buffer.byteLength(captured.content),
+        size: Buffer.byteLength(captured.latest),
       },
     writeFixture: async (path, value) => {
-      captured.fileName = win32.basename(path);
-      captured.content = value;
+      captured.latest = value;
+      if (path.includes("sessions")) {
+        captured.fileName = win32.basename(path);
+        captured.content = value;
+      }
     },
     normalizeOwner: () => {},
   });
@@ -1775,6 +1791,14 @@ test("normal candidate fixture passes Codex discovery, onboarding, and local ref
       return JSON.stringify(record);
     }).join("\n") + "\n";
     const writeSource = process.platform === "win32" ? createWindowsSyntheticOwnedSource : writeFile;
+    await writeSource(join(codexHome, ".codex-global-state.json"), JSON.stringify({
+      "local-projects": { "synthetic-windows-project": {
+        id: "synthetic-windows-project", name: "synthetic-windows-project", rootPaths: [project],
+      } },
+      "thread-project-assignments": { "70000000-0000-4000-8000-000000000001": {
+        projectKind: "local", projectId: "synthetic-windows-project",
+      } },
+    }), { mode: 0o600, flag: "wx" });
     await writeSource(join(codexHome, "session_index.jsonl"), JSON.stringify({
       id: "70000000-0000-4000-8000-000000000001", thread_name: "Synthetic Windows saved task",
       updated_at: new Date().toISOString(),
@@ -1926,7 +1950,11 @@ test("normal candidate fixture passes Codex discovery, onboarding, and local ref
     let performance = null;
     const timingDeadline = Date.now() + 10_000;
     while (Date.now() < timingDeadline) {
-      performance = await fetch(`${base}/api/local/model-performance?period=all`).then((value) => value.json());
+      const response = await fetch(`${base}/api/local/model-performance?period=all`, {
+        headers: { "X-Usage-Monitor-Local": "1" },
+      });
+      assert.equal(response.status, 200);
+      performance = await response.json();
       if ((!nativeTimingAvailable && performance.status === "unavailable")
           || (nativeTimingAvailable && performance.status === "ready" && !performance.collecting)) break;
       await new Promise((resolveWait) => setTimeout(resolveWait, 25));

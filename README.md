@@ -1,72 +1,63 @@
 # 衡川 · Rhetrion
 
-Rhetrion is a private, local coding-agent usage dashboard for Windows x64.
-It reads bounded Codex usage/account observations and shows recorded usage,
-quota movement, cache behavior, and estimates with their coverage and uncertainty.
-Codex is the only supported usage provider. Existing versioned legacy formats
-are preserved for historical readback only; that preservation does not change
-their contract status or enable collection, publication, or runtime support.
-Claude collection, integrations, pricing, and UI are retired. Existing Claude
-profiles and settings are left untouched.
-It is not a provider billing system or an authoritative quota formula.
+Rhetrion is a private, local usage dashboard for Codex subscription users on
+Windows x64. It shows recorded usage, quota movement, cache behavior, and work
+estimates with their coverage and freshness.
 
-This independent product is under development and has not been published.
-The repository has no configured download website, hosted contribution service,
-signing account, or update feed. Older Git history and retained evidence describe
-an earlier project; they do not establish a Rhetrion release or deployment.
-See the [current status](docs/current-status.md),
-[identity decision](docs/decisions/2026-10-23-local-product-identity-and-cloud-retirement.md),
-and [Codex-only provider decision](docs/decisions/2026-10-27-codex-only-product.md).
+The project is in development. See the [current status](docs/current-status.md)
+for development and release information, and the [user guide](docs/user-guide.md)
+for dashboard features and settings.
+
+## Usage and refresh
+
+- Recorded usage includes token and cache breakdowns, API-price-equivalent costs,
+  model activity, and project/thread views. Cost figures express usage at
+  reference API prices for comparison.
+- Subscription statistics use session metadata to filter explicit API-key and
+  custom-provider sessions. Historical sessions with unspecified authentication
+  retain the local subscription model.
+- Incremental refreshes reuse verified local data, revalidate changed sources,
+  and count each usage record once.
+- Quota observations, estimated remaining work and actual/expected consumption
+  have separate coverage. The interface labels stale, partial and unavailable
+  results; estimates depend on the available evidence.
 
 ## Local behavior and privacy
 
-Local reads cover Codex `sessions`, `archived_sessions`, bounded `state_5.sqlite`
-thread metadata and `config.toml`, plus the app-server methods `account/read`,
-`account/rateLimits/read` and `account/usage/read`. These sources have separate
-privacy and coverage boundaries; they do not authorize storing session content.
+Usage analysis runs offline, and the companion serves the dashboard over
+loopback. Local inputs include Codex session files, thread and project metadata,
+speed configuration, and bounded runtime model evidence. Account and quota
+observations use the Codex app-server.
 
-Analysis works offline. The companion binds only to loopback. Prompts, responses,
-raw commands, credentials and session contents do not belong in derived reports.
-Private source paths remain in the owner-only local index and never leave it.
-Missing, stale, partial, unpriced and unattributed evidence stays explicit.
-Display windows do not delete retained history.
+Reports, exports and diagnostics use privacy-filtered projections. Private source
+paths stay in protected local state, including the index and explicitly created
+export workspaces. Display windows preserve retained history.
 
-The desktop has no community sharing or contribution upload. Saved opt-outs,
-identity salts, receipts and credentials are preserved. Removing the old cloud
-project from this checkout does not erase or administer any former remote service.
-The optional X reader uses a separate protected browser session and does not send
-local usage data in its network requests.
+The optional X reader uses a separate protected browser session. Local usage
+data stays on the device.
 
 See [local data and privacy](docs/reference/local-data-and-privacy.md),
 [security policy](SECURITY.md), and [safe recovery](docs/runbooks/local-index-recovery.md).
-
-## Install Windows x64
-
-No Rhetrion installer is published. Source staging and unsigned local test artifacts
-are separate from installed, signed-release, updater and GUI qualification.
-The native Windows adapter retains its fail-closed policy; a valid binary digest
-or passing source tests does not enable unqualified production capabilities.
-Do not run an incomplete candidate against your only copy of application data.
-
-Branding is presentation only. The executable remains `usage-monitor.exe`,
-the package is `app-usagemonitor`, and the stable App ID is `com.usagemonitor.local`.
-Profiles use `%APPDATA%/UsageMonitor/profiles/<profile>` independently of the title.
-A new name never authorizes changing credentials or selecting another profile.
-Existing data cutover requires the separately verified one-time migration and backup.
 
 ## Develop and verify
 
 Root tooling needs Node.js 22.13 or newer and pnpm 11. Production Electron source
 preparation requires exactly Node.js 26.2.0. Native packaging and desktop validation
 require a supported interactive Windows x64 host.
+Local source runs also require a compatible Windows native binding and verified
+adjacent manifest.
+See the [native adapter prerequisites](native/windows-filesystem/README.md).
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm run product:local
 ```
 
-The source dashboard is served through its loopback companion. Use focused tests
-first, then the relevant owning gate:
+Use a backed-up copy of application data for candidate testing. Existing profiles
+use `%APPDATA%/UsageMonitor/profiles/<profile>`; data cutover follows the
+[controlled migration workflow](docs/decisions/2026-10-27-pre-release-state-migration.md).
+
+Use focused tests first, then the relevant checks:
 
 ```sh
 pnpm run test:preflight
@@ -76,16 +67,18 @@ pnpm run product:electron:test
 pnpm run product:local:test
 ```
 
-`pnpm run check` composes the broad source gates; it is not installed-artifact
-or production-release proof. See [contributing](CONTRIBUTING.md) and the
+`pnpm run check` composes the broad source checks. See
+[contributing](CONTRIBUTING.md) and the
 [documentation index](docs/README.md) for maintained contracts.
 
 ## Local usage coaching
 
 `node ./src/cli.js explain-usage-plans` lists the bounded, deterministic local
 analysis plans. The [agent protocol](docs/reference/usage-explainer-agent-protocol.md)
-defines pagination, evidence selection and prohibited claims. The repository skill
-uses this CLI; the former macOS-only plugin wrapper is retired.
+defines pagination, evidence selection and interpretation boundaries. The
+repository's usage-coaching skill uses this CLI.
+
+## Repository layout
 
 The source layout follows `src/` for domain behavior, `apps/local` for the companion,
 `apps/web` for the dashboard, `apps/electron` for the shell, `packages/` for neutral
@@ -93,7 +86,5 @@ public APIs, and `native/windows-filesystem` for the Windows security boundary.
 
 ## Support and language
 
-The interface supports English, Simplified Chinese and Spanish. Product names and
-artwork come from the presentation config, separately from stable internal identity.
-For troubleshooting, review [support guidance](SUPPORT.md). No external support or
-private reporting destination is configured for this unpublished product.
+The interface supports English, Simplified Chinese and Spanish. For
+troubleshooting, review [support guidance](SUPPORT.md).

@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { link, lstat, open, realpath, unlink } from "node:fs/promises";
+import { link, lstat as nodeLstat, open as nodeOpen, realpath } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { isProxy } from "node:util/types";
+import { exactLstat, exactOpen } from "./exact-filesystem-stats.js";
+import { createWindowsFilesystemAdapter } from "./windows-filesystem.js";
 import { assertOwnerControlledDirectory, syncDirectory } from "./owner-only-filesystem.js";
+
+const lstat = (path) => exactLstat(path, nodeLstat);
+const open = (path, flags, mode) => exactOpen(path, flags, nodeOpen, mode);
 
 function invalid() { throw new TypeError("Owner-only workspace discard storage configuration is invalid"); }
 function own(object, key) {
@@ -192,8 +197,13 @@ function controlToken(domain, text) {
   return base32(createHash("sha256").update(domain).update("\0").update(text).digest());
 }
 
-async function unlinkDurably(path) {
-  await unlink(path);
+async function unlinkDurably(path, artifact, peerPath = null) {
+  const adapter = createWindowsFilesystemAdapter();
+  if (typeof adapter.deleteExactFile !== "function") fail("replacement");
+  adapter.deleteExactFile(path, {
+    device: artifact.stats.dev, inode: artifact.stats.ino,
+    byteSize: artifact.byteSize, sha256: artifact.digest,
+  }, peerPath);
   await syncDirectory(dirname(path));
 }
 
@@ -206,33 +216,10 @@ async function writeOwnerOnlyNoClobberDurable(path, content) {
   await assertOwnerControlledDirectory(parent);
   const canonicalParent = await realpath(parent);
   const target = join(canonicalParent, basename(requested));
-  let handle;
-  let identity;
-  let durable = false;
-  try {
-    handle = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
-    const opened = await handle.stat();
-    identity = { dev: opened.dev, ino: opened.ino };
-    await handle.chmod(0o600);
-    await handle.writeFile(content, "utf8");
-    await handle.sync();
-    const written = await handle.stat();
-    if (!written.isFile() || written.nlink !== 1 || written.size !== Buffer.byteLength(content, "utf8")
-        || (typeof process.getuid === "function" && written.uid !== process.getuid())) throw new Error("invalid control");
-    await handle.close(); handle = null;
-    await syncDirectory(canonicalParent);
-    durable = true;
-  } catch (error) {
-    await handle?.close().catch(() => {});
-    if (!durable && identity) {
-      const current = await lstat(target).catch(() => null);
-      if (current?.isFile() && !current.isSymbolicLink() && current.dev === identity.dev && current.ino === identity.ino) {
-        await unlink(target).catch(() => {});
-        await syncDirectory(canonicalParent).catch(() => {});
-      }
-    }
-    throw error;
-  }
+  // POSIX chmod does not create a protected Windows DACL. Use the existing
+  // exclusive native creator, including its flush and exact-object cleanup.
+  createWindowsFilesystemAdapter().createFile(target, Buffer.from(content, "utf8"));
+  await syncDirectory(canonicalParent);
 }
 
 async function exists(path) {
@@ -289,8 +276,8 @@ async function readExactFile(path, maximumBytes = Number.MAX_SAFE_INTEGER, {
 
 function artifactEvidence(artifact) {
   return {
-    device: Number(artifact.stats.dev),
-    inode: Number(artifact.stats.ino),
+    device: artifact.stats.dev,
+    inode: artifact.stats.ino,
     linkCount: Number(artifact.logicalLinkCount ?? artifact.stats.nlink),
     byteSize: Number(artifact.stats.size),
     modifiedMs: Math.trunc(artifact.stats.mtimeMs),
@@ -308,8 +295,8 @@ function matchesEvidence(artifact, expected) {
   }
   const evidence = expected.evidence;
   if (!evidence) return false;
-  return Number(artifact.stats.dev) === evidence.device
-    && Number(artifact.stats.ino) === evidence.inode
+  return artifact.stats.dev === evidence.device
+    && artifact.stats.ino === evidence.inode
     && Number(artifact.logicalLinkCount ?? artifact.stats.nlink) === evidence.linkCount
     && Number(artifact.stats.size) === evidence.byteSize
     && Math.trunc(artifact.stats.mtimeMs) === evidence.modifiedMs
@@ -337,8 +324,8 @@ async function readControlEither(canonical, quarantined, label) {
     const options = { allowedLinkCounts: [2], logicalLinkCount: 1 };
     const left = await readControl(canonical, label, options);
     const right = await readControl(quarantined, label, options);
-    if (!left || !right || Number(left.stats.dev) !== Number(right.stats.dev)
-        || Number(left.stats.ino) !== Number(right.stats.ino) || left.text !== right.text) fail(label);
+    if (!left || !right || left.stats.dev !== right.stats.dev
+        || left.stats.ino !== right.stats.ino || left.text !== right.text) fail(label);
     return { ...left, path: canonical };
   }
   const left = canonicalPresent ? await readControl(canonical, label) : null;
@@ -372,7 +359,7 @@ async function quarantineThenUnlink(path, quarantinePath, expected, {
   if (!currentPresent && quarantinePresent) {
     const quarantined = await readExactFile(quarantinePath);
     if (!matchesEvidence(quarantined, expected)) fail("replacement");
-    try { await unlinkDurably(quarantinePath); } catch { fail("replacement"); }
+    try { await unlinkDurably(quarantinePath, quarantined); } catch { fail("replacement"); }
     return true;
   }
   if (currentPresent && quarantinePresent) {
@@ -383,15 +370,15 @@ async function quarantineThenUnlink(path, quarantinePath, expected, {
       allowedLinkCounts: [2], logicalLinkCount: 1,
     });
     if (!linkedCurrent || !linkedQuarantine
-        || Number(linkedCurrent.stats.dev) !== Number(linkedQuarantine.stats.dev)
-        || Number(linkedCurrent.stats.ino) !== Number(linkedQuarantine.stats.ino)
+        || linkedCurrent.stats.dev !== linkedQuarantine.stats.dev
+        || linkedCurrent.stats.ino !== linkedQuarantine.stats.ino
         || !matchesEvidence(linkedCurrent, expected)
         || !matchesEvidence(linkedQuarantine, expected)) fail("replacement");
-    try { await unlinkDurably(path); } catch { fail("replacement"); }
+    try { await unlinkDurably(path, linkedCurrent, quarantinePath); } catch { fail("replacement"); }
     const soleQuarantine = await readExactFile(quarantinePath);
     if (!soleQuarantine || !matchesEvidence(soleQuarantine, expected)) fail("replacement");
     if (stage) await callFailpoint(failpoint, stage, detail);
-    try { await unlinkDurably(quarantinePath); } catch { fail("replacement"); }
+    try { await unlinkDurably(quarantinePath, soleQuarantine); } catch { fail("replacement"); }
     return true;
   }
   const current = await readExactFile(path);
@@ -411,16 +398,16 @@ async function quarantineThenUnlink(path, quarantinePath, expected, {
     allowedLinkCounts: [2], logicalLinkCount: 1,
   });
   if (!linkedCurrent || !linkedQuarantine
-      || Number(linkedCurrent.stats.dev) !== Number(linkedQuarantine.stats.dev)
-      || Number(linkedCurrent.stats.ino) !== Number(linkedQuarantine.stats.ino)
+      || linkedCurrent.stats.dev !== linkedQuarantine.stats.dev
+      || linkedCurrent.stats.ino !== linkedQuarantine.stats.ino
       || !matchesEvidence(linkedCurrent, expected)
       || !matchesEvidence(linkedQuarantine, expected)) fail("replacement");
   await callFailpoint(failpoint, "after_quarantine_link", detail);
-  try { await unlinkDurably(path); } catch { fail("replacement"); }
+  try { await unlinkDurably(path, linkedCurrent, quarantinePath); } catch { fail("replacement"); }
   const moved = await readExactFile(quarantinePath);
   if (!moved || !matchesEvidence(moved, expected)) fail("replacement");
   if (stage) await callFailpoint(failpoint, stage, detail);
-  try { await unlinkDurably(quarantinePath); } catch { fail("replacement"); }
+  try { await unlinkDurably(quarantinePath, moved); } catch { fail("replacement"); }
   return true;
 }
 
@@ -485,7 +472,7 @@ async function deleteControl(path, quarantine, expected, options = {}) {
   const removed = await quarantineThenUnlink(path, quarantine, {
     byteSize: expected.byteSize,
     evidence: {
-      device: Number(expected.stats.dev), inode: Number(expected.stats.ino),
+      device: expected.stats.dev, inode: expected.stats.ino,
       linkCount: Number(expected.logicalLinkCount ?? expected.stats.nlink), byteSize: expected.byteSize,
       modifiedMs: Math.trunc(expected.stats.mtimeMs), digest: expected.digest,
     },
@@ -548,7 +535,7 @@ async function loadControls(directory) {
     assertValidExportWorkspaceDiscardJournal(journalArtifact.value);
     assertValidExportWorkspaceDiscardCommitMarker(markerArtifact.value);
   } catch { fail("journal_invalid"); }
-  const journalToken = controlToken("app-usagemonitor/export-workspace-discard-journal/v1", journalArtifact.text);
+  const journalToken = controlToken("app-usagemonitor/export-workspace-discard-journal/v2", journalArtifact.text);
   if (markerArtifact.value.planToken !== journalArtifact.value.planToken
       || markerArtifact.value.directoryIdentityToken !== journalArtifact.value.directoryIdentityToken
       || markerArtifact.value.journalToken !== journalToken) fail("commit_invalid");
@@ -598,8 +585,8 @@ async function assertCommittedDirectoryState(directory, journal) {
       });
       const expected = { ...row, planToken: journal.planToken };
       if (!canonical || !quarantine
-          || Number(canonical.stats.dev) !== Number(quarantine.stats.dev)
-          || Number(canonical.stats.ino) !== Number(quarantine.stats.ino)
+          || canonical.stats.dev !== quarantine.stats.dev
+          || canonical.stats.ino !== quarantine.stats.ino
           || !matchesEvidence(canonical, expected) || !matchesEvidence(quarantine, expected)) {
         fail("receipt_invalid");
       }
@@ -761,7 +748,7 @@ async function discardLocalExportWorkspace(options = undefined) {
       state: "committed",
       planToken: plan.journal.planToken,
       directoryIdentityToken: plan.journal.directoryIdentityToken,
-      journalToken: controlToken("app-usagemonitor/export-workspace-discard-journal/v1", journalText),
+      journalToken: controlToken("app-usagemonitor/export-workspace-discard-journal/v2", journalText),
       transportReady: false,
     };
     assertValidExportWorkspaceDiscardCommitMarker(marker);

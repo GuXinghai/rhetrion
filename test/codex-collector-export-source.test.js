@@ -189,14 +189,14 @@ test("freezes a complete-line prefix and emits only provider-neutral quota candi
   }
 });
 
-test("Windows collector plans retain exact U64 identity and close every source lease", async () => {
+test("Windows collector plans retain exact U64/U128 maxima and close every source lease", async () => {
   const value = await fixture([quotaRecord()]);
   const opened = { count: 0 };
   const closed = { count: 0 };
   const context = createSyntheticExportSourcePipeline({
     identity: {
       volumeSerialNumber: "ffffffffffffffff",
-      fileId: "0000000000000000ffffffffffffffff",
+      fileId: "ffffffffffffffffffffffffffffffff",
     },
     onOpen: () => { opened.count += 1; },
     onClose: () => { closed.count += 1; },
@@ -207,9 +207,9 @@ test("Windows collector plans retain exact U64 identity and close every source l
       startAt: START,
       endAt: END,
     });
-    assert.equal(plan.schemaVersion, "codex-collector-export-source-plan-v0.2");
+    assert.equal(plan.schemaVersion, "codex-collector-export-source-plan-v0.3");
     assert.equal(plan.device, "18446744073709551615");
-    assert.equal(plan.inode, "18446744073709551615");
+    assert.equal(plan.inode, "340282366920938463463374607431768211455");
     await context.verifyCodexCollectorExportSourcePlan(plan);
     assert.equal(opened.count, closed.count);
     assert.ok(opened.count > 0);
@@ -218,7 +218,7 @@ test("Windows collector plans retain exact U64 identity and close every source l
   }
 });
 
-test("Windows collector source refuses file IDs above its U64 contract before reading", async () => {
+test("Windows collector source reads exact file IDs above U64 and releases its lease", async () => {
   const value = await fixture([quotaRecord()]);
   const opened = { count: 0 };
   const closed = { count: 0 };
@@ -233,14 +233,16 @@ test("Windows collector source refuses file IDs above its U64 contract before re
     onRead: (length) => { readLengths.push(length); },
   }).codexCollectorExport;
   try {
-    await assert.rejects(context.createCodexCollectorExportSourcePlan({
+    const plan = await context.createCodexCollectorExportSourcePlan({
       collectorPath: value.path,
       startAt: START,
       endAt: END,
-    }), safeFailure("codex_collector_export_source_changed", context.CodexCollectorExportSourceError));
+    });
+    assert.equal(plan.inode, (1n << 96n).toString(10));
+    await context.verifyCodexCollectorExportSourcePlan(plan);
     assert.equal(opened.count, closed.count);
     assert.ok(opened.count > 0);
-    assert.deepEqual(readLengths, []);
+    assert.ok(readLengths.length > 0);
   } finally {
     await rm(value.root, { recursive: true, force: true });
   }

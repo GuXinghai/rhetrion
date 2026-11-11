@@ -7,9 +7,9 @@ import {
   createSourcePlanSummaryContract,
   stableJson,
   summarizeExportSourcePlan,
+  normalizeExportSourceFilesystemId,
 } from "../../export/index.js";
 import {
-  normalizeCodexSourcePlanFilesystemId,
   validSha256,
 } from "./source-validation.js";
 
@@ -56,10 +56,10 @@ function sourceKey(rolloutKey) {
 }
 
 function sameIdentity(stats, expected) {
-  const actualDev = normalizeCodexSourcePlanFilesystemId(stats?.dev, "device");
-  const expectedDev = normalizeCodexSourcePlanFilesystemId(expected?.dev, "device");
-  const actualIno = normalizeCodexSourcePlanFilesystemId(stats?.ino, "inode");
-  const expectedIno = normalizeCodexSourcePlanFilesystemId(expected?.ino, "inode");
+  const actualDev = normalizeExportSourceFilesystemId(stats?.dev, "device");
+  const expectedDev = normalizeExportSourceFilesystemId(expected?.dev, "device");
+  const actualIno = normalizeExportSourceFilesystemId(stats?.ino, "inode");
+  const expectedIno = normalizeExportSourceFilesystemId(expected?.ino, "inode");
   if (actualDev === null || expectedDev === null || actualDev !== expectedDev
       || actualIno === null || expectedIno === null || actualIno !== expectedIno) return false;
   if (expected?.birthtimeMs !== undefined
@@ -284,8 +284,8 @@ async function createCodexExportSourcePlan({
         ordinal,
         sourceKey: sourceKey(info.rolloutKey),
         path: info.path,
-        dev: normalizeCodexSourcePlanFilesystemId(stats.dev, "device"),
-        ino: normalizeCodexSourcePlanFilesystemId(stats.ino, "inode"),
+        dev: normalizeExportSourceFilesystemId(stats.dev, "device"),
+        ino: normalizeExportSourceFilesystemId(stats.ino, "inode"),
         birthtimeMs: Math.trunc(stats.birthtimeMs),
         prefixBytes,
         prefixSha256: inspected?.sha256 ?? await sha256Prefix(handle, prefixBytes, resourceGuard),

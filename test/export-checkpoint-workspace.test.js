@@ -321,7 +321,7 @@ test("checkpoint workspace atomically persists an initial tier batch and rejects
   }
 });
 
-test("workspace v6 round-trips exact U64 device and U128 inode identity strings", async () => {
+test("workspace schema 8 round-trips exact U64 device and U128 inode identity strings", async () => {
   const value = await fixture();
   let workspace;
   try {
@@ -348,7 +348,7 @@ test("workspace v6 round-trips exact U64 device and U128 inode identity strings"
 });
 
 test("predecessor and newer workspace markers are refused before writable state or sidecars", async () => {
-  for (const version of [4, 5, 6, 8]) {
+  for (const version of [4, 5, 6, 7, 9]) {
   const value = await fixture();
   let workspace;
   try {
@@ -371,7 +371,7 @@ test("predecessor and newer workspace markers are refused before writable state 
     const bytesBefore = await readFile(databaseFile);
     const entriesBefore = (await readdir(value.workspace)).sort();
     await assert.rejects(
-      openExportWorkspace({ directory: value.workspace }),
+      openExportWorkspace({ directory: value.workspace }).then(opened => { workspace = opened; return opened; }),
       (error) => error instanceof ExportWorkspaceError && error.code === "export_workspace_schema",
     );
     assert.deepEqual(await readFile(databaseFile), bytesBefore);

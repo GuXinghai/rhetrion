@@ -17,6 +17,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { isProxy } from "node:util/types";
 
 import { createSourceFileAccess } from "./source-file-access.js";
+import { createWindowsOwnerOnlyArtifactReader } from "./local-metadata-bundle-files.js";
 import { createWindowsFilesystemAdapter } from "./windows-filesystem.js";
 import { readBoundedDirectoryEntries } from "./bounded-directory-reader.js";
 import {
@@ -219,7 +220,8 @@ export function createOwnerOnlyExportArtifactStorageContext(configuration = {}) 
       if (!adapter || typeof adapter !== "object"
           || typeof adapter.inspectPath !== "function"
           || typeof adapter.ensureDirectory !== "function"
-          || typeof adapter.createFile !== "function") {
+          || typeof adapter.createFile !== "function"
+          || typeof adapter.deleteFile !== "function") {
         throw new Error("Windows owner-only export protection is unavailable");
       }
       cachedWindowsFilesystem = adapter;
@@ -305,19 +307,15 @@ export function createOwnerOnlyExportArtifactStorageContext(configuration = {}) 
   function assertWindowsSecurityMetadata(metadata, kind, {
     linkCounts = [1],
     parentProtected = false,
-    allowReparsePoint = false,
   } = {}) {
     const correctType = kind === "directory"
       ? metadata.isDirectory === true && metadata.isRegularFile === false
       : kind === "file"
         ? metadata.isDirectory === false && metadata.isRegularFile === true
-        : kind === "link"
-          ? metadata.isDirectory === false && metadata.isRegularFile === true
-          : false;
+        : false;
     const linkCountValid = kind === "directory"
       || linkCounts.includes(metadata.identity.linkCount);
-    if (!correctType || (!allowReparsePoint && metadata.isReparsePoint !== false)
-        || (allowReparsePoint && metadata.isReparsePoint !== true)
+    if (!correctType || metadata.isReparsePoint !== false
         || metadata.ownerMatches !== true
         || metadata.nullDacl !== false
         || metadata.broadAccess !== false
@@ -343,13 +341,12 @@ export function createOwnerOnlyExportArtifactStorageContext(configuration = {}) 
     return metadata.identity;
   }
 
-  function inspectWindowsFile(path, { linkCounts = [1], allowReparsePoint = false } = {}) {
+  function inspectWindowsFile(path, { linkCounts = [1] } = {}) {
     const parentIdentity = inspectWindowsDirectory(dirname(path));
     const metadata = windowsInspectPath(path);
-    const identity = assertWindowsSecurityMetadata(metadata, allowReparsePoint ? "link" : "file", {
+    const identity = assertWindowsSecurityMetadata(metadata, "file", {
       linkCounts,
       parentProtected: true,
-      allowReparsePoint,
     });
     return { metadata, identity, parentIdentity };
   }
@@ -1087,21 +1084,29 @@ export function createOwnerOnlyExportArtifactStorageContext(configuration = {}) 
   async function readExportDestinationLock(path) {
     const stats = await lstat(path);
     if (configuredPlatform === "win32") {
-      const inspected = inspectWindowsFile(path, { allowReparsePoint: true, linkCounts: [1, 2] });
-      if (!stats.isSymbolicLink() || stats.nlink < 1 || stats.nlink > 2) {
+      const inspected = inspectWindowsFile(path);
+      if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
         throw new Error("Local export destination has an invalid lock");
       }
-      const target = await readlink(path);
-      const after = inspectWindowsFile(path, { allowReparsePoint: true, linkCounts: [1, 2] });
+      const bytes = await createWindowsOwnerOnlyArtifactReader({
+        sourceAccessFactory: windowsSourceAccess,
+      }).read({ path, label: "lock", maximumBytes: 1024,
+        createError: () => new Error("Local export destination has an invalid lock") });
+      const after = inspectWindowsFile(path);
       if (!sameWindowsIdentity(inspected.identity, after.identity)
           || !sameWindowsObject(inspected.parentIdentity, after.parentIdentity)) {
         throw new Error("Local export destination lock changed during inspection");
       }
-      const match = /^pid=(\d+);token=([0-9a-f-]{36})$/.exec(target);
-      if (!match) throw new Error("Local export destination has an invalid lock");
-      const pid = Number(match[1]);
-      if (!Number.isSafeInteger(pid) || pid < 1) throw new Error("Local export destination has an invalid lock");
-      return { pid, stats };
+      let value;
+      try { value = JSON.parse(bytes.toString("utf8")); }
+      catch { throw new Error("Local export destination has an invalid lock"); }
+      if (value?.version !== "export-destination-lock-v1"
+          || Object.keys(value).sort().join(",") !== "pid,token,version"
+          || !Number.isSafeInteger(value.pid) || value.pid < 1
+          || typeof value.token !== "string" || !/^[0-9a-f-]{36}$/.test(value.token)) {
+        throw new Error("Local export destination has an invalid lock");
+      }
+      return { pid: value.pid, stats: { ...stats, windowsIdentity: inspected.identity } };
     }
     if (!stats.isSymbolicLink() || stats.nlink < 1 || stats.nlink > 2
         || (typeof process.getuid === "function" && stats.uid !== process.getuid())) {
@@ -1116,14 +1121,28 @@ export function createOwnerOnlyExportArtifactStorageContext(configuration = {}) 
   }
   
   async function withExportDestinationLock(destinationDirectory, callback, options) {
+    preflightWindowsArtifactRead();
     const lockPath = join(destinationDirectory, EXPORT_DESTINATION_LOCK);
-    const target = `pid=${process.pid};token=${randomUUID()}`;
+    const token = randomUUID();
+    const target = `pid=${process.pid};token=${token}`;
     const claimName = `${EXPORT_DESTINATION_CLAIM_PREFIX}${process.pid}.${randomUUID()}`;
     const claimPath = join(destinationDirectory, claimName);
     let lockOwnership = null;
     let claimOwnership = null;
 
     async function unlinkVerifiedOwnedLock(path, expectedStats, changedMessage) {
+      if (configuredPlatform === "win32") {
+        let inspected;
+        try { inspected = inspectWindowsFile(path); }
+        catch (error) { if (error?.code === "ENOENT") return false; throw error; }
+        if (!sameWindowsIdentity(inspected.identity, expectedStats.windowsIdentity)
+            || !sameWindowsObject(inspected.parentIdentity, inspectWindowsDirectory(destinationDirectory))) {
+          throw new Error(changedMessage);
+        }
+        windowsFilesystem().deleteFile(path, expectedStats.windowsIdentity);
+        await synchronizeDirectory(destinationDirectory);
+        return true;
+      }
       const current = await lstatIfExists(path);
       if (!current) return false;
       if (!current.isSymbolicLink()
@@ -1131,12 +1150,6 @@ export function createOwnerOnlyExportArtifactStorageContext(configuration = {}) 
           || current.ino !== expectedStats.ino
           || (typeof process.getuid === "function" && current.uid !== process.getuid())) {
         throw new Error(changedMessage);
-      }
-      if (configuredPlatform === "win32") {
-        const inspected = inspectWindowsFile(path, { allowReparsePoint: true, linkCounts: [1, 2] });
-        if (!sameWindowsObject(inspected.parentIdentity, inspectWindowsDirectory(destinationDirectory))) {
-          throw new Error(changedMessage);
-        }
       }
       await unlink(path);
       await synchronizeDirectory(destinationDirectory);
@@ -1186,6 +1199,31 @@ export function createOwnerOnlyExportArtifactStorageContext(configuration = {}) 
       throw error;
     }
 
+    async function acquireNewLock() {
+      if (configuredPlatform === "win32") {
+        await assertOwnerControlledDirectoryPath(destinationDirectory);
+        const bytes = Buffer.from(stableJson({ version: "export-destination-lock-v1",
+          pid: process.pid, token }));
+        try {
+          const identity = windowsFilesystem().createFile(lockPath, bytes);
+          // Own the exact file before any awaited inspection or durability step.
+          lockOwnership = { windowsIdentity: identity };
+        } finally { bytes.fill(0); }
+        const stats = await readNewLockStats(lockPath);
+        if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
+          throw new Error("Local export destination lock changed during acquisition");
+        }
+        const inspected = inspectWindowsFile(lockPath);
+        if (!sameWindowsIdentity(inspected.identity, lockOwnership.windowsIdentity)) {
+          throw new Error("Local export destination lock changed during acquisition");
+        }
+        lockOwnership = { ...stats, windowsIdentity: lockOwnership.windowsIdentity };
+      } else {
+        await symlink(target, lockPath);
+        lockOwnership = await readNewLockStats(lockPath);
+      }
+    }
+
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const claimNames = (await boundedDirectoryEntries(destinationDirectory))
         .filter((name) => name.startsWith(EXPORT_DESTINATION_CLAIM_PREFIX));
@@ -1230,10 +1268,7 @@ export function createOwnerOnlyExportArtifactStorageContext(configuration = {}) 
           }
         }
         try {
-          if (configuredPlatform === "win32") await assertOwnerControlledDirectoryPath(destinationDirectory);
-          await symlink(target, lockPath);
-          lockOwnership = await readNewLockStats(lockPath);
-          if (configuredPlatform === "win32") inspectWindowsFile(lockPath, { allowReparsePoint: true, linkCounts: [1] });
+          await acquireNewLock();
           await synchronizeDirectory(destinationDirectory);
           await releaseOwnedClaim();
           break;
@@ -1243,10 +1278,7 @@ export function createOwnerOnlyExportArtifactStorageContext(configuration = {}) 
       }
 
       try {
-        if (configuredPlatform === "win32") await assertOwnerControlledDirectoryPath(destinationDirectory);
-        await symlink(target, lockPath);
-        lockOwnership = await readNewLockStats(lockPath);
-        if (configuredPlatform === "win32") inspectWindowsFile(lockPath, { allowReparsePoint: true, linkCounts: [1] });
+        await acquireNewLock();
         await synchronizeDirectory(destinationDirectory);
         const postAcquireClaims = (await boundedDirectoryEntries(destinationDirectory))
           .filter((name) => name.startsWith(EXPORT_DESTINATION_CLAIM_PREFIX));
@@ -1260,8 +1292,31 @@ export function createOwnerOnlyExportArtifactStorageContext(configuration = {}) 
         if (error.code !== "EEXIST") {
           await throwAfterAcquisitionCleanup(error);
         }
-        const existing = await readExportDestinationLock(lockPath);
+        let existing;
+        try { existing = await readExportDestinationLock(lockPath); }
+        catch (inspectionError) {
+          // Another stale-lock reaper can win the rename after our EEXIST.
+          if (inspectionError?.code === "ENOENT") throw new Error("Local export destination is busy");
+          throw inspectionError;
+        }
         if (processIsRunning(existing.pid)) throw new Error("Local export destination is busy");
+        if (configuredPlatform === "win32") {
+          // Do not rename a pathname observed before an await: it may now be a
+          // new active lock. Native exact-identity deletion elects one reaper
+          // without ever moving or deleting another publisher's replacement.
+          await callLockFailpoint(options, "after_stale_inspection");
+          try {
+            await unlinkVerifiedOwnedLock(lockPath, existing.stats,
+              "Local export destination lock changed during stale recovery");
+          } catch (error) {
+            if (error?.code === "ENOENT" || error?.code === "WINDOWS_FILESYSTEM_IDENTITY_MISMATCH"
+                || error?.message === "Local export destination lock changed during stale recovery") {
+              throw new Error("Local export destination is busy");
+            }
+            throw error;
+          }
+          continue;
+        }
         try {
           await rename(lockPath, claimPath);
           // As above, acquire ownership before a failure-capable operation.
@@ -1647,8 +1702,26 @@ export function createOwnerOnlyExportArtifactStorageContext(configuration = {}) 
           throw new Error("Invalid manifestless export recovery transaction");
         }
         for (const name of entries) {
-          await assertOwnerOnlyOrphan(join(transactionDirectory, name));
-          await unlink(join(transactionDirectory, name));
+          const path = join(transactionDirectory, name);
+          let linkedPath;
+          // A crash after manifest cleanup leaves the two stage links beside
+          // already-published files. Prove the counterpart before unlinking only
+          // the orphan; never publish from a manifestless transaction.
+          if (configuredPlatform === "win32" && (await lstat(path)).nlink === 2) {
+            const orphan = inspectWindowsFile(path, { linkCounts: [2] });
+            for (const candidate of await boundedDirectoryEntries(destinationResolved)) {
+              const candidatePath = join(destinationResolved, candidate);
+              const stats = await lstat(candidatePath);
+              if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 2) continue;
+              const published = inspectWindowsFile(candidatePath, { linkCounts: [2] });
+              if (sameWindowsIdentity(orphan.identity, published.identity)) {
+                linkedPath = candidatePath;
+                break;
+              }
+            }
+          }
+          await assertOwnerOnlyOrphan(path, linkedPath);
+          await unlink(path);
         }
         await rmdir(transactionDirectory);
         await synchronizeDirectory(transactionRoot);

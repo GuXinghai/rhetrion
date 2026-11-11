@@ -197,9 +197,14 @@ export function acquireProtectedSqliteFiles({ native, path, pathApi = win32 }) {
     fail(nativeErrorCode(error, "acquire"));
   }
   let active = true;
+  let retained = false;
   return Object.freeze({
     created,
+    // Kept inside the platform owner; opaque tokens never enter projections.
+    guards: Object.freeze([...guards]),
+    retain() { retained = true; },
     release() {
+      if (retained) return;
       if (!active) fail("foreign");
       active = false;
       let failed = false;

@@ -52,6 +52,12 @@ const BINDING_PROVENANCE = Object.freeze({
   source: "unsigned-development-binding",
 });
 export const WINDOWS_SOURCE_READ_CONTRACT = 'windows-source-read-v1';
+export const WINDOWS_TIMING_RECOVERY_CONTRACT = 'windows-timing-recovery-v1';
+export const WINDOWS_TIMING_RECOVERY_METHODS = Object.freeze([
+  'openTimingRecoveryFile', 'restoreTimingRecoveryFile', 'openLegacyStateFile',
+  'copyLegacyStateFile', 'acquireProtectedDirectoryGuard', 'releaseProtectedDirectoryGuard',
+  'inspectProtectedChild', 'deleteProtectedChild',
+]);
 export const WINDOWS_SOURCE_READ_METHODS = Object.freeze([
   'openSourceFile', 'statSourceFile', 'readSourceFile', 'closeSourceFile',
 ]);
@@ -180,10 +186,15 @@ function assertBindingManifest(manifest) {
   const reportPublication = manifest.reportPublication;
   const hasLocalVolumeQuery = Object.hasOwn(manifest, 'localVolumeQuery');
   const localVolumeQuery = manifest.localVolumeQuery;
+  const hasTimingRecovery = Object.hasOwn(manifest, 'timingRecovery');
+  const timingRecovery = manifest.timingRecovery;
   const valid = manifestKeys.length === MANIFEST_KEYS.length + (hasSourceRead ? 1 : 0)
     + (hasReleaseOperation ? 1 : 0) + (hasLegacyStateRead ? 1 : 0)
     + (hasBrowserProfile ? 1 : 0) + (hasReportPublication ? 1 : 0)
-    + (hasLocalVolumeQuery ? 1 : 0)
+    + (hasLocalVolumeQuery ? 1 : 0) + (hasTimingRecovery ? 1 : 0)
+    && (!hasTimingRecovery || (timingRecovery !== null && typeof timingRecovery === 'object'
+      && !Array.isArray(timingRecovery) && Object.keys(timingRecovery).sort().join(',') === 'approved,contractVersion'
+      && timingRecovery.contractVersion === WINDOWS_TIMING_RECOVERY_CONTRACT && timingRecovery.approved === true))
     && (!hasBrowserProfile || (browserProfile !== null && typeof browserProfile === 'object'
       && !Array.isArray(browserProfile) && Object.keys(browserProfile).sort().join(',') === 'approved,contractVersion'
       && browserProfile.contractVersion === WINDOWS_BROWSER_PROFILE_CONTRACT && browserProfile.approved === true))
@@ -264,6 +275,7 @@ function assertBindingManifest(manifest) {
     approvedPolicy: Object.freeze({ ...approvedPolicy }),
     requiredMethods: Object.freeze([...requiredMethods]),
     ...(hasSourceRead ? { sourceRead: Object.freeze({ ...sourceRead }) } : {}),
+    ...(hasTimingRecovery ? { timingRecovery: Object.freeze({ ...timingRecovery }) } : {}),
     ...(hasBrowserProfile ? { browserProfile: Object.freeze({ ...browserProfile }) } : {}),
     ...(hasReportPublication ? { reportPublication: Object.freeze({ ...reportPublication }) } : {}),
     ...(hasLocalVolumeQuery ? { localVolumeQuery: Object.freeze({ ...localVolumeQuery }) } : {}),
@@ -349,6 +361,10 @@ function verifyBindingIntegrity({
       || !WINDOWS_SOURCE_READ_METHODS.every(name => typeof binding[name] === 'function'))) {
     throw failure('MANIFEST_BINDING_MISMATCH');
   }
+  if (manifest.timingRecovery && (binding.timingRecoveryContractVersion !== manifest.timingRecovery.contractVersion
+      || !WINDOWS_TIMING_RECOVERY_METHODS.every(name => typeof binding[name] === 'function'))) {
+    throw failure('MANIFEST_BINDING_MISMATCH');
+  }
   if (manifest.releaseOperation && (binding.protectedDirectoryGuardContractVersion !== 'windows-protected-directory-guard-v1'
       || !WINDOWS_RELEASE_OPERATION_METHODS.every(name => typeof binding[name] === 'function'))) {
     throw failure('MANIFEST_BINDING_MISMATCH');
@@ -429,6 +445,13 @@ export function loadWindowsSourceReadBinding(options = {}) {
       || manifest.approvedPolicy.credentialAuditFileGuardSafe !== true) {
     throw failure('SOURCE_READ_UNQUALIFIED');
   }
+  return binding;
+}
+
+export function loadWindowsTimingRecoveryBinding(options = {}) {
+  const { binding, manifest } = loadVerifiedWindowsFilesystemBinding(options);
+  if (manifest.timingRecovery?.approved !== true || manifest.sourceRead?.approved !== true
+      || manifest.approvedPolicy.credentialAuditFileGuardSafe !== true) throw failure('TIMING_RECOVERY_UNQUALIFIED');
   return binding;
 }
 
@@ -710,6 +733,25 @@ export function createWindowsFilesystemAdapter({
         throw normalizeNativeError(error);
       }
     },
+    // Optional in older bindings; callers must refuse rather than use a
+    // path-based unlink when this exact-object/content mutation is absent.
+    ...(typeof native.deleteExactFile === "function" ? {
+      deleteExactFile(path, evidence, peerPath = null) {
+        for (const key of ["device", "inode"]) {
+          if (typeof evidence?.[key] !== "string" || !/^(?:0|[1-9][0-9]{0,19})$/u.test(evidence[key])
+              || BigInt(evidence[key]) > 18446744073709551615n) throw failure("INVALID_IDENTITY");
+        }
+        if (!Number.isSafeInteger(evidence.byteSize) || evidence.byteSize < 0
+            || !/^[0-9a-f]{64}$/u.test(evidence.sha256 ?? "")
+            || (peerPath !== null && typeof peerPath !== "string")) throw failure("INVALID_CONFIGURATION");
+        const result = call(native, "deleteExactFile", [path, {
+          device: evidence.device, inode: evidence.inode,
+          byteSize: evidence.byteSize, sha256: evidence.sha256,
+        }, peerPath]);
+        if (result?.deleted !== true) throw failure("INVALID_RESULT");
+        return Object.freeze({ deleted: true });
+      },
+    } : {}),
     replaceFile(path, identity, data) {
       const expected = normalizeIdentity(identity);
       if (!Buffer.isBuffer(data) && !(data instanceof Uint8Array)) throw failure("INVALID_DATA");

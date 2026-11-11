@@ -26,6 +26,7 @@ import {
   WINDOWS_BROWSER_PROFILE_CONTRACT, WINDOWS_BROWSER_PROFILE_METHODS,
   WINDOWS_REPORT_PUBLICATION_CONTRACT, WINDOWS_REPORT_PUBLICATION_METHODS,
   WINDOWS_LOCAL_VOLUME_QUERY_CONTRACT, WINDOWS_LOCAL_VOLUME_QUERY_METHODS,
+  WINDOWS_TIMING_RECOVERY_CONTRACT, WINDOWS_TIMING_RECOVERY_METHODS,
 } from "../src/platform/windows-filesystem.js";
 
 const require = createRequire(import.meta.url);
@@ -97,6 +98,12 @@ export function createWindowsFilesystemBindingManifest({ bytes, binding }) {
     throw failure("WINDOWS_FILESYSTEM_MANIFEST_NATIVE_CLAIM_UNREVIEWED");
   }
   const hasSourceRead = native.sourceReadContractVersion !== undefined;
+  const hasTimingRecovery = native.timingRecoveryContractVersion !== undefined
+    || native.openTimingRecoveryFile !== undefined || native.restoreTimingRecoveryFile !== undefined;
+  if (hasTimingRecovery && (native.timingRecoveryContractVersion !== WINDOWS_TIMING_RECOVERY_CONTRACT
+      || !WINDOWS_TIMING_RECOVERY_METHODS.every(name => typeof native[name] === 'function'))) {
+    throw failure('WINDOWS_FILESYSTEM_MANIFEST_INVALID_TIMING_RECOVERY');
+  }
   const hasReleaseOperation = native.protectedDirectoryGuardContractVersion !== undefined;
   const hasLegacyStateRead = native.legacyStateReadContractVersion !== undefined;
   const hasBrowserProfile = native.browserProfileContractVersion !== undefined;
@@ -129,6 +136,9 @@ export function createWindowsFilesystemBindingManifest({ bytes, binding }) {
     throw failure('WINDOWS_FILESYSTEM_MANIFEST_INVALID_LOCAL_VOLUME_QUERY');
   }
   return Object.freeze({
+    ...(hasTimingRecovery ? { timingRecovery: {
+      contractVersion: WINDOWS_TIMING_RECOVERY_CONTRACT, approved: true,
+    } } : {}),
     ...(hasBrowserProfile ? { browserProfile: {
       contractVersion: WINDOWS_BROWSER_PROFILE_CONTRACT, approved: true,
     } } : {}),

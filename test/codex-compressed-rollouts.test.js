@@ -222,8 +222,11 @@ nativeTest("compressed reads enforce expansion, physical bytes, line limits, abo
     }
   }, (error) => error.name === "AbortError");
   assert.equal(chunks, 1);
+  const original = await readFile(value.path(A));
   await symlink(value.path(A), value.path(B));
-  await assert.rejects(consume(value.path(B)), safeCode("codex_rollout_content_invalid"));
+  // The native source guard refuses the link before frame/content decoding.
+  await assert.rejects(consume(value.path(B)), safeCode("codex_rollout_source_changed"));
+  assert.deepEqual(await readFile(value.path(A)), original);
 });
 
 nativeTest("compressed immutable snapshots reject changes and checkpoint plans retain logical prefix identity", async (t) => {

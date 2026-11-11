@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import * as zlib from "node:zlib";
 import { createSourcePlanSummaryContract } from "../src/export/index.js";
 import { exportCompatibilityTuple } from "../src/export-contract.js";
@@ -407,7 +408,6 @@ test("prior checkpoint-scan compatibility refuses resume before recovering a pen
   const sourcePlan = await createCodexExportSourcePlan({ codexHome: value.home, startAt: START_AT, endAt: END_AT });
   const compatibility = structuredClone(exportCompatibilityTuple());
   assert.equal(compatibility.implementation.checkpointScanVersion, "codex-export-checkpoint-scan-v0.9");
-  compatibility.implementation.checkpointScanVersion = "codex-export-checkpoint-scan-v0.4";
   const descriptor = buildExportWorkspaceDescriptor({
     participantId: deriveParticipantId(SECRET), createdAt: END_AT,
     coveredAt: { startAt: START_AT, endAt: END_AT }, compatibility, sourcePlan,
@@ -425,17 +425,27 @@ test("prior checkpoint-scan compatibility refuses resume before recovering a pen
     resources = workspace.resourceUsage();
     assert.equal(resources.recoveryReservations, 0);
   } finally { workspace.close(); }
+  // Manufacture retained old evidence outside the current writer. The closed
+  // current compatibility schema cannot legitimately publish old scan versions.
+  const prior = new DatabaseSync(databaseFile);
+  try {
+    const stored = JSON.parse(prior.prepare("SELECT value_json FROM workspace_meta WHERE key='descriptor'").get().value_json);
+    stored.compatibility.implementation.checkpointScanVersion = "codex-export-checkpoint-scan-v0.4";
+    prior.prepare("UPDATE workspace_meta SET value_json=? WHERE key='descriptor'").run(stableJson(stored));
+  } finally { prior.close(); }
   const before = await readFile(databaseFile);
   await assert.rejects(resumeLocalExportWorkspace({ directory, codexHome: value.home, secret: SECRET }),
-    (error) => error instanceof ExportWorkspaceError && error.code === "export_workspace_checkpoint_mismatch");
+    (error) => error instanceof ExportWorkspaceError && error.code === "export_workspace_schema");
   assert.deepEqual(await readFile(databaseFile), before, "compatibility refusal must not write even the invocation bookkeeping");
-  const preserved = await openExportWorkspace({ directory });
+  const preserved = new DatabaseSync(databaseFile, { readOnly: true });
   try {
-    assert.deepEqual(preserved.resourceUsage(), resources);
-    assert.equal(preserved.getDescriptor().compatibility.implementation.checkpointScanVersion, "codex-export-checkpoint-scan-v0.4");
-    assert.equal(preserved.loadSourceCheckpoint(sourcePlan.sources[0].sourceKey).checkpointSeq, 0);
-    assert.equal(preserved.isPoisoned(), false);
-    assert.equal(preserved.isScanComplete(), false);
+    const stored = JSON.parse(preserved.prepare("SELECT value_json FROM workspace_meta WHERE key='descriptor'").get().value_json);
+    assert.equal(stored.compatibility.implementation.checkpointScanVersion, "codex-export-checkpoint-scan-v0.4");
+    assert.equal(preserved.prepare("SELECT recovery_reservations FROM resource_usage").get().recovery_reservations, resources.recoveryReservations);
+    assert.equal(preserved.prepare("SELECT started_at_ms FROM resource_invocations").get().started_at_ms, 100);
+    assert.equal(preserved.prepare("SELECT checkpoint_seq FROM source_checkpoints WHERE source_key=?").get(sourcePlan.sources[0].sourceKey).checkpoint_seq, 0);
+    assert.equal(preserved.prepare("SELECT value_json FROM workspace_meta WHERE key='poison'").get(), undefined);
+    assert.notEqual(preserved.prepare("SELECT value_json FROM workspace_meta WHERE key='scan_status'").get()?.value_json, stableJson("complete"));
   } finally { preserved.close(); }
 });
 

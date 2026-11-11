@@ -61,9 +61,19 @@ They remain private iteration/publication metadata, including worker transport,
 and never enter dashboard DTOs. Current quota publication is independent of
 history generation; the overview balance uses the independently published weekly
 `codex` window. A new balance invalidates previously computed remaining-hour
-outputs until analysis recomputes them. `task-workload-v15` uses recovery stages
-instead of historical percentage high watermarks; see
+outputs until analysis recomputes them. `task-workload-v16` retains recovery
+stages and applies proven inclusive usage-gap ranges only to intersecting
+receipt windows. Unknown or legacy whole-source gap extents remain unavailable;
+missing usage cannot produce zero expected consumption. This is an analysis
+policy update, with no persisted schema or cache-format change; see
 [workload semantics](./local-index-schema.md#source-state).
+
+The local single-account capacity policy permits the selected same-plan
+historical fit as an estimation input without assigning it to the current
+account. Explicit foreign-account inputs and known account-change boundaries
+remain refused/separated. Existing estimate labels, DTOs and persisted formats
+are unchanged; the [expected-line contract](../design/composition-aware-expected-line.md#historical-plan-comparison-populations)
+records the owner's 2026-11-10 decision.
 
 | Contract | Canonical source | Output and validation |
 | --- | --- | --- |
@@ -71,7 +81,7 @@ instead of historical percentage high watermarks; see
 | Current local export set v1 | `schemas/local-export-set-v1/manifest.schema.json` | Exact schema digest, compressed artifact and record verification; export tests |
 | Local Codex plan/model vocabulary | `packages/codex-catalog/` public root | `apps/web/public/codex-catalog.generated.js`; `pnpm run codex:browser:check` |
 | Recoverable export deletion | `schemas/export-deletion-v0.4/journal.schema.json` plus earlier transaction schemas | New v0.4 journals only for local export set v1; original journal/commit validators retained only for exact interrupted-transaction recovery |
-| Workspace discard | `schemas/export-workspace-discard-v0.1/` | Journal, preflight, commit marker and receipt; isolated discard tests |
+| Workspace discard | `schemas/export-workspace-discard-v0.2/` | Exact U64 identity commitments; token-only journal, preflight, marker and receipt. Original v0.1 schema bytes remain frozen; current runtime refuses v0.1 transactions without migration. |
 | Historical accounting snapshot | `schemas/provider-accounting-snapshot-v0.1.schema.json` | Retained accounting readback only; no retired provider collection |
 | Historical synthetic evidence | `schemas/product-synthetic-v0.1/` | Frozen evidence readback, no preparation or transport entrypoint |
 | Release evidence | `schemas/release-evidence-v1/manifest.schema.json` | Exact candidate manifest/artifact validator; release gates remain separate |
@@ -84,6 +94,19 @@ and limitation for every declared field. Its outputs are deterministic. Change
 canonical inputs and run `pnpm run export:contract:generate`; never edit generated
 artifacts by hand. The local browser catalog has its own generator and contains
 no consent or upload API.
+
+Workspace discard v0.2 commits to canonical decimal U64 Node filesystem
+identities read with BigInt stats, through plan, confirmation, recovery and
+quarantine/control cleanup. Its commitment domains use v2; no identity passes
+through Number. Invalid or out-of-range identities are refused. Native Windows
+U128 file identities are a separate contract and are not truncated into this
+one. Public token helpers require canonical identity strings. Counts, byte
+bounds, fixed removal order and token lengths are unchanged; raw identities and
+private paths remain absent from persisted controls. Prior confirmation tokens
+cannot authorize a new plan. Current validators admit v0.2 only; prepared,
+committed, quarantined and terminal v0.1 controls/receipts are preserved and
+refused. Interrupted v0.1 recovery needs a separate protected-copy review;
+there is no relabeling, token reinterpretation or permanent legacy writer.
 
 ## Local export v1
 
@@ -193,7 +216,7 @@ capability and authorization routes, encrypted report delivery, typed cohort and
 bucket storage, idempotent per-device report revisions, and owner-erasure/restore
 coverage. Usage consent cannot authorize performance. Local timing source and
 scheduler integration are qualified separately from hosted chart publication.
-Timing SQLite schemas are primary 12 and supplement 13 while measurement methods remain 2/3. The single correlation-key record is bound to `usage-monitor-timing-identity-v1`. Existing stores are inspected read-only before any writable connection or journal pragma. Unknown identity markers, duplicate metadata, older schemas 2–11 and newer schemas are refused without in-place conversion. A separate transition package must reconcile all source/turn digests, fingerprints and parser state; changing a schema number cannot convert an HMAC namespace. Missing preimages or ambiguous mappings block cutover and preserve the old store. The physical schema boundary also prevents older writers from reopening new stores. Source parser version 18 recognizes GPT-6.1 Sol and Ultrafast and is unchanged by compressed-source recovery. Plain and Zstd representations retain one logical source identity, with plaintext preferred when both exist. Both timing stores share a bounded in-memory decoder; durable staging and logical cursors resume after restart, and completed unchanged compressed sources skip decoding. No decoded transcript is persisted. Still-present, verified sources replay through bounded staging; completed old rows remain readable through cancellation and restart until the final verified chunk atomically replaces them. Missing sources and failed or unfinished replacements retain their last good rows and prior parser provenance. Older writers refuse the upgraded stores.
+Timing SQLite schemas are primary 12 and supplement 13 while measurement methods remain 2/3. The single correlation-key record is bound to `usage-monitor-timing-identity-v1`. Existing stores are inspected read-only before any writable connection or journal pragma on the original. Only SQLite error 776 can invoke the optional native timing-recovery capability: hold exclusive original main/journal byte locks, recover a bounded protected copy, validate the current schema/namespace/key/parser and integrity, then restore through the same held handles. Original main bytes are flushed and verified before invalidating the original journal; normal read-only admission repeats afterward. Unknown identity markers, duplicate metadata, older schemas 2–11 and newer schemas are refused without changing either original file. There is no migration or persistent recovery cache; process death can leave an owner-only disposable copy. A separate transition package must reconcile all source/turn digests, fingerprints and parser state; changing a schema number cannot convert an HMAC namespace. Missing preimages or ambiguous mappings block cutover and preserve the old store. The physical schema boundary also prevents older writers from reopening new stores. Source parser version 18 recognizes GPT-6.1 Sol and Ultrafast and is unchanged by compressed-source recovery. Plain and Zstd representations retain one logical source identity, with plaintext preferred when both exist. Both timing stores share a bounded in-memory decoder; durable staging and logical cursors resume after restart, and completed unchanged compressed sources skip decoding. No decoded transcript is persisted. Still-present, verified sources replay through bounded staging; completed old rows remain readable through cancellation and restart until the final verified chunk atomically replaces them. Missing sources and failed or unfinished replacements retain their last good rows and prior parser provenance. Older writers refuse the upgraded stores.
 Old rows retain existing TPS/TTFT
 with unavailable new fields. Receipt timing
 wins when qualified; tool-free timing is a single-sample fallback, never a
@@ -205,24 +228,24 @@ Those gates must not delay continuity collection or alter cache calculations.
 
 ### Exact local filesystem identities
 
-New collector source plans v0.2 serialize `device` and `inode` as canonical
-unsigned decimal strings, bounded to 64 bits. The platform reads these values
-from BigInt stats before conversion of unrelated bounded numeric metadata.
-Legacy plan versions continue to validate only safe integer identities; unsafe
-Number values cannot be repaired by rounding. Checkpoint restoration and slicing
-preserve the original plan version and digest. Existing Claude transcript and
-status-line workspace metadata is legacy immutable state: inspection may identify
-it without reading its source paths, while resume fails closed before source
-access. No new Claude source plan is created. Account/session pseudonym derivation
-and secrets are unchanged.
+Collector source plan v0.3 and supplemental source plan v3 serialize `device`
+and `inode` as canonical unsigned decimal strings, bounded to U64 and U128
+respectively. Native path and held-handle identity remain exact before any
+source content is read. The primary Codex and collector plan validators share
+the reviewed field-aware identity normalization. New collector and supplemental
+plans reject Number identities, older versions and unknown versions. Their
+commitment domains advance together; restart reconstruction preserves the exact
+current plan and digest. Private source-plan bundles use v0.3 and reject old
+envelopes before invoking source verification. Account/session pseudonym
+derivation, quota occurrence identity and secrets are unchanged.
 
-Supplemental source plan v2 carries these exact file-prefix bindings, retaining
-its U64 limit. Local export workspace v1 uses physical schema 7. Codex source
-identities are exact canonical decimal strings: volume identities are bounded
-to U64 and file identities to U128. They are private workspace bindings and do
-not enter the public source summary. Supplemental identities retain their
-tagged `u64:` encoding. Numeric affinity must never coerce either identity.
-Only physical schema 7 is executable in the current reader. Earlier schema 4/5/6 workspaces
+Local export workspace v2 uses physical schema 8. Both primary and supplemental
+identities use exact canonical decimal TEXT with distinct U64/U128 SQL bounds,
+without a supplemental `u64:` codec. These are private workspace bindings and
+do not enter the public source summary. Numeric affinity must never coerce
+either identity. Existing retired-provider metadata never enables source access
+or resume, and no retired-provider plan can be created.
+Only physical schema 8 is executable in the current reader. Earlier schema 4/5/6/7 workspaces
 are refused before writable configuration and retained unchanged as archives;
 there is no compatibility reader, conversion or schema relabeling. Start new
 preparation from available sources, retaining any earlier sealed evidence and

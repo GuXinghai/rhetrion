@@ -2,7 +2,7 @@
 // cumulative prefix remains explicitly unverified; legacy quota observations
 // remain independent of this selection.
 // Raw provider identities stay inside this bounded, scan-local reconciler.
-import {codexTierObservation} from './tier-normalization.js';
+import {codexTierObservation, isCodexApiSession} from './tier-normalization.js';
 const KEYS = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens',
   'output_tokens', 'reasoning_output_tokens', 'total_tokens'];
 const id = value => typeof value === 'string' && value.length > 0 && value.length <= 256
@@ -46,6 +46,7 @@ export function createResponseUsagePlan({ identityKey, maximumResponses = 100_00
   const responses = new Map(), turns = new Map(), legacy = new Map(), foreignTurns = new Set(), checkpoints=new Map();
   let own = null, activeTurn = null, settingsModel = null, records = 0, modern = false, legacyTotal = null, legacyTotalAt = NaN;
   let settingsRevision=0,pendingCheckpoint=null,settingsTier=null,tierRevision=0;
+  let excludedApiSession = false;
   const diagnostics = { responses: 0, duplicateResponses: 0, foreignResponses: 0,
     unattributedModels: 0, unverifiedPrefixTurns: 0, modelsRecovered:0 };
   function turn(key) {
@@ -58,7 +59,11 @@ export function createResponseUsagePlan({ identityKey, maximumResponses = 100_00
     observe(record, locator) {
       if (++records > maximumRecords) fail('codex_response_usage_resource_limit');
       const p = record?.payload;
-      if (record?.type === 'session_meta') { own = id(p?.id) ? p.id : null; return; }
+      if (record?.type === 'session_meta') {
+        own = id(p?.id) ? p.id : null;
+        excludedApiSession ||= isCodexApiSession(p);
+        return;
+      }
       if(record?.type==='compacted'){
         pendingCheckpoint=null;
         const latest=p?.latest_token_usage_record;
@@ -317,7 +322,7 @@ export function createResponseUsagePlan({ identityKey, maximumResponses = 100_00
       if (responses.size && [...legacy.values()].some(item => item.turn === null)) {
         fail('codex_response_usage_legacy_scope_unattributed');
       }
-      return { modern, diagnostics, responseAt: locator => byLocator.get(locator) ?? null,
+      return { modern, diagnostics, excludedApiSession, responseAt: locator => byLocator.get(locator) ?? null,
         suppressLegacyAt: locator => suppressed.has(locator) };
     },
   };

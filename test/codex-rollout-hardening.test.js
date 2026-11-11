@@ -1267,6 +1267,11 @@ test("a deep new fork chain rescans required ancestors once and terminates", asy
     assert.equal(advanced.sourcesQuarantined, 0);
     assert.equal(advanced.sourcesRescanned + advanced.sourcesNew, depth + 1);
     assert.equal(storeEventCount(root), depth + 1);
+    withReadOnlyStore(storePath(root), database => {
+      const reasons = database.prepare("SELECT reason FROM source_change WHERE mode='source_replace'")
+        .all().map(row => row.reason);
+      assert.ok(reasons.includes("session_rescan"));
+    });
 
     const unchanged = await ingest(root);
     assert.equal(unchanged.unchanged, true);
@@ -1375,19 +1380,24 @@ test("a changed committed prefix is rescanned instead of retaining stale history
 });
 
 
-test("upgrading a legacy tail quarantine restores only complete original records without editing the source", async () => {
+test("replaying an old-parser tail quarantine preserves current schema and original source bytes", async () => {
   const prefix = `${sessionMeta()}\n${turnContext()}\n${tokenCount()}\n`;
   const tail = tokenCount(250, { last: 150 }); const original = prefix + tail;
   const { root, source } = await rolloutHome(original);
   try {
     await build(root);
-    // Model the old defect in a disposable synthetic index, never user state.
+    // Retained parser provenance may be old inside the current schema. Old
+    // physical schemas require an explicit copy conversion, not runtime repair.
     const db = openLocalIndexStore(storePath(root));
-    for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'calculation_%'").all()) {
-      db.exec(`DROP TRIGGER ${row.name}`);
-    }
-    db.exec("ALTER TABLE store_state DROP COLUMN calculation_revision; ALTER TABLE source DROP COLUMN carry_tier_source; BEGIN IMMEDIATE; DELETE FROM usage_event; UPDATE source SET scanned_bytes=0,quarantine_code='codex_rollout_tail_incomplete',parser_version='local-index-rollout-typed-v2+unified-rollout-typed-v21'; PRAGMA user_version=6; COMMIT"); db.close();
+    const version = db.prepare("PRAGMA user_version").get().user_version;
+    try {
+      db.exec("BEGIN IMMEDIATE; DELETE FROM usage_event; UPDATE source SET scanned_bytes=0,verified_bytes=0,quarantine_code='codex_rollout_tail_incomplete',parser_version='local-index-rollout-typed-v2+unified-rollout-typed-v21'; COMMIT");
+    } finally { db.close(); }
     await ingest(root); assert.equal(storeEventCount(root), 1); assert.deepEqual(storeQuarantineCodes(root), []);
+    withReadOnlyStore(storePath(root), database => {
+      assert.equal(database.prepare("PRAGMA user_version").get().user_version, version);
+      assert.equal(database.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('store_state') WHERE name='calculation_revision'").get().n, 1);
+    });
     const handle = await open(source, 'r'); try { assert.equal(await handle.readFile('utf8'), original); } finally { await handle.close(); }
     await ingest(root); assert.equal(storeEventCount(root), 1);
     await appendFile(source, "\n"); await ingest(root); assert.equal(storeEventCount(root), 2);

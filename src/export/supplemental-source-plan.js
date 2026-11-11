@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { isProxy } from "node:util/types";
 import { stableJson } from "./canonical-json.js";
+import { normalizeExportSourceFilesystemId } from "./source-plan-summary.js";
 
-export const EXPORT_SUPPLEMENTAL_SOURCE_PLAN_VERSION = "supplemental-export-source-plan-v2";
-const LEGACY_SOURCE_PLAN_VERSION = "supplemental-export-source-plan-v1";
-function filesystemId(value) { return safeCount(value) || (typeof value === "string" && /^(0|[1-9][0-9]{0,19})$/.test(value) && BigInt(value) <= 18446744073709551615n); }
+export const EXPORT_SUPPLEMENTAL_SOURCE_PLAN_VERSION = "supplemental-export-source-plan-v3";
+function filesystemId(value, field) { return typeof value === "string" && normalizeExportSourceFilesystemId(value, field) === value; }
 export const SUPPLEMENTAL_SOURCE_KINDS = Object.freeze(["codex_collector_ledger"]);
 const SOURCE_KINDS = new Set(SUPPLEMENTAL_SOURCE_KINDS);
 const RETIRED_PERSISTED_SOURCE_KINDS = new Set(["claude_status_snapshot", "claude_transcript_jsonl"]);
@@ -43,7 +43,7 @@ export function assertCanonicalSupplementalCursorJson(value) { if (typeof value 
 function normalizeBinding(value) {
   value = snapshotObject(value);
   if (!value || typeof value !== "object" || Array.isArray(value) || !BINDING_KINDS.has(value.kind)) fail();
-  if (value.kind === "file_prefix") { const keys = ["kind", "device", "inode", "birthtimeMs", "prefixBytes", "prefixSha256"]; if (!exactKeys(value, keys) || !filesystemId(value.device) || !filesystemId(value.inode) || !safeCount(value.birthtimeMs) || !safeCount(value.prefixBytes) || !validSha256(value.prefixSha256)) fail(); return { kind: "file_prefix", device: value.device, inode: value.inode, birthtimeMs: value.birthtimeMs, prefixBytes: value.prefixBytes, prefixSha256: value.prefixSha256 }; }
+  if (value.kind === "file_prefix") { const keys = ["kind", "device", "inode", "birthtimeMs", "prefixBytes", "prefixSha256"]; if (!exactKeys(value, keys) || !filesystemId(value.device, "device") || !filesystemId(value.inode, "inode") || !safeCount(value.birthtimeMs) || !safeCount(value.prefixBytes) || !validSha256(value.prefixSha256)) fail(); return { kind: "file_prefix", device: value.device, inode: value.inode, birthtimeMs: value.birthtimeMs, prefixBytes: value.prefixBytes, prefixSha256: value.prefixSha256 }; }
   const keys = ["kind", "inventoryEntries", "inventoryBytes", "inventorySha256"]; if (!exactKeys(value, keys) || !safeCount(value.inventoryEntries) || !safeCount(value.inventoryBytes) || !validSha256(value.inventorySha256)) fail(); return { kind: "frozen_inventory", inventoryEntries: value.inventoryEntries, inventoryBytes: value.inventoryBytes, inventorySha256: value.inventorySha256 };
 }
 function normalizeSource(value, ordinal, allowRetired) {
@@ -62,10 +62,10 @@ function normalizeSource(value, ordinal, allowRetired) {
   return { ordinal, sourceKey: value.sourceKey, kind: value.kind, parserVersion: value.parserVersion, binding,
     initialCursorJson: assertCanonicalSupplementalCursorJson(value.initialCursorJson) };
 }
-function sourceDigest(sources) { return createHash("sha256").update("app-usagemonitor/supplemental-export-source-plan/v1\0").update(stableJson(sources)).digest("hex"); }
+function sourceDigest(sources) { return createHash("sha256").update("app-usagemonitor/supplemental-export-source-plan/v3\0").update(stableJson(sources)).digest("hex"); }
 function normalizeSources(sources, { allowRetired = false } = {}) { if (!Array.isArray(sources) || isProxy(sources) || sources.length > MAXIMUM_SOURCES) fail(); const names = Object.getOwnPropertyNames(sources); if (names.length !== sources.length + 1 || names.some((name) => name !== "length" && !/^\d+$/u.test(name)) || Object.getOwnPropertySymbols(sources).length > 0) fail(); const normalized = []; for (let ordinal = 0; ordinal < sources.length; ordinal += 1) { const descriptor = Object.getOwnPropertyDescriptor(sources, String(ordinal)); if (!descriptor || !Object.hasOwn(descriptor, "value") || isProxy(descriptor.value)) fail(); normalized.push(normalizeSource(descriptor.value, ordinal, allowRetired)); } if (new Set(normalized.map((source) => source.sourceKey)).size !== normalized.length) fail(); return normalized; }
 function sourceTotals(sources) { return sources.reduce((totals, source) => { if (source.binding.kind === "file_prefix") { totals.sourceFiles += 1; totals.sourceBytes += source.binding.prefixBytes; } else { totals.sourceFiles += source.binding.inventoryEntries; totals.sourceBytes += source.binding.inventoryBytes; } if (!safeCount(totals.sourceFiles) || !safeCount(totals.sourceBytes)) fail(); return totals; }, { sourceFiles: 0, sourceBytes: 0 }); }
 export function createSupplementalSourcePlan(options = {}) { if (!options || typeof options !== "object" || isProxy(options)) fail(); const descriptor = Object.getOwnPropertyDescriptor(options, "sources"); const sources = descriptor === undefined ? [] : (Object.hasOwn(descriptor, "value") ? descriptor.value : fail()); const normalized = normalizeSources(sources); return { schemaVersion: EXPORT_SUPPLEMENTAL_SOURCE_PLAN_VERSION, supplementalSourcePlanSha256: sourceDigest(normalized), sources: normalized }; }
 export function createEmptySupplementalSourcePlan() { return createSupplementalSourcePlan(); }
-export function normalizeSupplementalSourcePlan(value) { value = snapshotObject(value); const keys = ["schemaVersion", "supplementalSourcePlanSha256", "sources"]; if (!exactKeys(value, keys) || ![EXPORT_SUPPLEMENTAL_SOURCE_PLAN_VERSION, LEGACY_SOURCE_PLAN_VERSION].includes(value.schemaVersion) || !validSha256(value.supplementalSourcePlanSha256)) fail(); const sources = normalizeSources(value.sources, { allowRetired: true }); if (value.supplementalSourcePlanSha256 !== sourceDigest(sources)) fail(); if (value.schemaVersion === LEGACY_SOURCE_PLAN_VERSION && sources.some((source) => source.binding.kind === "file_prefix" && (!safeCount(source.binding.device) || !safeCount(source.binding.inode)))) fail(); return { schemaVersion: value.schemaVersion, supplementalSourcePlanSha256: value.supplementalSourcePlanSha256, sources }; }
+export function normalizeSupplementalSourcePlan(value) { value = snapshotObject(value); const keys = ["schemaVersion", "supplementalSourcePlanSha256", "sources"]; if (!exactKeys(value, keys) || value.schemaVersion !== EXPORT_SUPPLEMENTAL_SOURCE_PLAN_VERSION || !validSha256(value.supplementalSourcePlanSha256)) fail(); const sources = normalizeSources(value.sources, { allowRetired: true }); if (value.supplementalSourcePlanSha256 !== sourceDigest(sources)) fail(); return { schemaVersion: value.schemaVersion, supplementalSourcePlanSha256: value.supplementalSourcePlanSha256, sources }; }
 export function summarizeSupplementalSourcePlan(value) { const plan = normalizeSupplementalSourcePlan(value); const totals = sourceTotals(plan.sources); return { schemaVersion: plan.schemaVersion, supplementalSourcePlanSha256: plan.supplementalSourcePlanSha256, sourceCount: plan.sources.length, sourceFiles: totals.sourceFiles, sourceBytes: totals.sourceBytes }; }

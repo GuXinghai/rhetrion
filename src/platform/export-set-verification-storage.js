@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
   chmod,
@@ -6,11 +6,15 @@ import {
   mkdtemp,
   open,
   rm,
+  rmdir,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { readBoundedDirectoryEntries } from "./bounded-directory-reader.js";
+import { createWindowsOwnerOnlyArtifactReader } from "./local-metadata-bundle-files.js";
+import { createWindowsFilesystemAdapter, loadWindowsSourceReadBinding } from "./windows-filesystem.js";
+import { acquireProtectedSqliteFiles, configureGuardedSqliteConnection } from "./windows-protected-sqlite.js";
 
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 function requireFunction(value, name) {
@@ -49,20 +53,22 @@ function readOption(options, property, fallback, message) {
 function failureContext(createError) {
   const factory = requireFunction(createError, "createError");
   const issued = new WeakSet();
-  return Object.freeze({
-    fail(code) {
-      let error;
-      try {
-        error = Reflect.apply(factory, undefined, [code]);
-        if (!(error instanceof Error)) {
-          throw new TypeError("createError must return an Error");
-        }
-      } catch {
+  function issue(code) {
+    let error;
+    try {
+      error = Reflect.apply(factory, undefined, [code]);
+      if (!(error instanceof Error)) {
         throw new TypeError("createError must return an Error");
       }
-      issued.add(error);
-      throw error;
-    },
+    } catch {
+      throw new TypeError("createError must return an Error");
+    }
+    issued.add(error);
+    return error;
+  }
+  return Object.freeze({
+    error: issue,
+    fail(code) { throw issue(code); },
     issued(error) {
       try {
         return error instanceof Error && issued.has(error);
@@ -100,6 +106,7 @@ function sameIdentity(left, right) {
 }
 
 export function createExportSetVerificationStorageContext(contextOptions = {}) {
+  const windowsReader = createWindowsOwnerOnlyArtifactReader();
   const options = snapshotOptions(
     contextOptions,
     "verification storage options",
@@ -137,6 +144,10 @@ export function createExportSetVerificationStorageContext(contextOptions = {}) {
       root = resolve(directory);
     } catch {
       failures.fail("directory");
+    }
+    if (process.platform === "win32") {
+      await windowsReader.inspectDirectory(root, () => failures.error("directory"));
+      return root;
     }
     let stats;
     try {
@@ -180,6 +191,17 @@ export function createExportSetVerificationStorageContext(contextOptions = {}) {
     const failures = failureContext(createError);
     const canonicalize = requireFunction(canonicalJson, "canonicalJson");
     const path = artifactPath(root, basename);
+    if (process.platform === "win32") {
+      const bytes = await readWindowsBytes(path, label, maximumBytes, failures);
+      let value;
+      try { value = JSON.parse(bytes.toString("utf8")); }
+      catch { failures.fail(`${label}_json`); }
+      let canonical;
+      try { canonical = canonicalize(value); }
+      catch { failures.fail(`${label}_changed`); }
+      if (canonical !== bytes.toString("utf8")) failures.fail(`${label}_canonical`);
+      return { value, bytes };
+    }
     let pathStats;
     try {
       pathStats = await lstat(path);
@@ -233,6 +255,11 @@ export function createExportSetVerificationStorageContext(contextOptions = {}) {
       "owner-only byte createError could not be read");
     const failures = failureContext(createError);
     const path = artifactPath(root, basename);
+    if (process.platform === "win32") {
+      const bytes = await readWindowsBytes(path, label, maximumBytes, failures);
+      if (bytes.length !== expectedBytes) failures.fail(`${label}_size`);
+      return bytes;
+    }
     let pathStats;
     try {
       pathStats = await lstat(path);
@@ -257,6 +284,18 @@ export function createExportSetVerificationStorageContext(contextOptions = {}) {
     } finally {
       await handle?.close().catch(() => {});
     }
+  }
+
+  async function readWindowsBytes(path, label, maximumBytes, failures) {
+    return windowsReader.read({
+      path, label, maximumBytes,
+      createError(code) {
+        const suffix = code.startsWith(`${label}_`) ? code.slice(label.length + 1) : "changed";
+        const mapped = ({ not_regular: "type", link_count: "links",
+          changed_during_open: "changed", changed_during_read: "changed" })[suffix] ?? suffix;
+        return failures.error(`${label}_${mapped}`);
+      },
+    });
   }
 
   async function enumerateDirectory(operationOptions = {}) {
@@ -326,23 +365,60 @@ export function createExportSetVerificationStorageContext(contextOptions = {}) {
     let directory = null;
     let setupHandle = null;
     let database = null;
+    let sqliteLease = null;
+    let workspaceAdapter = null;
+    let workspaceIdentity = null;
+    const workspaceFiles = new Map();
+    function sameWindowsObject(left, right) {
+      return left?.volumeSerialNumber === right?.volumeSerialNumber && left?.fileId === right?.fileId;
+    }
+    async function removeWorkspace() {
+      if (directory === null) return;
+      if (!workspaceAdapter) return rm(directory, { recursive: true, force: true });
+      if (!sameWindowsObject(workspaceAdapter.inspectPath(directory).identity, workspaceIdentity)) {
+        failures.fail("verification_index");
+      }
+      // Delete only the exact known files, never recurse through a replacement.
+      const databaseDirectory = join(directory, "index");
+      for (const [path, identity] of workspaceFiles) {
+        try { workspaceAdapter.deleteFile(path, identity); }
+        catch (error) { if (error?.code !== "ENOENT") throw error; }
+      }
+      await rmdir(databaseDirectory).catch((error) => { if (error.code !== "ENOENT") throw error; });
+      await rmdir(directory);
+    }
     try {
-      directory = await mkdtemp(
-        join(selectedTemporaryRoot, "app-usagemonitor-set-verify-"),
-      );
-      await chmod(directory, 0o700);
-      const databaseFile = join(directory, "ids.sqlite3");
-      setupHandle = await open(
-        databaseFile,
-        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
-        0o600,
-      );
-      await setupHandle.chmod(0o600);
-      await setupHandle.close();
-      setupHandle = null;
+      if (process.platform === "win32") {
+        workspaceAdapter = createWindowsFilesystemAdapter();
+        const candidate = join(resolve(selectedTemporaryRoot), `app-usagemonitor-set-verify-${randomUUID()}`);
+        workspaceIdentity = workspaceAdapter.ensureDirectory(candidate);
+        directory = candidate;
+      } else {
+        directory = await mkdtemp(join(selectedTemporaryRoot, "app-usagemonitor-set-verify-"));
+        await chmod(directory, 0o700);
+      }
+      const databaseFile = process.platform === "win32"
+        ? join(directory, "index", "ids.sqlite3") : join(directory, "ids.sqlite3");
+      if (process.platform === "win32") {
+        sqliteLease = acquireProtectedSqliteFiles({ native: loadWindowsSourceReadBinding(), path: databaseFile });
+        // Capture identities while the native guards still pin both files.
+        for (const path of [databaseFile, `${databaseFile}-journal`]) {
+          workspaceFiles.set(path, workspaceAdapter.inspectPath(path).identity);
+        }
+      } else {
+        setupHandle = await open(
+          databaseFile,
+          constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+          0o600,
+        );
+        await setupHandle.chmod(0o600);
+        await setupHandle.close();
+        setupHandle = null;
+      }
       const { DatabaseSync } = await import("node:sqlite");
       database = new DatabaseSync(databaseFile);
-      database.exec("PRAGMA journal_mode=DELETE");
+      if (sqliteLease) configureGuardedSqliteConnection(database);
+      else database.exec("PRAGMA journal_mode=DELETE");
       database.exec("PRAGMA synchronous=FULL");
       database.exec("PRAGMA trusted_schema=OFF");
       database.enableDefensive?.(true);
@@ -432,7 +508,13 @@ export function createExportSetVerificationStorageContext(contextOptions = {}) {
             failure ??= error;
           }
           try {
-            await rm(directory, { recursive: true, force: true });
+            sqliteLease?.release();
+            sqliteLease = null;
+          } catch (error) {
+            failure ??= error;
+          }
+          try {
+            await removeWorkspace();
           } catch (error) {
             failure ??= error;
           }
@@ -462,8 +544,9 @@ export function createExportSetVerificationStorageContext(contextOptions = {}) {
       } catch {
         // The safe verification-index failure below owns this boundary.
       }
+      try { sqliteLease?.release(); } catch { /* Preserve setup failure. */ }
       if (directory !== null) {
-        await rm(directory, { recursive: true, force: true }).catch(() => {});
+        await removeWorkspace().catch(() => {});
       }
       if (failures.issued(error) || isReviewedResourceFailure(error)) {
         throw error;

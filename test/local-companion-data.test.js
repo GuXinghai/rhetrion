@@ -31,7 +31,7 @@ import { readLocalIndexProjection } from "../src/local-index-backend.js";
 import { usageProjection } from "../src/local-companion-usage-model.js";
 import { readLocalIndexWindowBreakdown } from "../src/local-index-window-breakdown.js";
 import { refreshLocalIndexAccountingCache } from "../src/local-index-accounting-cache.js";
-import { createProtectedFixtureDirectory } from "./helpers/windows-owner-only-fixture.js";
+import { createProtectedFixtureDirectory, writeInitialProtectedFixtureFile } from "./helpers/windows-owner-only-fixture.js";
 
 async function createFixtureStateDirectory(root) {
   const path = join(root, ".usage-monitor");
@@ -51,9 +51,9 @@ async function fixtureRoot() {
   const root = await mkdtemp(join(tmpdir(), "local-companion-data-"));
   await createFixtureStateDirectory(root);
   const reportDirectory = join(root, ".usage-monitor", "legacy-reports");
-  await mkdir(reportDirectory, { recursive: true });
+  createProtectedFixtureDirectory(reportDirectory);
   for (const [kind, file] of Object.entries(ARTIFACT_FILES)) {
-    await writeFile(join(reportDirectory, file), JSON.stringify({
+    writeInitialProtectedFixtureFile(join(reportDirectory, file), JSON.stringify({
       privateTopLevel: "/Users/private/source",
       snapshot: {
         status: "complete",
@@ -91,7 +91,7 @@ async function fixtureRoot() {
     "2026-07-24-monitoring-quality-report.html",
     "2026-07-24-codex-work-account-usage-report.html",
   ]) {
-    await writeFile(join(reportDirectory, file), "<!doctype html><title>report</title>");
+    writeInitialProtectedFixtureFile(join(reportDirectory, file), "<!doctype html><title>report</title>");
   }
   return root;
 }
@@ -748,8 +748,8 @@ test("missing and malformed artifacts fail closed while collector evidence remai
       }),
       { mode: 0o600 },
     );
-    await mkdir(join(root, ".usage-monitor", "legacy-reports"), { recursive: true });
-    await writeFile(
+    createProtectedFixtureDirectory(join(root, ".usage-monitor", "legacy-reports"));
+    writeInitialProtectedFixtureFile(
       join(root, ".usage-monitor", "legacy-reports", ARTIFACT_FILES.gradient),
       "{malformed",
     );
@@ -1452,6 +1452,26 @@ test("snapshot construction delegates the selected unified projection mode", asy
   } finally {
     await rm(root, { recursive: true });
   }
+});
+
+test("workload timings stay content-free and failing observers do not alter the snapshot", async () => {
+  const root = await fixtureRoot();
+  const options = { root, unifiedProjectionMode: "deferred", now: () => Date.parse("2026-07-25T12:00:00.000Z") };
+  try {
+    const baseline = await buildLocalCompanionSnapshot(options);
+    const timings = [];
+    let tick = 0;
+    const measured = await buildLocalCompanionSnapshot({ ...options, monotonicClock: () => ++tick,
+      onTiming: value => { timings.push(value); throw new Error("synthetic observer failure"); } });
+    assert.deepEqual(measured, baseline);
+    const workload = timings.filter(value => value.stage.startsWith("snapshot_workload"));
+    assert.deepEqual(workload.map(value => value.stage), ["snapshot_workload_quota", "snapshot_workload"]);
+    for (const value of workload) {
+      assert.deepEqual(Object.keys(value).sort(), ["outcome", "stage", "wallMs"]);
+      assert.equal(value.outcome, "completed");
+      assert.ok(value.wallMs > 0);
+    }
+  } finally { await rm(root, { recursive: true }); }
 });
 
 test("only coherent terminal history gaps at or below one percent are informational", () => {

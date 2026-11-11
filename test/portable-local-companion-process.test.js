@@ -128,8 +128,9 @@ test("local companion runs as a private synthetic child process and shuts down",
     const page = await fetch(`${origin}/`);
     assert.equal(page.status, 200);
     assert.equal(health.capabilities.localDashboard, true);
-    assert.equal(health.capabilities.centralServiceProxy, false);
-    assert.equal(health.capabilities.centralParticipantRelay, false);
+    assert.equal(health.capabilities.remoteProxy, false);
+    assert.equal(health.remoteUploadEnabled, false);
+    assert.equal(health.capabilities.arbitraryPathAccess, false);
     assert.equal(onboarding.status, "ready");
     assert.equal(onboarding.capabilities.customCodexHomeConfigured, true);
     assert.equal(overview.mode, "real_local_evidence");

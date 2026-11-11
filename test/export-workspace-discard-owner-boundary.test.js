@@ -100,7 +100,7 @@ function base32(bytes) {
 
 function discardJournalToken(text) {
   return base32(createHash("sha256")
-    .update("app-usagemonitor/export-workspace-discard-journal/v1")
+    .update("app-usagemonitor/export-workspace-discard-journal/v2")
     .update("\0")
     .update(text)
     .digest());

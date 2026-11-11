@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
@@ -10,23 +11,84 @@ import { SPEED_REPORT_FIELDS } from "./helpers/local-index-pricing-oracle.js";
 // one synthetic corpus at commit cf94e9a8. They keep the successor held to it
 // after the implementation is removed. See the README beside the fixture.
 
-const golden = JSON.parse(readFileSync(
+const frozenBytes = readFileSync(
   new URL("./fixtures/local-index-goldens/views.json", import.meta.url),
-  "utf8",
-));
+);
+const golden = JSON.parse(frozenBytes.toString("utf8"));
 let views;
 const readViews = () => views ??= readGoldenViewsFromStore();
 
-// Only the reviewed additive fields leave this historical projection. New or
-// changed fields elsewhere still fail the frozen contract; the removed values
-// are independently checked below, never copied into a regenerated fixture.
+// These reviewed cache-analysis fields changed meaning after the v1 fixture.
+// Keep its unchanged counts, coverage, token amounts and root metadata exact.
+// All replaced fields (including full breakdowns/recent rows) are independently
+// priced below with the exact candidate reader and public per-event ledger.
+// Never remove an entire impact or use a wildcard: unknown fields must fail.
+const REPRICED_CACHE_FIELDS = Object.freeze([
+  "pricedDrops", "unpricedDrops", "estimatedPremiumUsd", "estimatedPremiumUsdExact",
+  "standardApiPremiumUsd", "allowanceWeighting", "coveredSubtotal",
+  "estimateEvidence", "observationUnits",
+  "byChangeType", "byGapBand", "byOutcomeBucket", "byModel", "recent",
+]);
+const CACHE_IMPACTS = ["cacheSwitchImpact", "cacheContinuityImpact"];
+const CURRENT_BASIS_FAMILY = "codex_primary:speed_priced_api_equivalent:v5:published_speed_card_ratio_2026_09_29:event_time:observed_declared_scenario";
+
+// The accepted desktop-policy decision versioned these metadata fields and
+// publishes only the selected scenario. Express that contract with literals in
+// the expected view, never by stripping versions from the actual result. The
+// removed Fast calibration is still checked through the public summary below.
+function currentLayerContract(frozenLayer) {
+  const { weeklyCalibration, ...expected } = structuredClone(frozenLayer);
+  void weeklyCalibration;
+  const capacity = expected.allowanceCapacityByScenario;
+  capacity.schemaVersion = "codex-primary-allowance-capacity-v0.2";
+  capacity.basisFamilyId = CURRENT_BASIS_FAMILY;
+  capacity.planScope.basisFamilyId = CURRENT_BASIS_FAMILY;
+  capacity.planScope.basisId = `${CURRENT_BASIS_FAMILY}:unresolved_as_standard`;
+  Object.assign(capacity.scenarios.unresolved_as_standard.basis, {
+    version: 5, basisFamilyId: CURRENT_BASIS_FAMILY,
+    basisId: `${CURRENT_BASIS_FAMILY}:unresolved_as_standard`,
+  });
+  delete capacity.scenarios.unresolved_as_fast;
+  capacity.unknownSpeedPolicy = { mode: "standard", customFastRatioBps: null };
+  capacity.selectedScenario = "unresolved_as_standard";
+  expected.planScopedTimeline.schemaVersion = "local-plan-scoped-accounting-timeline-v2";
+  expected.planScopedTimeline.encoding = "plan_bucket_v2";
+  return expected;
+}
+
+function desktopWeeklyContract(frozenSummary) {
+  const expected = structuredClone(frozenSummary);
+  for (const population of [expected, ...expected.planPopulations]) {
+    population.status = "insufficient_evidence";
+    population.estimate = null;
+    population.validation.selectedCostBasis = "speed_lower";
+    population.validation.sameResetHoldoutMeanAbsoluteErrorPercentagePoints = null;
+    population.sourceCounts.qualifyingResetValues = 0;
+    population.recentResets = [];
+  }
+  return expected;
+}
+
 function standardReportView(report) {
   const copy = structuredClone(report);
   for (const period of copy.usage) {
     for (const group of [period, period.spark]) {
       for (const row of [group, ...group.byModel, ...group.modelUsage]) {
         for (const field of SPEED_REPORT_FIELDS) delete row[field];
+        for (const field of ["speedWeighting", "declaredSpeedWeighting"]) {
+          for (const cells of Object.values(row[field] ?? {})) {
+            if (!Object.hasOwn(cells, "gpt-6.1-terra")) continue;
+            assert.deepEqual(cells["gpt-6.1-terra"], { events: 0, apiPriceEquivalentUsd: 0 },
+              "this frozen corpus has no Terra evidence; a nonzero new cell cannot be projected away");
+            delete cells["gpt-6.1-terra"];
+          }
+        }
       }
+    }
+  }
+  for (const field of CACHE_IMPACTS) {
+    for (const period of copy[field].periods) {
+      for (const key of REPRICED_CACHE_FIELDS) delete period[key];
     }
   }
   return copy;
@@ -48,11 +110,57 @@ function expectSame(label, expected, actual, minimumValues) {
   assert.ok(stats.exact + stats.money >= minimumValues, `${label}: compared ${stats.exact + stats.money} values`);
 }
 
-test("the frozen Standard reports remain unchanged", async () => {
+test("the historical fixture and public synthetic identity input stay pinned", async () => {
+  assert.equal(createHash("sha256").update(frozenBytes).digest("hex"),
+    "c1c98d993313dd391c7cadd01af200feaa5a5cc47a401f1b39f473a29fb33cdd");
+  assert.equal((await readViews()).syntheticSalt,
+    "807f5447e3dc069353223ccb3034b98c2b3195af9be869a45b8ffd75b5d8f818");
+});
+
+test("unchanged Standard report fields remain frozen across reviewed catalog and cache-analysis changes", async () => {
   const actual = await readViews();
   assert.equal(actual.corpus, golden.corpus, "the generator still produces the corpus the goldens were made from");
   for (const [name] of GOLDEN_CLOCKS) {
-    expectSame(`Standard report at ${name}`, golden.reports[name], standardReportView(actual.reports[name]), 400);
+    expectSame(`Standard report at ${name}`, standardReportView(golden.reports[name]), standardReportView(actual.reports[name]), 400);
+  }
+});
+
+test("the historical report projection rejects new fields, changed retained totals and nonzero Terra evidence", async () => {
+  const actual = await readViews();
+  const name = GOLDEN_CLOCKS[0][0];
+  const expected = standardReportView(golden.reports[name]);
+  for (const change of [
+    report => { report.cacheSwitchImpact.periods[0].cacheReadDrops += 1; },
+    report => { report.cacheContinuityImpact.periods[0].unexpectedField = true; },
+    report => { report.cacheSwitchImpact.unexpectedField = true; },
+    report => { report.usage[0].events += 1; },
+  ]) {
+    const changed = structuredClone(actual.reports[name]);
+    change(changed);
+    const differences = [];
+    compareProjections(expected, standardReportView(changed), "$", differences);
+    assert.ok(differences.length > 0);
+  }
+  const changed = structuredClone(actual.reports[name]);
+  changed.usage[0].speedWeighting.standard["gpt-6.1-terra"].events = 1;
+  assert.throws(() => standardReportView(changed), { code: "ERR_ASSERTION" });
+});
+
+test("current cache-impact amounts, coverage and full breakdowns equal exact per-event public pricing", async () => {
+  const actual = await readViews();
+  for (const [name] of GOLDEN_CLOCKS) {
+    for (const key of CACHE_IMPACTS) {
+      expectSame(`${name}/${key}`, actual.cacheImpactOracles[name][key], actual.reports[name][key], 100);
+    }
+    for (const period of actual.reports[name].usage) {
+      for (const group of [period, period.spark]) {
+        for (const field of ["speedWeighting", "declaredSpeedWeighting"]) {
+          for (const mode of ["standard", "fast", "ultrafast", "unknown"]) {
+            assert.deepEqual(group[field][mode]["gpt-6.1-terra"], { events: 0, apiPriceEquivalentUsd: 0 });
+          }
+        }
+      }
+    }
   }
 });
 
@@ -62,10 +170,38 @@ test("historical Standard work identities remain frozen across project-policy ch
     expectSame(`per-event Standard work at ${name}`, golden.work[name], actual.standardWork[name], 40);
 });
 
-test("the frozen calibration layers remain unchanged", async () => {
+test("historical calibration stays frozen and remaining layer fields match the explicit desktop version contract", async () => {
   const actual = await readViews();
   for (const name of ["no-ledger", "ledger"]) {
-    expectSame(`calibration layer (${name})`, golden.layers[name], actual.layers[name], 300);
+    const historical = golden.layers[name].weeklyCalibration;
+    const { weeklyCalibration: desktop, ...remaining } = actual.layers[name];
+    void desktop;
+    expectSame(`Standard calibration (${name})`, historical, actual.standardCalibration[name], 100);
+    expectSame(`historical Fast calibration (${name})`,
+      golden.layers[name].allowanceCapacityByScenario.scenarios.unresolved_as_fast.calibration,
+      actual.historicalFastCalibration[name], 80);
+    expectSame(`remaining calibration layer (${name})`, currentLayerContract(golden.layers[name]), remaining, 200);
+  }
+});
+
+test("desktop Standard resolves only unknown speed and retains unavailable observed Ultrafast evidence", async () => {
+  const actual = await readViews();
+  for (const name of ["no-ledger", "ledger"]) {
+    const current = actual.layers[name].weeklyCalibration;
+    expectSame(`desktop default calibration (${name})`, desktopWeeklyContract(golden.layers[name].weeklyCalibration), current, 100);
+    assert.ok(actual.calibrationEvidence[name].observedUltrafastEvents > 0);
+    assert.ok(actual.calibrationEvidence[name].unavailableLowerBoundaries > 0);
+    assert.equal(current.validation.selectedCostBasis, "speed_lower");
+    assert.equal(current.status, "insufficient_evidence");
+    assert.equal(current.estimate, null);
+    assert.equal(current.sourceCounts.qualifyingResetValues, 0);
+    assert.deepEqual(current.recentResets, []);
+    for (const population of current.planPopulations) {
+      assert.equal(population.validation.selectedCostBasis, "speed_lower");
+    }
+    assert.equal(actual.standardCalibration[name].validation.selectedCostBasis, "standard_api");
+    assert.equal(actual.standardCalibration[name].sourceCounts.qualifyingResetValues, 2);
+    assert.equal(actual.standardCalibration[name].status, "estimated");
   }
 });
 

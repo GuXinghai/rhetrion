@@ -84,6 +84,16 @@ step fails.
   `FlushFileBuffers`, close/reopen, and identity/security revalidation.
 - `deleteFile(path, identity)` reopens the expected file, compares its handle
   identity and security, and marks that exact handle for deletion.
+- `deleteExactFile(path, evidence, peerPath)` is the optional export cleanup
+  primitive. It compares the journal's exact decimal Node stat device/inode,
+  byte size and SHA-256 on one held handle, denying writes and deletion while
+  hashing and marking that handle for deletion. Parents are held without delete
+  sharing. A null peer requires one link; a non-null peer requires exactly two
+  links, the same native 128-bit identity and protected parent, and distinct
+  canonical names. Other filesystem readers still reject multiple links.
+  Hashing uses an ephemeral silent context, never a credential/key container.
+  Old bindings without this operation cannot perform export/discard cleanup;
+  there is no path-unlink fallback or general production-policy promotion.
 - `replaceFile(path, expectedIdentity, bytes)` creates a protected temporary
   file in the already-open parent directory, flushes and validates it, and
   atomically renames it over the target with `NtSetInformationFile` using the
@@ -285,6 +295,11 @@ Each native read is capped at 64 KiB before allocation. Source leases share the
 bounded 64-slot guard registry, with source-only validation at their public close
 entrypoint. The common JavaScript source-file adapter splits larger buffer reads
 and exposes a FileHandle-like interface to the existing readers.
+Source acquisition reports the fixed `WINDOWS_FILESYSTEM_SOURCE_BUSY` category
+for sharing/lock contention, including an ancestor held with conflicting DELETE
+access. Actual access-denied/write-protected opens retain their existing refusal.
+This distinguishes contention without exposing paths or raw OS error context;
+it neither relaxes sharing/security nor adds retries or longer timeouts.
 
 Timing and credential audit use `windows-protected-sqlite.js` for protected
 owner-only database/journal creation and the existing native guard lifecycle.
@@ -292,12 +307,31 @@ The writable guarded-connection setup enters EXCLUSIVE locking, selects PERSIST
 journaling, forces recovery, then returns to NORMAL locking and releases the
 temporary lock with a read. PERSIST alone does not prevent journal deletion
 during hot-journal recovery. Existing timing stores first undergo a separate
-read-only schema preflight; a hot journal can make that preflight fail with
-`SQLITE_READONLY_ROLLBACK` (776) before guarded recovery runs. Isolated synthetic
-Windows tests reproduce this with both the report-publisher binding and its
-baseline; that recovery debt remains open. The shared writable sequence has
-portable SQLite crash/reopen coverage, which does not qualify this earlier
-timing-store preflight. SQLite closes before guards
+read-only schema preflight. Only `SQLITE_READONLY_ROLLBACK` (776) can enter the
+optional `windows-timing-recovery-v1` fallback. `openTimingRecoveryFile` reopens
+an issued audit guard's exact file object with write-denying sharing and a
+nonblocking exclusive full-file byte lock, excluding readers as well as writers.
+The main and journal remain pinned and locked while a bounded owner-only copy
+is recovered by SQLite and checked for schema, identity, parser compatibility,
+correlation key and integrity. Complete synced journal segments require valid
+record checksums and unique page numbers; SQLite's zero-magic/count next-segment
+marker ends recovery evidence. Other unsupported or partial journal shapes
+are refused without changing originals.
+
+`restoreTimingRecoveryFile(main, journal, recovered)` accepts only issued
+recovery tokens for the fixed `timing-experiment.sqlite` / `-journal` pair and
+a frozen recovered image. It streams in 64 KiB blocks, flushes and reads back
+the original main exactly, then truncates and flushes the original journal.
+Main is bounded to 256 MiB, journal to 512 MiB. The hot journal survives an
+interrupted main restore. Original identities/ACLs are preserved; ordinary
+read-only admission runs again before normal writing. No schema or persisted
+cache format changes. An unavailable optional capability leaves normal reads
+working and refuses only hot recovery. Close uncertainty pins the resources
+until process exit; a crash may leave a protected temporary copy, never an
+activated profile or a discovered recovery cache. General production/path-walk
+flags stay disabled. Isolated synthetic Windows tests cover recovery, byte
+preservation on refusal, reader/writer exclusion and restart. Installed/native
+artifact and release qualification remain separate. SQLite closes before guards
 release. Timing refuses WAL/SHM residue and non-rollback headers without deletion;
 no schema migration is introduced.
 

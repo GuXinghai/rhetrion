@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
   refreshReplaySafeAccountingCache,
 } from "../src/replay-safe-accounting-cache.js";
 import { TEST_GENERATION, withResidentCalibration } from "./helpers/replay-safe-resident-calibration.js";
+import { createProtectedFixtureDirectory } from "./helpers/windows-owner-only-fixture.js";
 
 const NOW = Date.parse("2026-08-03T12:45:00.000Z");
 const RESETS_AT = Math.floor(Date.parse("2026-08-10T12:00:00.000Z") / 1_000);
@@ -94,9 +95,12 @@ test("refresh projects a safe account-scoped weekly pace ETA", async () => {
   assert.equal(cache.quotaTimeline[0].accountAttribution, "historical_unattributed");
 });
 
-test("owner-only refresh retains the safe pace card through cache validation", async () => {
+test("owner-only refresh retains the safe pace card through cache validation", async t => {
   const directory = await mkdtemp(join(tmpdir(), "usage-monitor-pace-cache-"));
-  const stateFile = join(directory, "local-collector-state-v1.sqlite");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const state = join(directory, "state");
+  createProtectedFixtureDirectory(state);
+  const stateFile = join(state, "local-collector-state-v1.sqlite");
   const scan = unifiedScan(async ({ onRateLimitSnapshot }) => {
     onRateLimitSnapshot(snapshot({
       timestamp: "2026-08-03T12:15:00.000Z",

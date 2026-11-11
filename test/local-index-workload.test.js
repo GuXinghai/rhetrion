@@ -50,6 +50,30 @@ function comparableWorkload(value){
   return copy;
 }
 
+test('reader scopes exact gaps and keeps legacy or unknown extents conservative until repaired',t=>{
+  const w=createWorkspace({files:1,events:1});t.after(()=>w.cleanup());
+  const indexFile=join(w.state,'gap-workload.sqlite'),nowMs=at+20*M;
+  writeUsageStore(indexFile,[{observedAtMs:at+M},{observedAtMs:at+19*M}]);
+  const read=()=>readLocalIndexWorkload({indexFile,nowMs,sourceFresh:true,liveSinceMs:at,timeZone:'UTC'});
+  const baseline=read();assert.equal(baseline.current.state,'available');
+  const db=openLocalIndexStore(indexFile);
+  try {
+    db.prepare(`INSERT INTO integrity_gap(source_id,byte_start,byte_end,event_lower_ms,event_upper_ms,
+      reason,confidence,created_at_ms,repair_status) VALUES(1,0,1000,?,?,'codex_rollout_lineage_invalid','exact',?,'open')`)
+      .run(at+M,at+M,at);
+    const unaffected=read();assert.deepEqual(unaffected.current,baseline.current);
+    assert.ok(unaffected.errors.some(e=>e.code==='integrity_gap'));
+    db.prepare('UPDATE integrity_gap SET event_lower_ms=?,event_upper_ms=?').run(nowMs,nowMs);
+    assert.equal(read().current.state,'unknown');
+    db.prepare("UPDATE integrity_gap SET confidence='bounded',event_lower_ms=?,event_upper_ms=?").run(at-20*86400000,at-20*86400000);
+    assert.equal(read().current.state,'unknown');
+    db.exec("UPDATE integrity_gap SET confidence='exact',event_lower_ms=NULL,event_upper_ms=NULL");
+    assert.equal(read().current.state,'unknown');
+    db.exec("UPDATE integrity_gap SET repair_status='repaired'");
+    assert.deepEqual(read(),baseline);
+  } finally {db.close();}
+});
+
 // Aggregate bucket pricing sums the same doubles in a different order. Allow
 // only that binary-float reordering noise; every structure, string, integer,
 // coverage flag and classification must still match exactly.
@@ -359,7 +383,7 @@ test('reader preserves orphan receipts without extending work into later same-se
       work:db.prepare('SELECT * FROM work_lifecycle_fact ORDER BY source_offset').all(),
       usage:db.prepare('SELECT * FROM usage_event ORDER BY source_offset').all()};}finally{db.close();}};
     const before=facts(),v=readLocalIndexWorkload({indexFile,nowMs:end,timeZone:'UTC'});
-    assert.equal(v.policyVersion,'task-workload-v15');assert.equal(v.coverage.workMs,5*M);
+    assert.equal(v.policyVersion,'task-workload-v16');assert.equal(v.coverage.workMs,5*M);
     assert.equal(v.coverage.estimationPp,0);assert.equal(v.segmentation.plans[0].observedPp,2);
     assert.equal(v.daily.reduce((s,d)=>s+d.light+d.medium+d.heavy+d.unclassified,0),2);
     assert.ok(v.errors.some(e=>e.code==='work_boundary_incomplete'));

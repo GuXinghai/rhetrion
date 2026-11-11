@@ -346,8 +346,14 @@ export function readLocalIndexWorkload({ indexFile, nowMs, quotaWindows = [], ca
           for(const r of rawUsageStmt.iterate(rawFrom,rawTo))addRawUsage(r);
         }
       }
+      // The local single-account model may use the selected historical fit.
+      // This does not assign historical facts to an account; an explicitly
+      // different account's capacity still cannot cross the scope boundary.
+      const historicalCapacity=capacity?.accountAttribution?.status==="historical_unattributed"
+        &&capacity.accountScopeToken===undefined;
       const selected=capacity?.status==="available"&&capacity.planScope?.planType===plan
-        &&(!scoped||knownScope&&capacity.accountScopeToken===accountScopeToken)?capacity.scenarios?.[capacity.selectedScenario]:null;
+        &&(!scoped||historicalCapacity||knownScope&&capacity.accountScopeToken===accountScopeToken)
+        ?capacity.scenarios?.[capacity.selectedScenario]:null;
       const previousState=scoped?(knownScope?storedState:null):previous??storedState;
       // A display plan/window selects calculation inputs, not retained evidence.
       const retainedHistory=previousState?.capacityHistory?.filter((c)=>
@@ -375,14 +381,35 @@ export function readLocalIndexWorkload({ indexFile, nowMs, quotaWindows = [], ca
         &&validBaseline(previousComparison.baseline)?previousComparison.baseline:null;
       const comparisonBaseline=savedBaseline?{...savedBaseline,
         resetKey:`${savedBaseline.resetAtMs}:${savedBaseline.planType}:${savedBaseline.limitId}`}:null;
+      const retainedComparison=previous?.comparison;
+      const retainedFrom=Date.parse(retainedComparison?.observedFrom??'');
+      const retainedThrough=Date.parse(retainedComparison?.observedThrough??'');
+      const retainComparison=scoped&&quotaEvidence?.errorCode&&!context&&retainedComparison?.planType===plan
+        &&Number.isSafeInteger(retainedComparison.startedAtMs)
+        &&retainedComparison.startedAtMs>=Math.max(0,Math.min(nowMs,liveSinceMs))
+        &&Number.isSafeInteger(retainedFrom)&&Number.isSafeInteger(retainedThrough)
+        &&retainedComparison.startedAtMs<=retainedFrom&&retainedFrom<=retainedThrough&&retainedThrough<=nowMs;
       stage="aggregation";
       // A gap intersecting the window is unknown coverage, never idle time.
-      const usageGap=database.prepare(`SELECT 1 AS present FROM integrity_gap
+      const usageGaps=database.prepare(`SELECT event_lower_ms,event_upper_ms,confidence FROM integrity_gap
         WHERE repair_status IN ('open','queued')
-          AND (event_lower_ms IS NULL OR event_upper_ms IS NULL
-            OR (event_upper_ms>? AND event_lower_ms<?)) LIMIT 1`).get(evidenceFrom,nowMs);
+          AND (confidence<>'exact' OR event_lower_ms IS NULL OR event_upper_ms IS NULL
+            OR (event_upper_ms>=? AND event_lower_ms<=?)) LIMIT 10001`).all(evidenceFrom,nowMs);
+      if(usageGaps.length>10_000)throw Object.assign(new Error('workload_context_too_large'),{code:'workload_context_too_large'});
+      // Legacy whole-source quarantine bounds describe removed usage only;
+      // they cannot bound omitted lifecycle or unseen events.
+      const unknownGap=usageGaps.some(g=>g.confidence!=='exact'||g.event_lower_ms===null||g.event_upper_ms===null);
+      // A retained comparison may begin before this display's usage lookback.
+      // Check its complete dated span separately without replaying older usage
+      // or treating missing quota history as proof of account continuity.
+      const retainedUsageGap=retainComparison&&(unknownGap
+        ||usageGaps.some(g=>g.event_upper_ms>retainedFrom&&g.event_lower_ms<=retainedThrough)
+        ||retainedFrom<evidenceFrom&&database.prepare(`SELECT 1 FROM integrity_gap
+          WHERE repair_status IN ('open','queued') AND confidence='exact'
+            AND event_upper_ms>? AND event_lower_ms<=? LIMIT 1`).get(retainedFrom,retainedThrough)!==undefined);
       const state=analyzeWorkload({nowMs,events,usage,quota,estimationPlanType:plan,capacity:cap,capacityHistory:validHistory,liveSinceMs:comparisonFrom,sourceFresh,timeZone,
-        usageCoverageFromMs:usageGap?Math.max(evidenceFrom,nowMs):evidenceFrom,quotaResetEvents:scoped
+        usageCoverageFromMs:unknownGap?Math.max(evidenceFrom,nowMs):evidenceFrom,
+        usageGaps:unknownGap?[]:usageGaps.map(g=>({lowerMs:Math.max(0,g.event_lower_ms),upperMs:Math.max(0,g.event_upper_ms)})),quotaResetEvents:scoped
           ?(context?.scopedResetEvents??[]).filter(x=>x.token===accountScopeToken).map(x=>x.event)
           :quotaEvidence?.historyResetEvents??quotaEvidence?.resetEvents??[],
         comparisonCapacityUsd,comparisonBaseline,comparisonAccountKey:scoped?quota.at(-1)?.accountKey??null:null,
@@ -390,14 +417,28 @@ export function readLocalIndexWorkload({ indexFile, nowMs, quotaWindows = [], ca
           ?(context?.scopedResetEvents??[]).filter(x=>x.token===accountScopeToken).map(x=>x.event):quotaEvidence?.resetEvents??[],
         comparisonContinuityThroughMs:scoped?null:quotaEvidence?.continuityThroughMs??null,
         comparisonEvidenceError:quotaEvidence?.errorCode??null});
-      if(usageGap){state.errors.push({code:'integrity_gap',stage:'index'});state.status='partial';}
+      if(usageGaps.length||retainedUsageGap){state.errors.push({code:'integrity_gap',stage:'index'});state.status='partial';}
       let capture;
       try{capture=readRuntimeModelEvidenceStatus(database);}catch{capture={status:'failed',errorCode:'runtime_evidence_checkpoint_invalid'};}
       if(capture.errorCode){state.errors.push({code:capture.errorCode,stage:'index'});state.status='partial';}
       state.pricingDetails={total:pricingIssueCount,records:pricingRecords,truncated:pricingIssueCount>pricingRecords.length,capture};
-      if(quotaEvidence?.errorCode&&previous?.comparison?.startedAtMs===comparisonFrom
+      if(retainComparison){
+        // A failed history read supplies no epoch/continuity proof. Preserve
+        // only the already confirmed dated comparison; never join its baseline
+        // to the new live point or price an unobserved span as zero usage.
+        state.comparison={...structuredClone(retainedComparison),coverage:'partial'};
+        if(retainedUsageGap){
+          state.comparison.expectedPp=null;
+        }
+        state.status='stale';
+        state.generatedAt=previous.generatedAt;
+        state.attemptedAt=new Date(nowMs).toISOString();
+      }else if(quotaEvidence?.errorCode&&previous?.comparison?.startedAtMs===comparisonFrom
         &&previous.comparison.planType===plan&&previous.comparison.capacityUsd===state.comparison.capacityUsd){
         for(const key of ["actualPp","expectedPp"]){const known=previous.comparison[key];
+          // A quota-read failure cannot override a missing-usage refusal.
+          if(key==="expectedPp"&&state.comparison.expectedPp===null
+            &&state.errors.some(e=>e.code==='workload_history_incomplete'))continue;
           if(Number.isFinite(known)&&known>=0)state.comparison[key]=Math.max(known,state.comparison[key]??0);
         }
         state.comparison.inferred ||= previous.comparison.inferred===true;

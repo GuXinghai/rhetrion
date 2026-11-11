@@ -18,12 +18,14 @@ import test from "node:test";
 
 import {
   commitLocalCollectorState,
+  prepareLocalCollectorState,
   readLocalCollectorState,
 } from "../src/local-collector-state.js";
 import {
   verifyLocalCollectorStateIntegrityOffMain,
 } from "../src/local-collector-state-integrity-off-main.js";
 import { runCollectorOnce } from "../src/passive-collector.js";
+import { createProtectedFixtureDirectory } from "./helpers/windows-owner-only-fixture.js";
 
 const CLOCK_BASE = Date.parse("2026-09-13T00:00:00.000Z");
 const LARGE_DEVICE = 72057594039371911n;
@@ -75,6 +77,7 @@ class MinimalClient {
 async function fixture({ collector = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), "collector-large-identity-"));
   const stateFile = join(root, "state", "local-collector-state-v1.sqlite");
+  createProtectedFixtureDirectory(join(root, "state"));
   await mkdir(join(root, "codex-home"), { recursive: true });
   if (!collector) {
     await commitLocalCollectorState({
@@ -213,17 +216,19 @@ test("run-once succeeds repeatedly with an exact large identity and releases its
 
 test("a session identity failure releases the lock before a same-PID retry", async () => {
   const value = await fixture({ collector: true });
+  await prepareLocalCollectorState({ stateFile: value.stateFile, clock: () => CLOCK_BASE });
   const originalLstat = fsPromises.lstat;
   const WorkerClass = workerClassWithIdentity(value.stateFile);
   let invalidIdentity = true;
+  let injectedUnderLock = false;
   try {
     fsPromises.lstat = async (path, options) => {
       const metadata = await originalLstat(path, options);
       if (path === value.stateFile && options?.bigint === true) {
-        if (invalidIdentity) {
+        if (invalidIdentity && lockRow(value.stateFile)?.pid === process.pid) {
           metadata.dev = LARGE_DEVICE;
           metadata.ino = -1n;
-          invalidIdentity = false;
+          injectedUnderLock = true;
         } else {
           metadata.dev = LARGE_DEVICE;
           metadata.ino = LARGE_INODE;
@@ -246,8 +251,10 @@ test("a session identity failure releases the lock before a same-PID retry", asy
       () => runCollectorOnce(options),
       { code: "local_collector_state_unavailable" },
     );
+    assert.equal(injectedUnderLock, true);
     assert.equal(lockRow(value.stateFile), null);
 
+    invalidIdentity = false;
     const retried = await runCollectorOnce(options);
     assert.equal(retried.status, "complete");
     assert.equal(retried.refresh.recordWritten, true);

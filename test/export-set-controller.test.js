@@ -192,7 +192,7 @@ function workspaceDatabaseSnapshot(directory) {
   }
 }
 
-test("legacy Claude supplemental plans remain inspectable but resume rejects before invocation and source reads", async () => {
+test("current workspace refuses a retired-provider descriptor before source reads and leaves it intact", async () => {
   const value = await fixture();
   try {
     const created = await createLocalExportWorkspace({
@@ -218,9 +218,9 @@ test("legacy Claude supplemental plans remain inspectable but resume rejects bef
     };
     const legacySources = [legacySource];
     const legacyPlan = {
-      schemaVersion: "supplemental-export-source-plan-v2",
+      schemaVersion: "supplemental-export-source-plan-v3",
       supplementalSourcePlanSha256: createHash("sha256")
-        .update("app-usagemonitor/supplemental-export-source-plan/v1\0")
+        .update("app-usagemonitor/supplemental-export-source-plan/v3\0")
         .update(stableJson(legacySources))
         .digest("hex"),
       sources: legacySources,
@@ -252,13 +252,9 @@ test("legacy Claude supplemental plans remain inspectable but resume rejects bef
     }
 
     const before = workspaceDatabaseSnapshot(value.workspace);
-    const inspected = await inspectLocalExportWorkspace({ directory: value.workspace });
-    assert.deepEqual(inspected.sourceProviders, ["openai_codex", "anthropic_claude_code"]);
-    const storedWorkspace = await openExportWorkspace({ directory: value.workspace });
-    try {
-      assert.equal(storedWorkspace.loadSupplementalSourcePlan().sources[0].kind, "claude_status_snapshot");
-    } finally {
-      storedWorkspace.close();
+    for (const inspect of [inspectLocalExportWorkspace, openExportWorkspace]) {
+      await assert.rejects(inspect({ directory: value.workspace }),
+        (error) => error instanceof ExportWorkspaceError && error.code === "export_workspace_schema");
     }
     await assert.rejects(
       resumeLocalExportWorkspace({
@@ -267,7 +263,7 @@ test("legacy Claude supplemental plans remain inspectable but resume rejects bef
         secret: SECRET,
       }),
       (error) => error instanceof ExportWorkspaceError
-        && error.code === "export_workspace_checkpoint_mismatch",
+        && error.code === "export_workspace_schema",
     );
     assert.deepEqual(workspaceDatabaseSnapshot(value.workspace), before);
   } finally {

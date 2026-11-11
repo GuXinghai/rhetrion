@@ -13,12 +13,15 @@ import { createWorkspace } from "./helpers/local-index-facts.js";
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const SOURCE_EXTENSIONS = /(?<!\.test)\.(?:js|mjs|cjs|ts|tsx)$/u;
-// The one composition root that selects the backend, and only its facade. It
-// receives paths and rows from the facade, never the store modules behind it.
+// Exact composition/orchestration entrypoints. No allowance permits direct
+// store access; these facades own their own guarded reads and writes.
 const FACADE_IMPORTERS = new Map([
-  ["apps/local/server.js", new Set(["local-index-backend.js"])],
+  ["apps/local/server.js", new Set(["local-index-backend.js", "local-index-runtime-model-evidence.js"])],
   // The snapshot builder's default projection reader.
   ["src/local-companion-data.js", new Set(["local-index-backend.js"])],
+  ["src/local-companion-refresh.js", new Set(["local-index-accounting-reuse.js", "local-index-accounting-cache.js"])],
+  ["src/local-accounting-fast-path.js", new Set(["local-index-accounting-window-cache.js"])],
+  ["src/local-accounting-window-refresh.js", new Set(["local-index-accounting-windows.js", "local-index-accounting-window-cache.js"])],
   // The two command-line composition roots, for the explainer's reader switch.
   ["src/cli.js", new Set(["local-index-usage-explainer.js"])],
   ["apps/local/agent-cli.js", new Set(["local-index-usage-explainer.js"])],
@@ -67,7 +70,7 @@ test("the allowance names a real importer of exactly its facade", () => {
   for (const [name, allowed] of FACADE_IMPORTERS) {
     const text = readFileSync(join(repository, name), "utf8");
     for (const imported of allowed) {
-      assert.ok(text.includes(`/${imported}"`), `${name} must import ${imported}`);
+      assert.ok(text.includes(`/${imported}"`) || text.includes(`/${imported}'`), `${name} must import ${imported}`);
     }
   }
 });

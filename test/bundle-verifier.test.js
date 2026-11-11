@@ -1,8 +1,9 @@
+import { createProtectedFixtureTempDirectory as mkdtemp, grantSyntheticEveryoneRead } from "./helpers/windows-owner-only-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmod, link, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -113,7 +114,7 @@ test("standalone verifier accepts an exact canonical owner-only pair", async () 
     const verified = await verifyLocalMetadataBundleFiles(pair);
     assert.equal(verified.verdict, "passed");
     assert.equal(verified.contractFamily, "local-export-v1");
-    assert.equal(verified.contractStatus, "draft_local_only_unfrozen");
+    assert.equal(verified.contractStatus, "local_only");
     assert.equal(verified.transportReady, false);
     assert.deepEqual(verified.recordCounts, { usageEvents: 0, quotaSnapshots: 0, activityMarkers: 0 });
   } finally {
@@ -437,7 +438,7 @@ test("verifier bounds quota receipt time and rejects receipt before observation"
   }
 });
 
-test("verifier rejects an observed provider absent from the bundle declaration", async () => {
+test("verifier rejects a retired provider at the closed schema boundary", async () => {
   const pair = await localPair();
   try {
     const bundle = structuredClone(pair.bundle);
@@ -486,7 +487,7 @@ test("verifier rejects an observed provider absent from the bundle declaration",
     await writeFile(pair.receiptFile, stableJson(receipt), { mode: 0o600 });
     await assert.rejects(
       verifyLocalMetadataBundleFiles(pair),
-      (error) => assertSafeFailure(error, "bundle_provider_declaration", pair),
+      (error) => assertSafeFailure(error, "bundle_schema", pair),
     );
   } finally {
     await rm(pair.directory, { recursive: true, force: true });
@@ -499,7 +500,7 @@ test("verifier rejects linked artifacts and unsafe parent permissions", async ()
     await link(hardlinked.receiptFile, join(hardlinked.directory, "extra-link"));
     await assert.rejects(
       verifyLocalMetadataBundleFiles(hardlinked),
-      (error) => assertSafeFailure(error, "receipt_link_count", hardlinked),
+      (error) => assertSafeFailure(error, process.platform === "win32" ? "receipt_not_regular" : "receipt_link_count", hardlinked),
     );
   } finally {
     await rm(hardlinked.directory, { recursive: true, force: true });
@@ -507,10 +508,11 @@ test("verifier rejects linked artifacts and unsafe parent permissions", async ()
 
   const unsafeParent = await localPair();
   try {
-    await chmod(unsafeParent.directory, 0o777);
+    if (process.platform === "win32") grantSyntheticEveryoneRead(unsafeParent.directory);
+    else await chmod(unsafeParent.directory, 0o777);
     await assert.rejects(
       verifyLocalMetadataBundleFiles(unsafeParent),
-      (error) => assertSafeFailure(error, "parent_directory_permissions", unsafeParent),
+      (error) => assertSafeFailure(error, process.platform === "win32" ? "parent_permissions" : "parent_directory_permissions", unsafeParent),
     );
   } finally {
     await chmod(unsafeParent.directory, 0o700).catch(() => {});
@@ -526,7 +528,7 @@ test("verifier never follows an artifact symlink", async () => {
     await symlink(realBundle, pair.bundleFile);
     await assert.rejects(
       verifyLocalMetadataBundleFiles(pair),
-      (error) => assertSafeFailure(error, "bundle_not_regular", pair),
+      (error) => assertSafeFailure(error, process.platform === "win32" ? "windows_protection_unavailable" : "bundle_not_regular", pair),
     );
   } finally {
     await rm(pair.directory, { recursive: true, force: true });

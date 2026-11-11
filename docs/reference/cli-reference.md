@@ -38,16 +38,35 @@ do not delete the destination or blindly retry. Cleanup failure is reported as
 `OWNER_ONLY_ATOMIC_CLEANUP_FAILED`. General production/path-walk approval and
 installed-artifact qualification remain separate.
 
-Local export workspace v1 (physical schema 7) preserves exact Windows volume/file
+Local export workspace v2 (physical schema 8) preserves exact Windows volume/file
 identities as private canonical decimal strings, bounded to U64/U128
 respectively. The public source summary omits these identities. Older workspace
 schemas are refused before writable configuration and preserved unchanged;
 they are not relabeled or automatically converted. Compatibility is scoped to a
 [one-time controlled pre-release migration](../decisions/2026-10-27-pre-release-state-migration.md),
 not a permanent legacy writer. That migration is not an implemented CLI command.
-The separate collector v0.2
-plan retains its U64-per-identity contract and rejects larger file IDs. These
+Collector plan v0.3, supplemental plan v3 and private source-plan bundle v0.3
+preserve the same U64-volume/U128-file identity range through restart. Old plan
+versions refuse before source access; no `u64:` fallback codec remains. These
 source-level contracts are not installed native qualification.
+
+Windows export-set verification uses the bundle reader's native current-owner
+DACL and held-source-handle checks for manifests, receipts and compressed
+artifacts. It does not alter the selected export directory; duplicate detection
+uses a separate disposable protected SQLite database and pinned rollback journal.
+Temporary cleanup deletes only the exact recorded file identities.
+Destination publication uses `.app-usagemonitor-export.lock` as a protected,
+single-link regular file with a bounded `export-destination-lock-v1` record.
+Stale Windows locks are removed by exact native identity before retrying
+no-clobber acquisition. A delayed reaper cannot remove a replacement lock.
+Older symbolic-link locks/claims and unknown records are refused and preserved;
+there is no implicit migration or permission repair. General participant-identity
+production selection and file-backed Windows rotation remain unavailable until
+their separate qualification/replacement gates pass. These export fixes do not
+enable those gates.
+Current deletion journal v0.4 uses the existing commit marker v0.2, preserving
+exact string file identities. This selects the already-reviewed schema; it does
+not migrate or relabel existing controls.
 
 Commands operate on local files or the reviewed local Codex subprocess. Codex
 may itself need provider network access for fresh account evidence. A live
@@ -56,6 +75,16 @@ there is no hosted contribution `--origin` command. Paths can contain sensitive
 derived evidence: keep them out of commits, issues, logs, and documentation.
 
 ## Read and analysis
+
+The `capture` command's ccusage comparison runs the pinned Windows x64 native
+executable directly, without a shell or intermediate launcher. Each call has a
+120-second deadline and a combined stdout/stderr ceiling of 16 MiB. Cancellation
+and resource-limit failures terminate the owned process and wait for close;
+failure to confirm termination within one second returns
+`ccusage_termination_failed`. Dependency errors and malformed JSON expose only
+fixed `ccusage_*` codes, never stderr or parse excerpts. Internal account-HMAC
+and broker-descriptor environment variables are removed before spawn. These
+bounds do not qualify the independent desktop refresh or a live experiment.
 
 | Command | Purpose | Durable effect |
 | --- | --- | --- |
@@ -122,7 +151,7 @@ another page is available. The maintained agent workflow is the
 | `verify-bundle` | Verify a bundle and optional receipt. | Read-only. |
 | `export-set` | Create or resume a resource-bounded export workspace/set. | Staged, locked, replay-safe writes to explicit workspace/directory paths. |
 | `inspect-export-workspace` | Inspect workspace state and pending actions. | Read-only. |
-| `verify-export-set` | Verify manifests, chunks, hashes, and boundaries. | Read-only. |
+| `verify-export-set` | Verify manifests, chunks, hashes, and boundaries. | Selected artifacts are read-only; disposable protected uniqueness index. |
 | `delete-local-export` | Delete an exact verified export set. | Two-step confirmation token and journaled recovery contract. |
 | `recover-local-export-deletion` | Complete or recover an interrupted export-set deletion. | Acts only on the explicit journaled workspace/directory pair. |
 | `discard-export-workspace` | Discard an exact export workspace. | Two-step confirmation token and recoverable discard transaction. |
@@ -133,6 +162,16 @@ another page is available. The maintained agent workflow is the
 Never use deletion or discard commands against an unresolved path, an only copy
 of evidence, or a workspace owned by another running process. Inspect first and
 retain the generated receipt.
+
+Workspace discard now writes the v0.2 transaction contract. Confirmation and
+recovery bind exact U64 filesystem identities without Number rounding; replacing
+a file, workspace or parent invalidates the evidence even when its bytes match.
+The reader explicitly rejects identities outside that range. Old v0.1 tokens
+and interrupted controls cannot authorize the current operation. Existing old
+or unknown controls/receipts are retained and refused, including during recovery;
+do not delete them or relabel their versions to retry. Recovery of an old
+transaction requires a separate protected-copy review. See the
+[schema contract](./schema-contracts.md#ownership-map).
 
 ## Retained historical exports
 

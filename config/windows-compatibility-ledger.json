@@ -51,16 +51,10 @@
       "followUp": "Replace the omitted lock-file mode assertion with an owner ACL assertion."
     },
     {
-      "file": "test/export-identity.test.js",
-      "win32BranchCount": 1,
-      "classification": "windows-equivalent-needed",
-      "followUp": "Cover reparse points, hard links, and owner ACLs before enabling file identity in production."
-    },
-    {
       "file": "test/export-storage.test.js",
-      "win32BranchCount": 4,
-      "classification": "posix-only-assertion",
-      "followUp": "Replace omitted mode-bit assertions with native owner ACL validation."
+      "win32BranchCount": 8,
+      "classification": "native-windows-qualification",
+      "followUp": "Keep protected native synthetic storage and DACL assertions; POSIX-only refusal cases remain explicit, and general production policy stays disabled."
     },
     {
       "file": "test/local-collector-large-identity.test.js",

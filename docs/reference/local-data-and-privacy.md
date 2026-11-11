@@ -314,6 +314,16 @@ artifacts do not use the native whole-file size ceiling as an excuse to weaken
 protection. Ordinary single-link reads use a native source lease. Recovery may
 read only the manifest-declared stage/final two-link pair after both identities,
 ACLs and parents match, with bounded descriptor reads and before/after checks.
+After manifest cleanup, recovery can remove a remaining stage hardlink only
+after finding its exact protected counterpart in the bounded destination
+listing. It never publishes from a manifestless transaction; an absent or unsafe
+counterpart leaves the remaining evidence intact. Windows destination locks are
+protected single-link regular control files, created without clobbering and
+deleted by their recorded native identity. Old symlink locks and unknown formats
+are preserved and refused. Export-set verification reuses the same strict native
+ACL and bounded source-handle reader as bundle verification. Its temporary
+uniqueness database and rollback journal stay protected and pinned until SQLite
+closes; cleanup deletes only the identities recorded under those guards.
 Missing operation capabilities refuse before creating directories, locks or
 stages. These checks retain the existing same-user trust boundary and do not
 upgrade native production or race-safety qualification.
@@ -441,6 +451,13 @@ lifetime or successful deletion is promised here.
 | CLI export deletion/workspace discard | Acts only on the exact reviewed export/workspace, confirmation token and recovery journal. | Analysis-index deletion, unrelated credential removal or remote erasure. |
 | CLI export identity rotation or removal | The named export capability, with its explicit confirmation and lifecycle contract. | Rotation of the local index salt or a whole-profile reset. |
 | Ordinary app uninstall | Packaging is configured to remove binaries while retaining AppData. | Local evidence or Credential Manager erasure; this source setting is not installed-uninstaller qualification. |
+
+The current workspace-discard v0.2 protocol binds exact U64 file, directory and
+parent identities inside its existing opaque tokens. Controls and receipts do
+not retain raw identities or private paths. Invalid/overflow identities and
+replaced files are refused. Existing v0.1 or unknown controls are preserved;
+the runtime does not reinterpret their rounded evidence or migrate them.
+Protected-copy recovery of such an interrupted transaction is a separate step.
 
 The desktop provides no blanket **Erase local data** or **Reset identity and
 device** operation. Do not replace a missing control with manual AppData or

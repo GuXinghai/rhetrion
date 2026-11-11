@@ -24,6 +24,7 @@ import {
 } from "../src/local-companion-data.js";
 import { readLocalIndexCompanionProjection } from "../src/local-index-companion-source.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
+import { createProtectedFixtureDirectory } from "./helpers/windows-owner-only-fixture.js";
 import { LOCAL_UNIFIED_INDEX_PARSER_VERSION, LOCAL_UNIFIED_INDEX_PARTIAL_PARSER_VERSION, LOCAL_UNIFIED_INDEX_PARENT_MODEL_PARSER_VERSION, LOCAL_UNIFIED_INDEX_PARENT_MODEL_PARTIAL_PARSER_VERSION, reasoningEffortOrdinal } from "../src/codex-usage-vocabulary.js";
 
 const NOW_MS = Date.parse("2026-08-08T12:00:00.000Z");
@@ -693,7 +694,7 @@ test("older parser coverage withholds both continuity and switch premiums", () =
   assert.equal(switched.coveredSubtotal, null);
 });
 
-test("retained parser suffixes retain cache continuity coverage after the v22 attribution upgrade", () => {
+test("retained parser suffixes retain cache continuity coverage after the v23 API exclusion upgrade", () => {
   const retainedV15 = [
     "unified-rollout-typed-v15",
     "unified-rollout-typed-v15-partial",
@@ -739,7 +740,7 @@ test("retained parser suffixes retain cache continuity coverage after the v22 at
 
   for (const parserVersion of [
     "unified-rollout-typed-v17-future",
-    "unified-rollout-typed-v23",
+    "unified-rollout-typed-v24",
   ]) {
     const continuity = analyzeCacheContinuityRows([continuityRow({
       parser_version: parserVersion,
@@ -1198,6 +1199,7 @@ function quotaOnlyTokenCount(timestamp, total) {
 
 test("raw rollout facts flow through the existing index into the read-only impact projection", async () => {
   const root = await mkdtemp(join(tmpdir(), "cache-switch-index-"));
+  createProtectedFixtureDirectory(join(root, ".usage-monitor"));
   const sessions = join(root, "sessions", "2026", "08", "08");
   const indexFile = join(root, "index.sqlite");
   const sessionId = "11111111-2222-4333-8444-555555555555";

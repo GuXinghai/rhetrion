@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { createProtectedFixtureDirectory } from "./helpers/windows-owner-only-fixture.js";
 
 import {
   commitLocalCollectorState,
@@ -31,7 +32,9 @@ function record(index) {
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "collector-session-"));
-  return { root, stateFile: join(root, "state.sqlite") };
+  const state = join(root, "state");
+  createProtectedFixtureDirectory(state);
+  return { root, stateFile: join(state, "state.sqlite") };
 }
 
 test("a session commits every batch durably and settles once at close", async () => {

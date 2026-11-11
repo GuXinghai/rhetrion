@@ -129,6 +129,7 @@ export {
   ExportSourcePlanError,
   summarizeExportSourcePlan,
   createSourcePlanSummaryContract,
+  normalizeExportSourceFilesystemId,
 } from "./source-plan-summary.js";
 export {
   EXPORT_SUPPLEMENTAL_SOURCE_PLAN_VERSION,

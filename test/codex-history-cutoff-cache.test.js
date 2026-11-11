@@ -193,7 +193,7 @@ test("mutation during prefix read or guarded reuse refuses publication", async (
   await t.test("cold read", async () => {
     const f = fixture(); let changed = false;
     f.state.onRead = file => { if (!changed) { changed = true; file.ctimeNs++; } };
-    assert.equal((await f.discover()).receipt.status, "partial");
+    await assert.rejects(f.discover(), { code: "codex_log_source_changed" });
     f.state.onRead = null; f.reset();
     assert.equal((await f.discover()).receipt.status, "complete");
     assert.ok(f.counters.bytes > 0, "a failed read-state proof was not seeded");
@@ -202,7 +202,7 @@ test("mutation during prefix read or guarded reuse refuses publication", async (
     const f = fixture(); await f.discover(); f.reset();
     let named = 0;
     f.state.onNamedStat = file => { if (++named === 2) file.ctimeNs++; };
-    assert.equal((await f.discover()).receipt.status, "partial");
+    await assert.rejects(f.discover(), { code: "codex_log_source_changed" });
     assert.equal(f.counters.bytes, 0);
     f.state.onNamedStat = null; f.reset(); await f.discover();
     assert.ok(f.counters.bytes > 0, "a failed warm revalidation evicts its proof");
@@ -219,11 +219,7 @@ test("unsafe or missing named files, failed closes and cancelled proof reads can
     if (kind === "failed_close") f.state.failClose = true;
     if (kind === "cancel") f.state.onNamedStat = () => controller.abort();
     if (kind === "cancel") await assert.rejects(f.discover({ signal: controller.signal }), { name: "AbortError" });
-    else {
-      const actual = await f.discover();
-      if (kind !== "missing_named") assert.equal(actual.receipt.status, "partial");
-      else assert.ok(f.counters.bytes > 0, "missing named metadata falls back to the original read");
-    }
+    else await assert.rejects(f.discover(), { code: "codex_log_source_changed" });
     assert.equal(f.counters.opens, f.counters.closes);
     f.state.unsafeNamed = false; f.state.unsafeHandle = false; f.state.failClose = false; f.state.onNamedStat = null;
     f.reset(); await f.discover(); assert.ok(f.counters.bytes > 0);
@@ -242,8 +238,18 @@ test("resource limits still abort warm proofs and short reads never seed", async
       return { ...handle, async read(...args) { const read = await handle.read(...args); return { ...read, bytesRead: read.bytesRead - 1 }; } };
     },
   }, lineReader: f.lineReader });
-  const result = await scanner.discoverCodexRolloutInfos({ codexHome: HOME, startAt: "2026-07-30T10:00:00.000Z" });
-  assert.equal(scanner.codexRolloutDiscoveryReceipt(result).status, "partial");
+  await assert.rejects(scanner.discoverCodexRolloutInfos({ codexHome: HOME, startAt: "2026-07-30T10:00:00.000Z" }),
+    { code: "codex_log_source_changed" });
+});
+
+test("an out-of-range cutoff requires stable final dependency state before quarantine", async () => {
+  const f=fixture();
+  f.files.get(f.childPaths[0]).bytes=Buffer.from(`${metadata({bytes:f.parentBytes.length+1,lines:3})}\n`);
+  let named=0;
+  f.state.onNamedStat=file=>{if(++named===2)file.ctimeNs++;};
+  await assert.rejects(f.discover(),{code:"codex_log_source_changed"});
+  f.state.onNamedStat=null;
+  assert.equal((await f.discover()).receipt.status,"partial");
 });
 
 test("the process-local proof cache evicts beyond its fixed entry bound", async () => {
@@ -336,9 +342,11 @@ test("compressed mutations, truncation, close failure and unsupported precision 
     if (kind === "truncation") { f.parent.bytes = f.parent.bytes.subarray(0, -1); f.parent.ctimeNs++; }
     if (kind === "failed_close") f.state.failClose = true;
     if (["number", "no_ns"].includes(kind)) f.state.statMode = kind;
-    const actual = await f.discover();
-    if (["truncation", "failed_close"].includes(kind)) assert.equal(actual.receipt.status, "partial");
-    else assert.equal(actual.receipt.status, "complete");
+    if (kind === "failed_close") await assert.rejects(f.discover(), { code: "codex_log_source_changed" });
+    else {
+      const actual = await f.discover();
+      assert.equal(actual.receipt.status, kind === "truncation" ? "partial" : "complete");
+    }
     if (kind !== "failed_close") assert.ok(f.counters.decoderCalls > 0);
     f.state.failClose = false; f.state.statMode = "exact";
     f.parent.bytes = original; f.parent.ctimeNs++;

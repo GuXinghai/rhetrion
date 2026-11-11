@@ -32,6 +32,7 @@ import { createAccountingPricer } from "./replay-safe-accounting-cache.js";
 
 const MAX_WORK_CELLS = 50_000;
 const WORK_RESOLVE_CONCURRENCY = 12;
+const WORK_SOURCE_PATH_BATCH_SIZE = 256;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
@@ -107,14 +108,43 @@ export async function readLocalIndexWorkUsage({
   if (sessionRows.length > 25_000) throw workUsageError("work_usage_capacity_exceeded");
   const sessions = new Map(sessionRows.map(row => [Number(row.id), { local: row.session_local,
     uuid: UUID.test(row.session_uuid ?? "") ? row.session_uuid.toLowerCase() : null }]));
-  // Resolve paths lazily as verified edges discover parents. Unrelated old
-  // sessions cannot invalidate a small current window or grow this lookup.
+  const threadIds = [...new Set([...sessions.values()].map(session => session.uuid).filter(Boolean))];
+  const threadPositions = new Map(threadIds.map((id, index) => [id, index]));
+  // Batch only the requested sessions, retaining at most 33 distinct paths
+  // per session (the ancestry reader refuses more than 32). Verified parents
+  // outside this set keep their lazy lookup; unrelated history is not retained.
   const sourcePathQuery = database.prepare(`SELECT DISTINCT src.path FROM source src
     JOIN session s ON s.id=src.session_id WHERE s.session_uuid=? COLLATE NOCASE
       AND src.quarantine_code IS NULL AND src.scanned_bytes>0 LIMIT 33`);
-  const sourcePaths = uuid => timing.measureSync("origin_path_query",()=>sourcePathQuery.all(uuid).map(row => row.path),{aggregate:true});
+  let prefetchedPaths = new Map();
+  const sourcePaths = uuid => timing.measureSync("origin_path_query", () => {
+    signal?.throwIfAborted();
+    if (!prefetchedPaths.has(uuid)) {
+      const index = threadPositions.get(uuid);
+      if (index === undefined) return sourcePathQuery.all(uuid).map(row => row.path);
+      const batch = threadIds.slice(index, index + WORK_SOURCE_PATH_BATCH_SIZE);
+      const paths = new Map(batch.map(id => [id, []]));
+      const query = database.prepare(`SELECT s.session_uuid, src.path FROM source src
+        JOIN session s ON s.id=src.session_id
+        WHERE s.session_uuid COLLATE NOCASE IN (${batch.map(() => "?").join(",")})
+          AND src.quarantine_code IS NULL AND src.scanned_bytes>0 ORDER BY src.id`);
+      let remaining = batch.length;
+      for (const row of query.iterate(...batch)) {
+        signal?.throwIfAborted();
+        const selected = paths.get(row.session_uuid.toLowerCase());
+        if (selected.length < 33 && !selected.includes(row.path)) {
+          selected.push(row.path);
+          if (selected.length === 33 && --remaining === 0) break;
+        }
+      }
+      prefetchedPaths = paths;
+    }
+    const paths = prefetchedPaths.get(uuid);
+    prefetchedPaths.delete(uuid);
+    return paths;
+  }, { aggregate: true });
   const threadRelations = await timing.measure("work_origins",()=>readCodexLocalThreadUsageRelations(codexHome,
-    [...sessions.values()].map(s => s.uuid).filter(Boolean), {
+    threadIds, {
       signal, sourcePaths, knownThreadIds: new Set(memberships.threads.keys()), includeProjectAncestry: true,
       diagnosticTimer: timing,
     }));

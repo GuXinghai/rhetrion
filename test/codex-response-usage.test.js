@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, appendFile, copyFile, rename, stat, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, appendFile, copyFile, rename, stat, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createResponseUsagePlan } from '../src/providers/codex/logs.js';
 import { extractRolloutUsage } from '../src/local-index-extract.js';
 import { localCodexLogScanner } from '../src/local-node-runtime.js';
 import { refreshCodexHome, withReadOnlyStore } from './helpers/local-index-rollout-store.js';
-import { openLocalIndexStore, createLocalIndexWriter } from '../src/local-index-store.js';
+import { openLocalIndexStore, createLocalIndexWriter, LOCAL_INDEX_PARSER_VERSION } from '../src/local-index-store.js';
 import { assertSameFacts, v2Facts } from './helpers/local-index-facts.js';
 
 const at = n => new Date(Date.UTC(2026, 8, 3, 12, 0, n)).toISOString();
@@ -43,6 +43,248 @@ test('response identities distinguish identical calls and suppress both legacy s
   assert.notEqual(r.responseAt(3).key, r.responseAt(5).key);
   assert.equal(r.responseAt(6), null);
   assert(!JSON.stringify(r.responseAt(3)).includes('synthetic-'));
+});
+
+test('API exclusion uses explicit session declarations and keeps unknown subscription history', () => {
+  for (const [fields, excluded] of [
+    [{model_provider:'synthetic-relay'},true],
+    [{model_provider:'openai',auth_mode:'apikey'},true],
+    [{auth_mode:'api_key'},true],
+    [{billing_surface:'openai_api'},true],
+    [{model_provider:'openai',auth_mode:'chatgpt'},false],
+    [{model_provider:'openai'},false],
+    [{source:'cli'},false],
+    [{source:'vscode'},false],
+    [{model_provider:''},false],
+    [{model_provider:null},false],
+    [{model_provider:7,auth_mode:'unknown'},false],
+    [{},false],
+  ]) {
+    const header={...meta,payload:{...meta.payload,...fields}};
+    const p=plan([header,context,response(2,'synthetic-response',1)]);
+    assert.equal(p.excludedApiSession,excluded);
+    assert.equal(p.diagnostics.responses,1,'selection preserves response validation');
+  }
+});
+
+test('scanner and extractor exclude API usage, quota, tools and work but preserve CLI subscriptions', async () => {
+  for(const [fields,excluded] of [
+    [{source:'cli',model_provider:'synthetic-relay'},true],
+    [{source:'vscode',model_provider:'openai',auth_mode:'apikey'},true],
+    [{source:'cli',model_provider:'openai',auth_mode:'chatgpt'},false],
+    [{source:'cli'},false],
+  ]) {
+    const header={...meta,payload:{...meta.payload,...fields}};
+    const quota={plan_type:'plus',primary:{used_percent:10,window_minutes:10080,resets_at:Math.floor(Date.parse(at(0))/1000)+604800}};
+    const old=legacy(4,1);old.payload.rate_limits=quota;
+    const rows=[header,context,rec(1,'event_msg',{type:'task_started',turn_id:context.payload.turn_id}),
+      rec(2,'response_item',{type:'function_call',name:'shell_command',call_id:'synthetic-call',arguments:'{}'}),
+      response(4,'synthetic-response',1),old,rec(5,'event_msg',{type:'task_complete',turn_id:context.payload.turn_id,duration_ms:4000})];
+    const f=await fixture(rows);
+    try{
+      const events=[],tools=[],work=[];
+      const outcome=await extractRolloutUsage(f.path,{size:(await stat(f.path)).size,onEvent:e=>events.push(e),onTool:e=>tools.push(e),onWork:e=>work.push(e)});
+      assert.equal(outcome.read.nextOffset,(await stat(f.path)).size);
+      assert.equal(events.length===0,excluded);assert.equal(tools.length===0,excluded);assert.equal(work.length===0,excluded);
+      const usage=[],quotas=[],calls=[];
+      await localCodexLogScanner.scanCodexLogEvents({codexHome:f.root,startAt:at(0),endAt:at(20),
+        onUsage:e=>usage.push(e),onRateLimitSnapshot:e=>quotas.push(e),onToolCall:e=>calls.push(e)});
+      assert.equal(usage.length===0,excluded);assert.equal(quotas.length===0,excluded);assert.equal(calls.length===0,excluded);
+      await refreshCodexHome(f.root);
+      withReadOnlyStore(join(f.root,'index.sqlite'),db=>{
+        for(const table of ['usage_event','quota_occurrence','tool_class_fact','work_lifecycle_fact'])
+          assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n===0,excluded,table);
+        if(excluded){
+          assert.equal(db.prepare('SELECT COUNT(*) AS n FROM source').get().n,0);
+          assert.equal(db.prepare('SELECT COUNT(*) AS n FROM session').get().n,0);
+        }else assert.equal(db.prepare('SELECT scanned_bytes FROM source').get().scanned_bytes,(outcome.read.nextOffset));
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM integrity_gap').get().n,0);
+      });
+      const facts=v2Facts(join(f.root,'index.sqlite'));
+      await refreshCodexHome(f.root);assertSameFacts(v2Facts(join(f.root,'index.sqlite')),facts);
+    }finally{await rm(f.root,{recursive:true,force:true});}
+  }
+});
+
+test('API exclusion is exact across worker builds, legacy-parser correction, restart and append', async () => {
+  const apiHeader={...meta,payload:{...meta.payload,source:'cli',model_provider:'synthetic-relay'}};
+  const rows=[{...apiHeader,payload:{...apiHeader.payload,model_provider:'openai'}},context,response(2,'synthetic-api-response',1)];
+  const f=await fixture(rows),indexFile=join(f.root,'index.sqlite'),secretFile=join(f.root,'salt');
+  const subscriptionId='20000000-0000-4000-8000-000000000002';
+  const subscriptionPath=join(f.root,'sessions',`rollout-2026-09-03T12-00-00-${subscriptionId}.jsonl`);
+  const subscriptionRows=[{...meta,payload:{id:subscriptionId,source:'cli',model_provider:'openai'}},context,
+    rec(3,'token_usage_record',{...response(3,'synthetic-subscription-response',1).payload,thread_id:subscriptionId})];
+  const bytes=rs=>rs.map(r=>JSON.stringify(r)).join('\n')+'\n';
+  await writeFile(subscriptionPath,bytes(subscriptionRows));
+  try{
+    const refresh=options=>refreshCodexHome(f.root,{indexFile,secretFile,...options});
+    const cold=await refresh({workerCount:2});assert.equal(cold.mode,'lanes');
+    const prior=v2Facts(indexFile);assert.equal(prior.events.size,2);
+    rows[0]=apiHeader;
+    await writeFile(f.path,bytes(rows));
+    const originalApi=await readFile(f.path),originalSubscription=await readFile(subscriptionPath);
+    // Reproduce a retained old parser catalog/fact, then correct it from its
+    // explicit API header without creating a new API source or cursor.
+    const db=openLocalIndexStore(indexFile);
+    try{
+      db.prepare('UPDATE source SET parser_version=?').run('local-index-rollout-typed-v3+unified-rollout-typed-v22');
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM usage_event').get().n,2);
+      assert.equal(db.prepare('SELECT SUM(events) AS n FROM usage_rollup').get().n,2);
+    }finally{db.close();}
+    const corrected=await refresh({workerCount:1});assert.equal(corrected.sourcesRescanned,1);
+    const before=v2Facts(indexFile);assert.equal(before.events.size,1);
+    assert.ok([...before.events.keys()].every(key=>prior.events.has(key)));
+    withReadOnlyStore(indexFile,db=>{
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM source WHERE parser_version=?').get(LOCAL_INDEX_PARSER_VERSION).n,2);
+      for(const table of ['usage_rollup','work_rollup','workload_bucket'])
+        assert.equal(db.prepare(`SELECT SUM(events) AS n FROM ${table} WHERE events>0`).get().n,1,table);
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM integrity_gap').get().n,0);
+      assert.deepEqual({...db.prepare('SELECT presence,scanned_bytes FROM source WHERE path=?').get(f.path)},
+        {presence:'absent',scanned_bytes:0});
+    });
+    assert.deepEqual(await readFile(f.path),originalApi);assert.deepEqual(await readFile(subscriptionPath),originalSubscription);
+    const append=response(4,'synthetic-api-response-next',2);
+    await appendFile(f.path,bytes([append]));
+    const generation=withReadOnlyStore(indexFile,db=>db.prepare('SELECT commit_seq,calculation_revision FROM store_state WHERE id=1').get());
+    const apiRefresh=await refresh();const afterApi=v2Facts(indexFile);
+    assert.equal(apiRefresh.unchanged,true);assert.equal(apiRefresh.bytesScanned,0);
+    assert.deepEqual(withReadOnlyStore(indexFile,db=>db.prepare('SELECT commit_seq,calculation_revision FROM store_state WHERE id=1').get()),generation);
+    assertSameFacts(afterApi,before,'API append leaves the retired catalog/cursor and facts untouched');
+    await refresh();assertSameFacts(v2Facts(indexFile),afterApi,'restart/retry remains excluded');
+    const next=rec(5,'token_usage_record',{...response(5,'synthetic-subscription-next',2).payload,thread_id:subscriptionId});
+    await appendFile(subscriptionPath,bytes([next]));await refresh();
+    assert.equal(v2Facts(indexFile).events.size,2,'subscription append remains counted exactly once');
+    const after=v2Facts(indexFile);await refresh();assertSameFacts(v2Facts(indexFile),after);
+    const coldIndex=join(f.root,'cold-copy.sqlite');await refreshCodexHome(f.root,{indexFile:coldIndex,secretFile,workerCount:2});
+    const fresh=v2Facts(coldIndex);
+    // A cold index has no retired API tombstone, and stable source ordinals
+    // remain carried history in the corrected index.
+    assert.deepEqual([...fresh.events.keys()],[...after.events.keys()]);
+    assert.equal(fresh.provisional,0);
+    withReadOnlyStore(coldIndex,db=>assert.equal(db.prepare('SELECT COUNT(*) AS n FROM source').get().n,1));
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('excluding an API parent preserves replay proof for its subscription fork', async () => {
+  const parentHeader={...meta,payload:{...meta.payload,model_provider:'synthetic-relay'}};
+  const f=await fixture([parentHeader,context,legacy(1,1)]);
+  const childId='30000000-0000-4000-8000-000000000003';
+  const childPath=join(f.root,'sessions',`rollout-2026-09-03T12-00-00-${childId}.jsonl`);
+  const rows=[{...meta,payload:{id:childId,forked_from_id:meta.payload.id,model_provider:'openai'}},context,legacy(1,1),legacy(2,2)];
+  await writeFile(childPath,rows.map(r=>JSON.stringify(r)).join('\n')+'\n');
+  try{
+    const usage=[];
+    await localCodexLogScanner.scanCodexLogEvents({codexHome:f.root,startAt:at(0),endAt:at(20),onUsage:e=>usage.push(e)});
+    assert.equal(usage.length,1,'copied parent usage is still suppressed');
+    assert.equal(usage[0].raw.total_tokens,raw().total_tokens);
+    for(const workerCount of [1,2]){
+      const indexFile=join(f.root,`fork-${workerCount}.sqlite`);
+      await refreshCodexHome(f.root,{indexFile,secretFile:join(f.root,'salt'),workerCount});
+      withReadOnlyStore(indexFile,db=>{
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM source').get().n,1);
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM session').get().n,1);
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM lineage_snapshot').get().n,0);
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM usage_event').get().n,1);
+        assert.equal(db.prepare('SELECT SUM(tokens_in_uncached+tokens_in_cache_read+tokens_out_combined) AS n FROM usage_event').get().n,raw().total_tokens);
+      });
+    }
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('API-only additions and long appends leave publication, revision, catalogs and facts unchanged', async () => {
+  const f=await fixture([meta,context,response(2,'synthetic-subscription-response',1)]);
+  const apiId='40000000-0000-4000-8000-000000000004';
+  const apiPath=join(f.root,'sessions',`rollout-2026-09-03T12-00-00-${apiId}.jsonl`);
+  const indexFile=join(f.root,'index.sqlite');
+  const bytes=rows=>rows.map(row=>JSON.stringify(row)).join('\n')+'\n';
+  const snapshot=()=>withReadOnlyStore(indexFile,db=>({
+    state:{...db.prepare('SELECT * FROM store_state').get()},
+    sources:db.prepare('SELECT * FROM source').all().map(row=>({...row})),
+    sessions:db.prepare('SELECT * FROM session').all().map(row=>({...row})),
+    changes:db.prepare('SELECT * FROM source_change').all().map(row=>({...row})),
+  }));
+  try{
+    await refreshCodexHome(f.root);const before=snapshot(),facts=v2Facts(indexFile);
+    await writeFile(apiPath,bytes([{...meta,payload:{id:apiId,model_provider:'synthetic-relay'}},context]));
+    for(const append of [false,true]){
+      if(append)await appendFile(apiPath,bytes([rec(3,'response_item',{type:'message',content:'x'.repeat(2*1024*1024)})]));
+      const result=await refreshCodexHome(f.root,{workerCount:2});
+      assert.equal(result.unchanged,true);assert.equal(result.bytesScanned,0);
+      assert.deepEqual(snapshot(),before);
+      assertSameFacts(v2Facts(indexFile),facts);
+    }
+    await rm(apiPath);await refreshCodexHome(f.root);
+    assert.deepEqual(snapshot(),before,'removing excluded evidence does not mutate the subscription index');
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('an API dependency remains transient across restart and preserves appended subscription replay', async () => {
+  const apiHeader={...meta,payload:{...meta.payload,model_provider:'synthetic-relay'}};
+  const f=await fixture([apiHeader,context,legacy(1,1)]);
+  const childId='50000000-0000-4000-8000-000000000005';
+  const childPath=join(f.root,'sessions',`rollout-2026-09-03T12-00-00-${childId}.jsonl`);
+  const bytes=rows=>rows.map(row=>JSON.stringify(row)).join('\n')+'\n';
+  try{
+    const rows=[{...meta,payload:{id:childId,forked_from_id:meta.payload.id,model_provider:'openai'}},context,legacy(1,1),legacy(2,2)];
+    await writeFile(childPath,bytes(rows));await refreshCodexHome(f.root);
+    await appendFile(childPath,bytes([legacy(3,3)]));await refreshCodexHome(f.root);
+    withReadOnlyStore(join(f.root,'index.sqlite'),db=>{
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM source').get().n,1);
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM usage_event').get().n,2);
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM session').get().n,1);
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM integrity_gap').get().n,0);
+    });
+    const after=v2Facts(join(f.root,'index.sqlite'));await refreshCodexHome(f.root);
+    assertSameFacts(v2Facts(join(f.root,'index.sqlite')),after);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('a paginated subscription continuation reads its exact API base without indexing it', async () => {
+  const apiHeader={...meta,ordinal:0,payload:{...meta.payload,history_mode:'paginated',model_provider:'synthetic-relay'}};
+  const parentRows=[apiHeader,{...context,ordinal:1},{...legacy(1,1),ordinal:2}];
+  const f=await fixture(parentRows),replacementId='60000000-0000-4000-8000-000000000006';
+  const childPath=join(f.root,'sessions',`rollout-2026-09-03T12-00-00-${meta.payload.id}_${replacementId}.jsonl`);
+  const bytes=rows=>rows.map(row=>JSON.stringify(row)).join('\n')+'\n';
+  const replacementMeta={...meta,ordinal:3,payload:{id:meta.payload.id,history_mode:'paginated',model_provider:'openai',
+    history_base:{thread_id:meta.payload.id,end_ordinal_exclusive:3,end_byte_offset:Buffer.byteLength(bytes(parentRows))}}};
+  try{
+    await writeFile(childPath,bytes([replacementMeta,{...context,ordinal:4},{...legacy(2,2),ordinal:5}]));
+    for(const workerCount of [1,2]){
+      const indexFile=join(f.root,`paginated-api-${workerCount}.sqlite`);
+      await refreshCodexHome(f.root,{indexFile,secretFile:join(f.root,'salt'),workerCount});
+      withReadOnlyStore(indexFile,db=>{
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM source').get().n,1);
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM usage_event').get().n,1);
+        assert.equal(db.prepare('SELECT SUM(total_input_context) AS n FROM usage_event').get().n,raw().input_tokens);
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM integrity_gap').get().n,0);
+      });
+    }
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('API catalog correction is cancellable and later subscription readmission remains exact', async () => {
+  const f=await fixture([meta,context,response(2,'synthetic-correction-response',1)]);
+  const bytes=rows=>rows.map(row=>JSON.stringify(row)).join('\n')+'\n';
+  const indexFile=join(f.root,'index.sqlite');
+  try{
+    await refreshCodexHome(f.root);
+    const before=v2Facts(indexFile);
+    const state=()=>withReadOnlyStore(indexFile,db=>({...db.prepare('SELECT * FROM store_state').get()}));
+    const prior=state();
+    await writeFile(f.path,bytes([{...meta,payload:{...meta.payload,auth_mode:'apikey'}},context,response(2,'synthetic-correction-response',1)]));
+    const controller=new AbortController();
+    await assert.rejects(refreshCodexHome(f.root,{signal:controller.signal,discover:async options=>{
+      const infos=await localCodexLogScanner.discoverCodexRolloutInfos(options);
+      controller.abort();return infos;
+    }}));
+    assert.deepEqual(state(),prior);assertSameFacts(v2Facts(indexFile),before);
+    const corrected=await refreshCodexHome(f.root);assert.equal(corrected.unchanged,false);
+    assert.equal(v2Facts(indexFile).events.size,0);
+    const retired=state();await appendFile(f.path,bytes([response(3,'synthetic-api-later',2)]));
+    assert.equal((await refreshCodexHome(f.root)).unchanged,true);assert.deepEqual(state(),retired);
+    await writeFile(f.path,bytes([meta,context,response(2,'synthetic-correction-response',1)]));
+    await refreshCodexHome(f.root);assertSameFacts(v2Facts(indexFile),before);
+  }finally{await rm(f.root,{recursive:true,force:true});}
 });
 
 test('invalid identities, conflicting copies, missing responses and resource limits fail explicitly', () => {

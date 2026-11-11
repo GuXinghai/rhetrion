@@ -2,9 +2,10 @@ import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import * as pathApi from 'node:path';
-import { loadWindowsSourceReadBinding } from './windows-filesystem.js';
+import { loadWindowsSourceReadBinding, loadWindowsTimingRecoveryBinding } from './windows-filesystem.js';
 import { createSourceFileAccess } from './source-file-access.js';
 import { acquireProtectedSqliteFiles } from './windows-protected-sqlite.js';
+import { recoverTimingJournal } from './timing-journal-recovery.js';
 
 const safe = (ok, code) => { if (!ok) throw new Error(code); };
 
@@ -45,7 +46,12 @@ export function createTimingFilesystem({ platform = process.platform,
         try { lease.release(); } catch { /* Keep the validation failure. */ }
         throw e;
       }
-      return { file, created, persistentJournal: true, release: lease.release };
+      return { file, created, persistentJournal: true, release: lease.release,
+        recoverJournal: ({ databaseFactory, validate }) => recoverTimingJournal({
+          native: loadWindowsBinding === loadWindowsSourceReadBinding ? loadWindowsTimingRecoveryBinding() : native,
+          lease, file, databaseFactory, validate,
+        }),
+      };
     },
   };
 }

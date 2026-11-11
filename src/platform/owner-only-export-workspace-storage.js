@@ -140,9 +140,6 @@ export function createOwnerOnlyExportWorkspaceStorageContext(configuration = {})
     sourceCheckpointBatchSha256,
     supplementalSourceCheckpointBatchSha256,
   } = contract;
-function filesystemIdentity(value) { return (Number.isSafeInteger(value) && value >= 0) || (typeof value === "string" && /^(0|[1-9][0-9]{0,19})$/.test(value) && BigInt(value) <= 18446744073709551615n); }
-function encodeFilesystemIdentity(value) { return typeof value === "string" ? `u64:${value}` : value; }
-function decodeFilesystemIdentity(value) { if (typeof value === "string" && value.startsWith("u64:")) { const id = value.slice(4); if (!filesystemIdentity(id)) fail("schema"); return id; } if (!Number.isSafeInteger(value) || value < 0) fail("schema"); return value; }
 const MAX_U64_FILESYSTEM_ID = 18446744073709551615n;
 const MAX_U128_FILESYSTEM_ID = 340282366920938463463374607431768211455n;
 function canonicalSourceIdentity(value, maximum) {
@@ -164,8 +161,8 @@ function decodeSourceIdentity(value, maximum) {
 }
 const DATABASE_NAME = EXPORT_WORKSPACE_DATABASE_BASENAME;
 const EXPORT_WORKSPACE_APPLICATION_ID = 0x55534d34;
-const EXPORT_WORKSPACE_USER_VERSION = 7;
-const EXPORT_WORKSPACE_SCHEMA_SHA256 = "da0bd8eb5380b3246c4f37ff33ad7dda343c13919b1885cc7c21e94e5dedabf3";
+const EXPORT_WORKSPACE_USER_VERSION = 8;
+const EXPORT_WORKSPACE_SCHEMA_SHA256 = "e4c2e77c113638d9ab07c87221882c42e2689f40b17e7557888bdd9fa7379bea";
 const DEFAULT_CRASH_RECOVERY_RESERVATION_MS = 5_000;
 const OCCURRENCE_KINDS = new Set(["usage_event", "tool_call"]);
 const SNAPSHOT_KINDS = new Set(["cumulative_usage", "tool_call"]);
@@ -554,8 +551,18 @@ function initializeSchema(database) {
       source_key TEXT NOT NULL UNIQUE CHECK(length(source_key) = 64),
       kind TEXT NOT NULL CHECK(kind IN ('codex_collector_ledger', 'claude_status_snapshot', 'claude_transcript_jsonl')),
       binding_kind TEXT NOT NULL CHECK(binding_kind IN ('file_prefix', 'frozen_inventory')),
-      device ANY,
-      inode ANY,
+      device TEXT CHECK(device IS NULL OR (
+        length(device) BETWEEN 1 AND 20
+        AND device NOT GLOB '*[^0-9]*'
+        AND (device = '0' OR substr(device, 1, 1) BETWEEN '1' AND '9')
+        AND (length(device) < 20 OR device <= '18446744073709551615')
+      )),
+      inode TEXT CHECK(inode IS NULL OR (
+        length(inode) BETWEEN 1 AND 39
+        AND inode NOT GLOB '*[^0-9]*'
+        AND (inode = '0' OR substr(inode, 1, 1) BETWEEN '1' AND '9')
+        AND (length(inode) < 39 OR inode <= '340282366920938463463374607431768211455')
+      )),
       birthtime_ms INTEGER,
       prefix_bytes INTEGER,
       prefix_sha256 TEXT,
@@ -897,8 +904,8 @@ function buildWorkspaceApi(database, directory, {
     const binding = row.binding_kind === "file_prefix"
       ? {
         kind: "file_prefix",
-        device: decodeFilesystemIdentity(row.device),
-        inode: decodeFilesystemIdentity(row.inode),
+        device: decodeSourceIdentity(row.device, MAX_U64_FILESYSTEM_ID),
+        inode: decodeSourceIdentity(row.inode, MAX_U128_FILESYSTEM_ID),
         birthtimeMs: Number(row.birthtime_ms),
         prefixBytes: Number(row.prefix_bytes),
         prefixSha256: row.prefix_sha256,
@@ -914,7 +921,8 @@ function buildWorkspaceApi(database, directory, {
     if (!binding || !validSha256(row.source_key)
         || (row.last_batch_sha256 !== null && !validSha256(row.last_batch_sha256))) fail("schema");
     if ((binding.kind === "file_prefix"
-        && (!filesystemIdentity(binding.device) || !filesystemIdentity(binding.inode) || !safeCount(binding.birthtimeMs)
+        && (canonicalSourceIdentity(binding.device, MAX_U64_FILESYSTEM_ID) !== binding.device
+          || canonicalSourceIdentity(binding.inode, MAX_U128_FILESYSTEM_ID) !== binding.inode || !safeCount(binding.birthtimeMs)
           || !safeCount(binding.prefixBytes) || !validSha256(binding.prefixSha256)))
       || (binding.kind === "frozen_inventory"
         && (!safeCount(binding.inventoryEntries) || !safeCount(binding.inventoryBytes)
@@ -994,8 +1002,8 @@ function buildWorkspaceApi(database, directory, {
         parserVersion: row.parser_version,
         binding: row.binding_kind === "file_prefix" ? {
           kind: "file_prefix",
-          device: decodeFilesystemIdentity(row.device),
-          inode: decodeFilesystemIdentity(row.inode),
+          device: decodeSourceIdentity(row.device, MAX_U64_FILESYSTEM_ID),
+          inode: decodeSourceIdentity(row.inode, MAX_U128_FILESYSTEM_ID),
           birthtimeMs: Number(row.birthtime_ms),
           prefixBytes: Number(row.prefix_bytes),
           prefixSha256: row.prefix_sha256,
@@ -1877,8 +1885,8 @@ async function createExportWorkspace({
           source.sourceKey,
           source.kind,
           source.binding.kind,
-          isFilePrefix ? encodeFilesystemIdentity(source.binding.device) : null,
-          isFilePrefix ? encodeFilesystemIdentity(source.binding.inode) : null,
+          isFilePrefix ? encodeSourceIdentity(source.binding.device, MAX_U64_FILESYSTEM_ID) : null,
+          isFilePrefix ? encodeSourceIdentity(source.binding.inode, MAX_U128_FILESYSTEM_ID) : null,
           isFilePrefix ? source.binding.birthtimeMs : null,
           isFilePrefix ? source.binding.prefixBytes : null,
           isFilePrefix ? source.binding.prefixSha256 : null,

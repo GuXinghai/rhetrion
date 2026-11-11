@@ -9,6 +9,7 @@
 #include <aclapi.h>
 #include <sddl.h>
 #include <fileapi.h>
+#include <wincrypt.h>
 #include <node_api.h>
 
 #include <algorithm>
@@ -173,6 +174,8 @@ struct Failure {
   const char* code;
   const char* detail = nullptr;
   const char* stage = nullptr;
+  // Internal classification only; never expose raw operating-system context.
+  DWORD systemError = ERROR_SUCCESS;
 };
 
 Failure InvalidConfiguration() { return {"INVALID_CONFIGURATION"}; }
@@ -231,7 +234,9 @@ Failure FromLastError(DWORD error = GetLastError()) {
       || error == ERROR_SHARING_VIOLATION
       || error == ERROR_LOCK_VIOLATION
       || error == ERROR_WRITE_PROTECT) {
-    return AccessDenied();
+    Failure failure = AccessDenied();
+    failure.systemError = error;
+    return failure;
   }
   if (error == ERROR_DIRECTORY) return NotDirectory();
   if (error == ERROR_CANT_ACCESS_FILE) return ReparsePoint();
@@ -1025,12 +1030,13 @@ bool ParseAndValidatePath(
   return true;
 }
 
-bool ValidateSecurity(
+bool ValidateSecurityWithLinkCount(
     HANDLE handle,
     bool directory,
     Failure* failure,
-    HandleIdentity* identity = nullptr,
-    SecuritySnapshot* security = nullptr) {
+    HandleIdentity* identity,
+    SecuritySnapshot* security,
+    DWORD expectedLinkCount) {
   bool reparse = false;
   if (!HasReparsePoint(handle, &reparse)) {
     *failure = OperationFailed();
@@ -1049,7 +1055,7 @@ bool ValidateSecurity(
     *failure = directory ? NotDirectory() : NotRegularFile();
     return false;
   }
-  if (!directory && observed.linkCount != 1) {
+  if (!directory && observed.linkCount != expectedLinkCount) {
     *failure = HardLink();
     return false;
   }
@@ -1085,6 +1091,12 @@ bool ValidateSecurity(
   if (identity != nullptr) *identity = observed;
   if (security != nullptr) *security = descriptor;
   return true;
+}
+
+bool ValidateSecurity(
+    HANDLE handle, bool directory, Failure* failure,
+    HandleIdentity* identity = nullptr, SecuritySnapshot* security = nullptr) {
+  return ValidateSecurityWithLinkCount(handle, directory, failure, identity, security, 1);
 }
 
 bool BuildOwnerOnlyObjectSecurity(
@@ -2827,6 +2839,148 @@ napi_value DeleteFileCallback(napi_env env, napi_callback_info info) {
   return result;
 }
 
+// The export journals use Node's exact decimal U64 stat identifiers. Compare
+// those to the same held Windows object, then hash and unlink without releasing
+// it. No content, pathname or OS error text is returned.
+bool ParseDecimalIdentity(const std::string& text, std::uint64_t* result) {
+  if (text.empty() || text.size() > 20 || (text.size() > 1 && text[0] == '0')) return false;
+  std::uint64_t value = 0;
+  for (char c : text) {
+    if (c < '0' || c > '9') return false;
+    const auto digit = static_cast<std::uint64_t>(c - '0');
+    if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10) return false;
+    value = value * 10 + digit;
+  }
+  *result = value;
+  return true;
+}
+
+bool VerifyDeletionHash(HANDLE handle, std::uint64_t expectedBytes,
+    const std::string& expectedHash, Failure* failure) {
+  LARGE_INTEGER size{};
+  if (!GetFileSizeEx(handle, &size) || size.QuadPart < 0
+      || static_cast<std::uint64_t>(size.QuadPart) != expectedBytes) {
+    *failure = IdentityMismatch();
+    return false;
+  }
+  struct HashGuard {
+    HCRYPTPROV provider = 0;
+    HCRYPTHASH hash = 0;
+    ~HashGuard() {
+      if (hash != 0) CryptDestroyHash(hash);
+      if (provider != 0) CryptReleaseContext(provider, 0);
+    }
+  } guard;
+  // Ephemeral hashing only: no key container, credentials or interactive CSP.
+  if (!CryptAcquireContextW(&guard.provider, nullptr, nullptr, PROV_RSA_AES,
+          CRYPT_VERIFYCONTEXT | CRYPT_SILENT)
+      || !CryptCreateHash(guard.provider, CALG_SHA_256, 0, 0, &guard.hash)) {
+    *failure = OperationFailed();
+    return false;
+  }
+  std::array<BYTE, 64 * 1024> buffer{};
+  std::uint64_t offset = 0;
+  while (offset < expectedBytes) {
+    DWORD read = 0;
+    const auto requested = static_cast<DWORD>(std::min<std::uint64_t>(buffer.size(), expectedBytes - offset));
+    if (!ReadFile(handle, buffer.data(), requested, &read, nullptr) || read == 0
+        || !CryptHashData(guard.hash, buffer.data(), read, 0)) {
+      *failure = OperationFailed();
+      return false;
+    }
+    offset += read;
+  }
+  std::array<BYTE, 32> hash{};
+  DWORD hashBytes = static_cast<DWORD>(hash.size());
+  if (!CryptGetHashParam(guard.hash, HP_HASHVAL, hash.data(), &hashBytes, 0)
+      || hashBytes != hash.size()) {
+    *failure = OperationFailed();
+    return false;
+  }
+  std::ostringstream text;
+  text << std::hex << std::setfill('0');
+  for (BYTE byte : hash) text << std::setw(2) << static_cast<unsigned int>(byte);
+  if (text.str() != expectedHash) {
+    *failure = IdentityMismatch();
+    return false;
+  }
+  return true;
+}
+
+napi_value DeleteExactFileCallback(napi_env env, napi_callback_info info) {
+  std::vector<napi_value> arguments;
+  if (!GetArguments(env, info, &arguments, 3)) return ThrowFailure(env, InvalidConfiguration());
+  std::wstring path, peerPath;
+  std::string deviceText, inodeText, sha256;
+  std::uint64_t device = 0, inode = 0;
+  napi_value sizeValue;
+  double byteSize = 0;
+  napi_valuetype peerType;
+  if (!GetString(env, arguments[0], &path)
+      || !GetNamedString(env, arguments[1], "device", &deviceText)
+      || !GetNamedString(env, arguments[1], "inode", &inodeText)
+      || !ParseDecimalIdentity(deviceText, &device) || !ParseDecimalIdentity(inodeText, &inode)
+      || !GetNamedString(env, arguments[1], "sha256", &sha256) || sha256.size() != 64
+      || napi_get_named_property(env, arguments[1], "byteSize", &sizeValue) != napi_ok
+      || napi_get_value_double(env, sizeValue, &byteSize) != napi_ok
+      || !std::isfinite(byteSize) || byteSize < 0 || byteSize > 9007199254740991.0
+      || std::floor(byteSize) != byteSize
+      || napi_typeof(env, arguments[2], &peerType) != napi_ok
+      || (peerType != napi_null && !GetString(env, arguments[2], &peerPath))) {
+    return ThrowFailure(env, InvalidConfiguration());
+  }
+  for (char c : sha256) if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+    return ThrowFailure(env, InvalidConfiguration());
+  Failure failure = OperationFailed();
+  ParsedPath parsed, peerParsed;
+  RelativeHandles opened, peer;
+  OpenRelativeOptions options;
+  options.finalDirectoryKnown = true;
+  options.finalDirectory = false;
+  options.access = GENERIC_READ | DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+  options.shareMode = FILE_SHARE_READ;  // Keep bytes and both names immutable.
+  bool missing = false;
+  if (!ParseAndValidatePath(path, false, &parsed, &failure)) return ThrowFailure(env, failure);
+  options.protectedAncestorDepth = parsed.components.size();
+  if (!OpenRelativePath(parsed, options, &opened, &missing, &failure)) return ThrowFailure(env, failure);
+  const DWORD links = peerType == napi_null ? 1 : 2;
+  HandleIdentity current;
+  BY_HANDLE_FILE_INFORMATION nodeIdentity{};
+  if (!ValidateSecurityWithLinkCount(opened.final, false, &failure, &current, nullptr, links)
+      || !ResolveFinalPath(opened.final, &parsed)
+      || !GetFileInformationByHandle(opened.final, &nodeIdentity)) return ThrowFailure(env, failure);
+  const std::uint64_t fileIndex = (static_cast<std::uint64_t>(nodeIdentity.nFileIndexHigh) << 32)
+      | nodeIdentity.nFileIndexLow;
+  if (device != nodeIdentity.dwVolumeSerialNumber || inode != fileIndex) return ThrowFailure(env, IdentityMismatch());
+  if (!ValidateSecurity(opened.parents.back(), true, &failure)) return ThrowFailure(env, failure);
+  if (links == 2) {
+    options.access = READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    // This second read handle must share the DELETE access already held above.
+    options.shareMode = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    HandleIdentity other, parent, peerParent;
+    if (!ParseAndValidatePath(peerPath, false, &peerParsed, &failure)) return ThrowFailure(env, failure);
+    options.protectedAncestorDepth = peerParsed.components.size();
+    if (!OpenRelativePath(peerParsed, options, &peer, &missing, &failure)
+        || !ValidateSecurityWithLinkCount(peer.final, false, &failure, &other, nullptr, 2)
+        || !ResolveFinalPath(peer.final, &peerParsed)
+        || !ValidateSecurity(opened.parents.back(), true, &failure, &parent)
+        || !ValidateSecurity(peer.parents.back(), true, &failure, &peerParent)) return ThrowFailure(env, failure);
+    const auto canonical = CanonicalExpectedPath(parsed), canonicalPeer = CanonicalExpectedPath(peerParsed);
+    if (!EqualIdentity(current, other) || !EqualIdentity(parent, peerParent)
+        || canonical.empty() || canonicalPeer.empty()
+        || ComparablePath(canonical) == ComparablePath(canonicalPeer))
+      return ThrowFailure(env, IdentityMismatch());
+  }
+  if (!VerifyDeletionHash(opened.final, static_cast<std::uint64_t>(byteSize), sha256, &failure)
+      || !ValidateSecurityWithLinkCount(opened.final, false, &failure, nullptr, nullptr, links)
+      || !MarkHandleForDeletion(opened.final)) return ThrowFailure(env, failure);
+  napi_value result, deleted;
+  napi_create_object(env, &result);
+  napi_get_boolean(env, true, &deleted);
+  napi_set_named_property(env, result, "deleted", deleted);
+  return result;
+}
+
 // These root-bound child callbacks are used by the protected state store.
 // They deliberately receive the root identity on every operation rather than
 // caching a path-derived decision in JavaScript.  OpenRootBoundChild validates
@@ -3135,6 +3289,7 @@ struct CredentialAuditFileGuard {
   bool directoryGuard = false;
   bool legacyDirectory = false;
   bool frozenSource = false;
+  bool timingRecoveryFile = false;
 };
 
 std::array<CredentialAuditFileGuard*, 64> gCredentialAuditFileGuards{};
@@ -3534,8 +3689,14 @@ napi_value OpenSourceFile(napi_env env, napi_callback_info info, bool frozen) {
   options.protectedAncestorShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE;
   RelativeHandles opened;
   bool missing = false;
-  if (!OpenRelativePath(parsed, options, &opened, &missing, &failure) || missing)
+  if (!OpenRelativePath(parsed, options, &opened, &missing, &failure) || missing) {
+    // Acquisition contention is not evidence of an ACL failure. Keep the
+    // handle-sharing boundary intact and report only a fixed category.
+    if (failure.systemError == ERROR_SHARING_VIOLATION
+        || failure.systemError == ERROR_LOCK_VIOLATION)
+      return ThrowFailure(env, {"SOURCE_BUSY"});
     return ThrowFailure(env, failure);
+  }
   HandleIdentity identity;
   SecuritySnapshot security;
   if (!GetIdentity(opened.final, &identity) || !ReadSecurity(opened.final, &security)
@@ -3746,6 +3907,110 @@ napi_value CopyLegacyStateFileCallback(napi_env env, napi_callback_info info) {
   SecureZeroMemory(bytes.data(), bytes.size());
   SecureZeroMemory(verify.data(), verify.size());
   return IdentityValue(env, targetIdentity);
+}
+
+// Timing recovery reuses the issued audit guard's exact file object. The
+// write-denying share mode excludes writers; the full byte lock excludes readers
+// as well, including SQLite's lock region. Closing the source token releases it.
+napi_value OpenTimingRecoveryFileCallback(napi_env env, napi_callback_info info) {
+  std::vector<napi_value> arguments;
+  void* data = nullptr;
+  if (!GetArguments(env, info, &arguments, 1)
+      || napi_get_value_external(env, arguments[0], &data) != napi_ok)
+    return ThrowFailure(env, InvalidConfiguration());
+  const std::lock_guard<std::mutex> lock(gCredentialAuditFileGuardsMutex);
+  auto* audit = static_cast<CredentialAuditFileGuard*>(data);
+  if (!IsIssuedCredentialAuditFileGuard(audit) || !audit->active || audit->sourceFile
+      || audit->directoryGuard || audit->handles.empty()) return ThrowFailure(env, CredentialAuditGuardForeign());
+  HANDLE handle = ReOpenFile(audit->handles.back(), GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
+      FILE_SHARE_READ, 0);
+  if (handle == INVALID_HANDLE_VALUE) return ThrowFailure(env, OperationFailed());
+  ScopedHandle reopened; reopened.handle = handle;
+  Failure failure = OperationFailed();
+  HandleIdentity before, after;
+  SecuritySnapshot security;
+  if (!GetIdentity(audit->handles.back(), &before)
+      || !ValidateSecurity(handle, false, &failure, &after, &security)
+      || before.volumeSerialNumber != after.volumeSerialNumber || before.fileId != after.fileId
+      || security.denyAce || security.ownerAllowAceCount != 1 || security.ownerAllowMask != FILE_ALL_ACCESS)
+    return ThrowFailure(env, SecurityPolicy("timing_recovery_identity"));
+  OVERLAPPED offset{};
+  if (!LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0,
+      MAXDWORD, MAXDWORD, &offset)) return ThrowFailure(env, OperationFailed());
+  auto* guard = new (std::nothrow) CredentialAuditFileGuard;
+  if (guard == nullptr) return ThrowFailure(env, OperationFailed());
+  guard->handles.push_back(reopened.release());
+  guard->active = guard->sourceFile = guard->frozenSource = guard->timingRecoveryFile = true;
+  if (!RegisterCredentialAuditFileGuard(guard)) {
+    CloseHandle(guard->handles.back()); delete guard; return ThrowFailure(env, OperationFailed());
+  }
+  napi_value result;
+  if (napi_create_external(env, guard, FinalizeCredentialAuditFileGuard, nullptr, &result) != napi_ok) {
+    UnregisterCredentialAuditFileGuard(guard); CloseHandle(guard->handles.back()); delete guard;
+    return ThrowFailure(env, OperationFailed());
+  }
+  return result;
+}
+
+std::wstring TimingRecoveryPath(HANDLE handle) {
+  std::vector<wchar_t> value(32768);
+  const DWORD length = GetFinalPathNameByHandleW(handle, value.data(), static_cast<DWORD>(value.size()), FILE_NAME_NORMALIZED);
+  return length && length < value.size() ? std::wstring(value.data(), length) : L"";
+}
+
+// Only the fixed timing main/journal pair can be changed. Keep the original
+// journal hot until the entire verified image is durable and read back exactly.
+// An interruption before journal invalidation is replayable by SQLite again.
+napi_value RestoreTimingRecoveryFileCallback(napi_env env, napi_callback_info info) {
+  std::vector<napi_value> arguments;
+  if (!GetArguments(env, info, &arguments, 3)) return ThrowFailure(env, InvalidConfiguration());
+  const std::lock_guard<std::mutex> lock(gCredentialAuditFileGuardsMutex);
+  auto* main = SourceFileGuard(env, arguments[0]);
+  auto* journal = SourceFileGuard(env, arguments[1]);
+  auto* recovered = SourceFileGuard(env, arguments[2]);
+  if (!main || !journal || !recovered || !main->timingRecoveryFile || !journal->timingRecoveryFile
+      || recovered->timingRecoveryFile || !recovered->frozenSource)
+    return ThrowFailure(env, CredentialAuditGuardForeign());
+  HANDLE target = main->handles.back(), log = journal->handles.back(), source = recovered->handles.back();
+  const auto targetPath = TimingRecoveryPath(target), logPath = TimingRecoveryPath(log), sourcePath = TimingRecoveryPath(source);
+  const std::wstring suffix = L"\\timing-experiment.sqlite";
+  if (targetPath.size() <= suffix.size() || targetPath.substr(targetPath.size() - suffix.size()) != suffix
+      || logPath != targetPath + L"-journal" || sourcePath == targetPath
+      || sourcePath.size() <= suffix.size() || sourcePath.substr(sourcePath.size() - suffix.size()) != suffix)
+    return ThrowFailure(env, InvalidConfiguration());
+  FILE_STANDARD_INFO size{}, logSize{};
+  if (!GetFileInformationByHandleEx(source, FileStandardInfo, &size, sizeof(size))
+      || size.EndOfFile.QuadPart < 512 || size.EndOfFile.QuadPart > 268435456LL
+      || !GetFileInformationByHandleEx(log, FileStandardInfo, &logSize, sizeof(logSize))
+      || logSize.EndOfFile.QuadPart < 512 || logSize.EndOfFile.QuadPart > 536870912LL)
+    return ThrowFailure(env, TooLarge());
+  std::array<BYTE, 65536> bytes{}, verify{};
+  const auto finish = [&](bool okay) {
+    SecureZeroMemory(bytes.data(), bytes.size()); SecureZeroMemory(verify.data(), verify.size());
+    napi_value result;
+    if (!okay) return ThrowFailure(env, OperationFailed());
+    napi_get_boolean(env, true, &result); return result;
+  };
+  LARGE_INTEGER zero{};
+  if (!SetFilePointerEx(source, zero, nullptr, FILE_BEGIN) || !SetFilePointerEx(target, zero, nullptr, FILE_BEGIN)) return finish(false);
+  for (LONGLONG offset = 0; offset < size.EndOfFile.QuadPart;) {
+    const DWORD requested = static_cast<DWORD>(std::min<LONGLONG>(bytes.size(), size.EndOfFile.QuadPart - offset));
+    DWORD read = 0, written = 0;
+    if (!ReadFile(source, bytes.data(), requested, &read, nullptr) || read != requested
+        || !WriteFile(target, bytes.data(), requested, &written, nullptr) || written != requested) return finish(false);
+    offset += requested;
+  }
+  if (!SetEndOfFile(target) || !FlushFileBuffers(target)
+      || !SetFilePointerEx(source, zero, nullptr, FILE_BEGIN) || !SetFilePointerEx(target, zero, nullptr, FILE_BEGIN)) return finish(false);
+  for (LONGLONG offset = 0; offset < size.EndOfFile.QuadPart;) {
+    const DWORD requested = static_cast<DWORD>(std::min<LONGLONG>(bytes.size(), size.EndOfFile.QuadPart - offset));
+    DWORD read = 0, checked = 0;
+    if (!ReadFile(source, bytes.data(), requested, &read, nullptr) || read != requested
+        || !ReadFile(target, verify.data(), requested, &checked, nullptr) || checked != requested
+        || std::memcmp(bytes.data(), verify.data(), requested)) return finish(false);
+    offset += requested;
+  }
+  return finish(SetFilePointerEx(log, zero, nullptr, FILE_BEGIN) && SetEndOfFile(log) && FlushFileBuffers(log));
 }
 
 enum class CredentialMutexLeaseKind {
@@ -4686,6 +4951,7 @@ NAPI_MODULE_INIT() {
   DefineMethod(env, exports, "readFile", ReadFileCallback);
   DefineMethod(env, exports, "createFile", CreateFileCallback);
   DefineMethod(env, exports, "deleteFile", DeleteFileCallback);
+  DefineMethod(env, exports, "deleteExactFile", DeleteExactFileCallback);
   DefineMethod(env, exports, "replaceFile", ReplaceFileCallback);
   DefineMethod(env, exports, "publishReport", PublishReportCallback);
   napi_value reportPublicationVersion;
@@ -4727,6 +4993,11 @@ NAPI_MODULE_INIT() {
       "releaseAccountlessInstallationCredentialMutex",
       ReleaseAccountlessInstallationCredentialMutexCallback);
   DefineMethod(env, exports, "openSourceFile", OpenSourceFileCallback);
+  DefineMethod(env, exports, "openTimingRecoveryFile", OpenTimingRecoveryFileCallback);
+  DefineMethod(env, exports, "restoreTimingRecoveryFile", RestoreTimingRecoveryFileCallback);
+  napi_value timingRecoveryVersion;
+  napi_create_string_utf8(env, "windows-timing-recovery-v1", NAPI_AUTO_LENGTH, &timingRecoveryVersion);
+  napi_set_named_property(env, exports, "timingRecoveryContractVersion", timingRecoveryVersion);
   DefineMethod(env, exports, "openLegacyStateFile", OpenLegacyStateFileCallback);
   DefineMethod(env, exports, "copyLegacyStateFile", CopyLegacyStateFileCallback);
   DefineMethod(env, exports, "acquireLegacyStateDirectoryGuard", AcquireLegacyStateDirectoryGuardCallback);

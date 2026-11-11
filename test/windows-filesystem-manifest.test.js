@@ -21,9 +21,26 @@ import {
   WINDOWS_REPORT_PUBLICATION_METHODS,
   WINDOWS_LOCAL_VOLUME_QUERY_CONTRACT,
   WINDOWS_LOCAL_VOLUME_QUERY_METHODS,
+  WINDOWS_TIMING_RECOVERY_CONTRACT, WINDOWS_TIMING_RECOVERY_METHODS,
 } from "../src/platform/windows-filesystem.js";
 
 const BYTES = Buffer.from("reviewed native bytes", "utf8");
+
+test('timing recovery manifest requires the complete narrow restore lifecycle', () => {
+  const extension = { timingRecoveryContractVersion: WINDOWS_TIMING_RECOVERY_CONTRACT,
+    ...Object.fromEntries(WINDOWS_TIMING_RECOVERY_METHODS.map(name => [name, () => {}])) };
+  const manifest = createWindowsFilesystemBindingManifest({ bytes: BYTES, binding: binding(extension) });
+  assert.deepEqual(manifest.timingRecovery, { contractVersion: WINDOWS_TIMING_RECOVERY_CONTRACT, approved: true });
+  assert.equal(manifest.approvedPolicy.productionSafe, false);
+  assert.equal(manifest.approvedPolicy.pathWalkRaceSafe, false);
+  for (const name of WINDOWS_TIMING_RECOVERY_METHODS) {
+    assert.throws(() => createWindowsFilesystemBindingManifest({ bytes: BYTES,
+      binding: binding({ ...extension, [name]: undefined }) }), { code: 'WINDOWS_FILESYSTEM_MANIFEST_INVALID_TIMING_RECOVERY' });
+  }
+  assert.throws(() => createWindowsFilesystemBindingManifest({ bytes: BYTES,
+    binding: binding({ ...extension, timingRecoveryContractVersion: 'future' }) }),
+  { code: 'WINDOWS_FILESYSTEM_MANIFEST_INVALID_TIMING_RECOVERY' });
+});
 
 test('browser profile manifest requires both bounded repair and access inspection', () => {
   const extension = { browserProfileContractVersion: 'windows-browser-profile-v2',

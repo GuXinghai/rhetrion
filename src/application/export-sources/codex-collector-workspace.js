@@ -85,7 +85,7 @@ function sourcePlanDigest(plan) {
     prefixSha256: plan.prefixSha256,
   });
   return createHash("sha256")
-    .update("app-usagemonitor/codex-collector-source-plan/v0.1\0")
+    .update("app-usagemonitor/codex-collector-source-plan/v0.3\0")
     .update(material)
     .digest("hex");
 }
@@ -288,8 +288,7 @@ async function resolveCodexCollectorWorkspaceSource({
   }
   const initialCursor = cursorFromJson(source.initialCursorJson);
   const collectorPlan = {
-    schemaVersion: typeof source.binding.device === "number" && typeof source.binding.inode === "number"
-      ? "codex-collector-export-source-plan-v0.1" : CODEX_COLLECTOR_SOURCE_PLAN_VERSION,
+    schemaVersion: CODEX_COLLECTOR_SOURCE_PLAN_VERSION,
     startAt: descriptor.coveredAt.startAt,
     endAt: descriptor.coveredAt.endAt,
     path: resolve(collectorPath),

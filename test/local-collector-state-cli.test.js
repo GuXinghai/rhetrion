@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../src/cli.js";
 import { commitLocalCollectorState } from "../src/local-collector-state.js";
+import { createProtectedFixtureDirectory } from "./helpers/windows-owner-only-fixture.js";
 
 async function captureRun(argv) {
   const lines = [];
@@ -20,7 +21,9 @@ async function captureRun(argv) {
 
 test("collector-state maintenance CLI is read-only and exposes a content-free retention plan", async () => {
   const root = await mkdtemp(join(tmpdir(), "collector-state-cli-"));
-  const stateFile = join(root, "local-collector-state-v1.sqlite");
+  const state = join(root, "state");
+  createProtectedFixtureDirectory(state);
+  const stateFile = join(state, "local-collector-state-v1.sqlite");
   try {
     await commitLocalCollectorState({
       stateFile,

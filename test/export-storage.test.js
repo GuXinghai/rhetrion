@@ -1,6 +1,7 @@
+import { createProtectedFixtureTempDirectory as mkdtemp, grantSyntheticEveryoneRead, writeInitialProtectedFixtureFile } from "./helpers/windows-owner-only-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, readFile, readdir, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -132,7 +133,10 @@ test("destination lease returns callback results, excludes contenders, and clean
   const continueLease = new Promise((resolve) => { release = resolve; });
   try {
     const first = withExportDestinationLease(directory, async () => {
-      assert.equal((await lstat(lockPath)).isSymbolicLink(), true);
+      assert.equal((await lstat(lockPath)).isSymbolicLink(), process.platform !== "win32");
+      if (process.platform === "win32") {
+        assert.equal(JSON.parse(await readFile(lockPath, "utf8")).version, "export-destination-lock-v1");
+      }
       reached();
       await continueLease;
       return "callback-result";
@@ -154,6 +158,32 @@ test("destination lease returns callback results, excludes contenders, and clean
     release?.();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("Windows destination lease preserves old symlink, malformed and broad-ACL locks", {
+  skip: process.platform !== "win32",
+}, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "app-usagemonitor-lock-refusal-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const lock = join(directory, ".app-usagemonitor-export.lock");
+  let called = false;
+  const callback = () => { called = true; };
+  await symlink("pid=99999999;token=11111111-1111-4111-8111-111111111111", lock);
+  await assert.rejects(withExportDestinationLease(directory, callback));
+  assert.equal((await lstat(lock)).isSymbolicLink(), true);
+  await unlink(lock);
+  // Newly created synthetic records only; never repair user state in place.
+  writeInitialProtectedFixtureFile(lock, '{"version":"future-lock"}');
+  await assert.rejects(withExportDestinationLease(directory, callback));
+  assert.equal(await readFile(lock, "utf8"), '{"version":"future-lock"}');
+  await unlink(lock);
+  const text = JSON.stringify({ version: "export-destination-lock-v1", pid: 99999999,
+    token: "11111111-1111-4111-8111-111111111111" });
+  writeInitialProtectedFixtureFile(lock, text);
+  grantSyntheticEveryoneRead(lock);
+  await assert.rejects(withExportDestinationLease(directory, callback));
+  assert.equal(await readFile(lock, "utf8"), text);
+  assert.equal(called, false);
 });
 
 test("paired exports publish receipt then bundle without overwrite", async () => {
@@ -307,6 +337,17 @@ test("paired export commits to the canonical parent after an alias is swapped", 
   await mkdir(join(secondDirectory, "child"), { recursive: true });
   await symlink(firstDirectory, alias);
   try {
+    if (process.platform === "win32") {
+      await assert.rejects(writeOwnerOnlyPairNoClobber({
+        firstPath: join(alias, "child", "bundle"), firstContent: "bundle",
+        secondPath: join(alias, "child", "receipt"), secondContent: "receipt",
+      }), /Windows owner-only export protection is unavailable/);
+      for (const directory of [firstDirectory, secondDirectory]) {
+        await assert.rejects(stat(join(directory, "child", "bundle")), { code: "ENOENT" });
+        await assert.rejects(stat(join(directory, "child", "receipt")), { code: "ENOENT" });
+      }
+      return;
+    }
     await writeOwnerOnlyPairNoClobber({
       firstPath: join(alias, "child", "bundle"),
       firstContent: "bundle",

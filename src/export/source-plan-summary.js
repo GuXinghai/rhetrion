@@ -3,6 +3,16 @@ import { isProxy } from "node:util/types";
 import { stableJson } from "./canonical-json.js";
 
 export const EXPORT_SOURCE_PLAN_VERSION = "codex-export-source-plan-v2";
+export function normalizeExportSourceFilesystemId(value, field) {
+  const maximum = field === "device" ? 0xffff_ffff_ffff_ffffn
+    : field === "inode" ? 0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffffn : null;
+  if (maximum === null) return null;
+  let exact;
+  if (Number.isSafeInteger(value) && value >= 0) exact = BigInt(value);
+  else if (typeof value === "string" && /^(0|[1-9][0-9]{0,38})$/u.test(value)) exact = BigInt(value);
+  else return null;
+  return exact <= maximum ? exact.toString(10) : null;
+}
 const SAFE_SOURCE_PLAN_CODES = new Set([
   "source_missing", "source_type", "source_owner", "source_links", "source_changed",
   "source_prefix", "source_duplicate", "source_lineage",

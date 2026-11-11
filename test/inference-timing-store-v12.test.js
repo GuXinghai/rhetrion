@@ -55,6 +55,85 @@ const syntheticNative = (() => {
 const syntheticFilesystem = createTimingFilesystem({ platform: 'win32', loadWindowsBinding: () => syntheticNative });
 const options = { createParser, digest, METHOD, MAX_STATE_BYTES, filesystem: syntheticFilesystem };
 
+test('terminal API timing sources skip unread bodies and long appends without advancing cursors or revisions', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'timing-api-marginal-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, 'source.jsonl');
+  const rows = fixture(); rows[0].payload.model_provider = 'synthetic-api';
+  const filler = lines(Array.from({ length: 2048 }, () => rec(0, 'synthetic_ignored', { count: 1 })));
+  for (const [name, parser, method] of [['primary', createParser, METHOD], ['supplement', createToolFreeParser, TOOL_FREE_METHOD]]) {
+    await writeFile(file, lines(rows) + filler, { mode: 0o600 });
+    const directory = join(root, name);
+    const config = { ...options, createParser: parser, METHOD: method, parserVersion: INFERENCE_TIMING_PARSER_VERSION };
+    let store = await openTimingStore(directory, config);
+    try {
+      await ingestTimingFile(store, file, { maxBytes: 4096 });
+      const baseline = store.db.prepare('SELECT * FROM source').get();
+      assert.equal(JSON.parse(baseline.state).blocked, true);
+      assert.equal(JSON.parse(baseline.snapshot).exhausted, false);
+      assert.deepEqual(readTimingRows(store), []);
+      for (const append of ['', filler + filler, filler]) {
+        if (append) await appendFile(file, append);
+        let linesRead = 0;
+        assert.deepEqual(await ingestTimingFile(store, file, { onReadLine: () => linesRead++ }), { bytes: 0, unchanged: true });
+        assert.equal(linesRead, 0);
+        assert.deepEqual(store.db.prepare('SELECT * FROM source').get(), baseline);
+        store.close(); store = await openTimingStore(directory, config);
+        assert.deepEqual(readTimingRows(store), []);
+      }
+      const aborted = new AbortController(); aborted.abort();
+      await assert.rejects(ingestTimingFile(store, file, { signal: aborted.signal }));
+      assert.deepEqual(store.db.prepare('SELECT * FROM source').get(), baseline);
+      await writeFile(file, lines(fixture()), { mode: 0o600 });
+      await ingestTimingFile(store, file);
+      assert.equal(readTimingRows(store).length, 1, 'a changed authenticated prefix must be replayed and can become eligible');
+    } finally { store.close(); }
+  }
+});
+
+test('blocked timing sources still complete parser upgrades and staged source recovery', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'timing-blocked-replay-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, 'source.jsonl');
+  const excluded = fixture(); excluded[0].payload.model_provider = 'synthetic-api';
+  const filler = lines(Array.from({ length: 128 }, () => rec(0, 'synthetic_ignored', { count: 1 })));
+  for (const [name, parser, method] of [['primary', createParser, METHOD], ['supplement', createToolFreeParser, TOOL_FREE_METHOD]]) {
+    const directory = join(root, name);
+    const config = { ...options, createParser: parser, METHOD: method };
+    await writeFile(file, lines(excluded) + filler);
+    let store = await openTimingStore(directory, { ...config, parserVersion: INFERENCE_TIMING_PARSER_VERSION - 1 });
+    await ingestTimingFile(store, file);
+    assert.equal(JSON.parse(store.db.prepare('SELECT state FROM source').get().state).blocked, true);
+    store.close();
+    store = await openTimingStore(directory, { ...config, parserVersion: INFERENCE_TIMING_PARSER_VERSION });
+    try {
+      let parsed = 0;
+      const upgrade = await ingestTimingFile(store, file, { maxBytes: 1024, onReadLine: () => parsed++ });
+      assert.ok(upgrade.bytes > 0 && parsed > 0, 'a terminal old parser must not suppress a new parser replay');
+      assert.equal(store.db.prepare('SELECT replay_parser_version FROM source').get().replay_parser_version, INFERENCE_TIMING_PARSER_VERSION);
+      await ingestTimingFile(store, file);
+      assert.equal(store.db.prepare('SELECT parser_version FROM source').get().parser_version, INFERENCE_TIMING_PARSER_VERSION);
+      assert.deepEqual(readTimingRows(store), []);
+      await writeFile(file, lines(fixture()));
+      await ingestTimingFile(store, file);
+      const validRows = readTimingRows(store);
+      assert.equal(validRows.length, 1);
+      await writeFile(file, lines(excluded) + filler);
+      await ingestTimingFile(store, file, { maxBytes: 1024 });
+      assert.deepEqual(readTimingRows(store), validRows, 'blocked staged replay keeps last-good rows until EOF');
+      const pending = store.db.prepare('SELECT * FROM source').get();
+      assert.equal(pending.rebuild_kind, 'source');
+      assert.equal(JSON.parse(pending.state).blocked, true);
+      const cancelled = new AbortController();
+      await assert.rejects(ingestTimingFile(store, file, { signal: cancelled.signal, onReadLine: () => cancelled.abort() }));
+      assert.deepEqual(store.db.prepare('SELECT * FROM source').get(), pending);
+      await ingestTimingFile(store, file);
+      assert.deepEqual(readTimingRows(store), []);
+      assert.equal(store.db.prepare('SELECT rebuild_kind FROM source').get().rebuild_kind, 'none');
+    } finally { store.close(); }
+  }
+});
+
 test('rejects unconverted and foreign timing stores without writing their original bytes', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'timing-v12-schema-')));
   t.after(() => rm(root, { recursive: true, force: true }));

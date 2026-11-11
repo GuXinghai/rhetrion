@@ -2911,12 +2911,12 @@ export async function buildLocalCompanionSnapshot({
   const workloadStore=workloadStateStore(unifiedIndexFile);
   try{storedWorkloadState=await workloadStore.read(workloadAccountScope);}catch{workloadStateError="workload_state_read_failed";}
   let quotaEvidence;
-  try{quotaEvidence=await readWorkloadQuotaEvidence({stateFile:collectorStateFile,signal,
+  try{quotaEvidence=await timing.measure("snapshot_workload_quota",()=>readWorkloadQuotaEvidence({stateFile:collectorStateFile,signal,
     fromMs:workloadLiveSinceMs??nowMs,nowMs,
     historyFromMs:Math.max(0,nowMs-WORKLOAD_POLICY.historyMs-WORKLOAD_POLICY.comparisonWindowMs
-      -WORKLOAD_POLICY.comparisonDeadlineUncertaintyMs)});}
+      -WORKLOAD_POLICY.comparisonDeadlineUncertaintyMs)}));}
   catch(error){if(signal?.aborted)throw error;quotaEvidence={errorCode:["quota_history_too_large","quota_history_invalid"].includes(error?.code)?error.code:"quota_history_read_failed"};}
-  const workload = readLocalIndexWorkload({ indexFile: unifiedIndexFile, nowMs,
+  const workload = timing.measureSync("snapshot_workload",()=>readLocalIndexWorkload({ indexFile: unifiedIndexFile, nowMs,
     signal,
     quotaEvidence,
     accountScopeToken:workloadAccountScope,previousAccountScopeToken:previousWorkloadScope,
@@ -2925,7 +2925,7 @@ export async function buildLocalCompanionSnapshot({
     quotaWindows: quota.windows.map((window) => ({ ...window, observedAt: quota.observedAt })),
     capacity: { ...allowanceCapacity, computedAt: replaySafeCache?.generatedAt }, previous: previousWorkload,
     liveSinceMs: workloadLiveSinceMs ?? nowMs,
-    sourceFresh: workloadSourceFresh });
+    sourceFresh: workloadSourceFresh }));
   if(workloadSourceFresh&&["available","partial"].includes(workload.status)){
     try{await workloadStore.write(workloadAccountScope,workloadState(workload));}catch{workloadStateError="workload_state_write_failed";}
   }

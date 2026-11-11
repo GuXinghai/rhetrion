@@ -1,6 +1,7 @@
+import { createProtectedFixtureTempDirectory as mkdtemp, assertWindowsOwnerOnly } from "./helpers/windows-owner-only-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { localMetadataExport } from "../src/local-node-runtime.js";
@@ -158,8 +159,13 @@ test("local export and receipt are written owner-only", async () => {
     const outputFile = join(outputDirectory, "review.umx.json");
     const receiptFile = join(outputDirectory, "review.privacy-receipt.json");
     await writeLocalMetadataBundle({ ...result, outputFile, receiptFile });
-    assert.equal((await stat(outputFile)).mode & 0o777, 0o600);
-    assert.equal((await stat(receiptFile)).mode & 0o777, 0o600);
+    if (process.platform === "win32") {
+      assertWindowsOwnerOnly(outputFile);
+      assertWindowsOwnerOnly(receiptFile);
+    } else {
+      assert.equal((await stat(outputFile)).mode & 0o777, 0o600);
+      assert.equal((await stat(receiptFile)).mode & 0o777, 0o600);
+    }
     assert.deepEqual(JSON.parse(await readFile(outputFile, "utf8")), result.bundle);
     assert.deepEqual(JSON.parse(await readFile(receiptFile, "utf8")), result.receipt);
   } finally {

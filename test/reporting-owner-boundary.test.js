@@ -126,7 +126,7 @@ test("all reporting callers enter through the public index", async () => {
     const callerSource = await source(caller);
     assert.match(callerSource, /reporting\/index\.js/u, caller);
     assert.doesNotMatch(
-      callerSource,
+      (await extractEsmImports(callerSource, { sourceName: caller })).map(({ specifier }) => specifier).join("\n"),
       /(?:\.\/|\.\.\/src\/|reporting\/)(?:monitoring-quality|weekly-calibration|work-usage)\.js/u,
       caller,
     );

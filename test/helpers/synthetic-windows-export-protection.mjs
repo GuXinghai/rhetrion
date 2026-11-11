@@ -6,8 +6,10 @@ import {
   openSync,
   readSync,
   writeSync,
+  unlinkSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { createProtectedFixtureDirectory, writeInitialProtectedFixtureFile } from "./windows-owner-only-fixture.js";
 
 function nodeIdentity(stats) {
   return {
@@ -45,7 +47,7 @@ function isOwnerOnly(acl) {
 
 // Test-only contract adapter over caller-owned temporary fixtures. Its ACL
 // facts are synthetic and do not qualify the installed Windows native binding.
-export function createSyntheticWindowsExportProtection() {
+export function createSyntheticWindowsExportProtection({ protectFixtures = false } = {}) {
   const aclByIdentity = new Map();
   const counters = { directoryEnsures: 0, fileCreates: 0, opens: 0, reads: 0 };
 
@@ -97,7 +99,8 @@ export function createSyntheticWindowsExportProtection() {
         }
         return existing.identity;
       }
-      mkdirSync(path, { recursive: true, mode: 0o700 });
+      if (protectFixtures && process.platform === "win32") createProtectedFixtureDirectory(path);
+      else mkdirSync(path, { recursive: true, mode: 0o700 });
       return rememberPrivate(path);
     },
     createFile(path, bytes) {
@@ -106,13 +109,26 @@ export function createSyntheticWindowsExportProtection() {
       if (!parent.isDirectory || parent.isReparsePoint || !isOwnerOnly(parent)) {
         throw new Error("synthetic_acl_rejected_parent");
       }
-      const descriptor = openSync(path, "wx", 0o600);
-      try {
-        if (bytes.byteLength > 0) writeSync(descriptor, bytes);
-      } finally {
-        closeSync(descriptor);
+      if (protectFixtures && process.platform === "win32") writeInitialProtectedFixtureFile(path, bytes);
+      else {
+        const descriptor = openSync(path, "wx", 0o600);
+        try {
+          if (bytes.byteLength > 0) writeSync(descriptor, bytes);
+        } finally {
+          closeSync(descriptor);
+        }
       }
       return rememberPrivate(path);
+    },
+    deleteFile(path, expected) {
+      const current = inspectPath(path);
+      if (current.isReparsePoint || !isOwnerOnly(current)
+          || current.identity.linkCount !== 1
+          || objectKey(current.identity) !== objectKey(expected)) {
+        throw new Error("synthetic_identity_mismatch");
+      }
+      unlinkSync(path);
+      return { deleted: true, identity: current.identity };
     },
   });
 

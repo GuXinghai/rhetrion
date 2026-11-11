@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { isProxy } from "node:util/types";
@@ -114,13 +114,13 @@ test("local Codex ports observe CODEX_HOME at each default-home call and reject 
     environment,
     homeDirectory: "/fallback-home",
   });
-  assert.equal(ports.filesystem.defaultCodexHome(), "/fallback-home/.codex");
+  assert.equal(ports.filesystem.defaultCodexHome(), join("/fallback-home", ".codex"));
   environment.CODEX_HOME = "/first-codex-home";
   assert.equal(ports.filesystem.defaultCodexHome(), "/first-codex-home");
   environment.CODEX_HOME = "/second-codex-home";
   assert.equal(ports.filesystem.defaultCodexHome(), "/second-codex-home");
   delete environment.CODEX_HOME;
-  assert.equal(ports.filesystem.defaultCodexHome(), "/fallback-home/.codex");
+  assert.equal(ports.filesystem.defaultCodexHome(), join("/fallback-home", ".codex"));
 
   Object.defineProperty(environment, "CODEX_HOME", {
     configurable: true,
