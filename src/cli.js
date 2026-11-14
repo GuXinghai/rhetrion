@@ -667,7 +667,7 @@ export async function run(
   }
   if (args.command === "recover-local-export-deletion") {
     if (!args.workspaceDirectory || !args.directory) {
-      throw new Error("recover-local-export-deletion requires --workspace and --directory");
+      throw cliArgumentError("cli_missing_export_paths");
     }
     const receipt = await recoverLocalExportDeletion({
       workspaceDirectory: args.workspaceDirectory,
@@ -682,7 +682,7 @@ export async function run(
   }
   if (args.command === "discard-export-workspace") {
     if (!args.workspaceDirectory) throw new Error("discard-export-workspace requires --workspace");
-    if (args.directory) throw new Error("discard-export-workspace accepts --workspace only");
+    if (args.directory) throw cliArgumentError("cli_unexpected_export_directory");
     if (args.confirmDeletionToken) throw cliArgumentError("cli_wrong_discard_confirmation");
     if (!args.confirmDiscardToken) {
       const planned = await planLocalExportWorkspaceDiscard({ workspaceDirectory: args.workspaceDirectory });
@@ -1277,7 +1277,7 @@ function cliArgumentError(code) {
 
 const CLI_FAILURE_CODES = new Set([
   "cli_missing_input", "cli_missing_directory", "cli_missing_export_paths",
-  "cli_wrong_discard_confirmation",
+  "cli_wrong_discard_confirmation", "cli_unexpected_export_directory",
   "export_deletion_execute_confirmation", "export_set_verify_chunk_artifact_digest",
   "observation_read_failed", "observation_json_invalid",
   "CLI_PATH_SAFETY_INVALID_PATH", "CLI_PATH_SAFETY_INVALID_LIST",

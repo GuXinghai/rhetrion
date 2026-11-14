@@ -813,7 +813,7 @@ test("persisted controls and CLI output contain no paths, identifiers, digests, 
       command, "discard-export-workspace", "--workspace", value.workspace, "--directory", value.output,
     ], { cwd: resolve("."), encoding: "utf8" });
     assert.notEqual(rejected.status, 0);
-    assert.match(rejected.stderr, /accepts --workspace only/);
+    assert.equal(rejected.stderr.trim(), "usage-monitor: cli_unexpected_export_directory");
     assert.equal(rejected.stderr.includes(value.root), false);
   } finally { await rm(value.root, { recursive: true, force: true }); }
 });

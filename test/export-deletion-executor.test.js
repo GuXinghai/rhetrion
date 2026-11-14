@@ -275,7 +275,7 @@ test("deletion CLI rejects missing required paths with fixed content-free errors
       cwd: resolve("."), encoding: "utf8",
     });
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, new RegExp(`${command} requires --workspace and --directory`));
+    assert.equal(result.stderr.trim(), "usage-monitor: cli_missing_export_paths");
     assert.equal(result.stdout, "");
     assert.equal(result.stderr.includes(PRIVATE_CANARY), false);
   }

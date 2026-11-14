@@ -15,6 +15,7 @@ import { openLocalIndexStore } from "../src/local-index-store.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
 import { generateOwnedSyntheticCodexCorpus as generateSyntheticCodexCorpus } from "./helpers/local-index-facts.js";
 import { copyWindowsLegacyState, loadWindowsLegacyStateReadBinding } from "../src/platform/index.js";
+import { normalizeFreshSourceFixtures } from "./helpers/windows-source-fixture.js";
 import { grantSyntheticEveryoneRead } from "./helpers/windows-owner-only-fixture.js";
 
 const SALT = "local-unified-index-device-salt-v1";
@@ -47,7 +48,12 @@ async function fixture(t, family = "index", { populate = false, mutate = null } 
   }
   const db = new DatabaseSync(file);
   try { db.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE"); mutate?.(db); } finally { db.close(); }
-  assert.equal(copyWindowsLegacyState({ sourceRoot, destinationRoot: backupRoot, binding: new Proxy(native, { get(target, key) { const value=target[key]; if(typeof value!=="function") return value; return (...args)=>{try{return value(...args);}catch(error){ t.diagnostic(`backup native stage=${String(key)} code=${/^[A-Z_]+$/.test(error?.code) ? error.code : "fixed_unknown"}`);throw error;}}; } }), mode: "copy" }).status, "copied");
+  // The direct low-level store creates this fresh disposable database with
+  // the runner token's default owner. Admit it as a current-user-owned legacy
+  // source before any copy identity is captured; retain the exact cold bytes.
+  normalizeFreshSourceFixtures([file]);
+  assert.equal(native.inspectPath(file).ownerMatches, true);
+  assert.equal(copyWindowsLegacyState({ sourceRoot, destinationRoot: backupRoot, binding: native, mode: "copy" }).status, "copied");
   return { native, root, file, backupFile: join(backupRoot, names[family]), options: { sourceRoot, backupRoot, family } };
 }
 

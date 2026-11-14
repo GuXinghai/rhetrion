@@ -19,7 +19,9 @@ for exact flags.
 Terminal failures print a fixed reviewed error code or `command_failed`, never
 the raw exception message. Missing bundle input, recovery directory and export paths use
 `cli_missing_input`, `cli_missing_directory` and `cli_missing_export_paths`.
-A deletion token passed to discard uses `cli_wrong_discard_confirmation`.
+A deletion token passed to discard uses `cli_wrong_discard_confirmation`; an
+output directory passed to that workspace-only command uses
+`cli_unexpected_export_directory`.
 Reviewed deletion-confirmation and chunk-artifact-digest failures retain their
 fixed subsystem codes; other unreviewed exceptions remain `command_failed`.
 Observation reads use `observation_read_failed` or
