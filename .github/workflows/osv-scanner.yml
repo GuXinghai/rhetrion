@@ -44,6 +44,8 @@ jobs:
         run: |
           node scripts/check-http-cache-backport.mjs
           node scripts/run-isolated-tests.mjs -- test/http-cache-semantics-security.test.js test/http-cache-backport.test.js test/http-cache-exception-workflow.test.mjs
+      - name: Verify patched build dependency compatibility
+        run: node scripts/run-isolated-tests.mjs -- test/minimatch-build-compatibility.test.js
       # The reviewed binary digest fixes executable bytes. Direct invocation
       # preserves vulnerability, no-package, config and operational failures.
       - name: Run scanner
