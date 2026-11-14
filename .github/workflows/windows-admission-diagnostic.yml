@@ -59,7 +59,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'REPRESENTATIVE_TESTS_FAILED' }
       - name: Validate shared source and export fixture batch
         run: |
-          node scripts/run-isolated-tests.mjs -- test/export-paginated-ancestry.test.js test/local-index-cutover.test.js test/local-index-model-recognition-recovery.test.js test/local-index-work-usage.test.js test/local-legacy-report-storage.test.js test/local-index-goldens.test.js
+          node scripts/run-isolated-tests.mjs -- test/compressed-timing-recovery.test.js test/inference-timing-experiment.test.js test/timing-hot-journal-recovery.test.js test/tool-free-timing.test.js test/work-usage-source.test.js test/codex-project-attribution.test.js test/cache-switch-impact.test.js test/quota-track-identity.test.js test/supplemental-source-lifecycle.test.js test/windows-browser-profile-store.test.js test/profile-sqlite-backup.test.js test/windows-filesystem-security.test.js test/work-usage-platform-parity.test.js test/model-performance.test.js test/source-file-contention.test.js test/windows-process-exit-observer.test.js
           if ($LASTEXITCODE -ne 0) { throw 'FIXTURE_BATCH_FAILED' }
       - name: Confirm tracked source remains unchanged
         if: ${{ always() }}

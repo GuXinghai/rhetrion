@@ -45,7 +45,7 @@ public static class SyntheticDeleteAccess {
 
 async function holdDeleteAccess(path) {
   const child = spawn(join(process.env.SystemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe"),
-    ["-NoProfile", "-NonInteractive", "-Command", HOLD_DELETE_ACCESS], {
+    ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(HOLD_DELETE_ACCESS, "utf16le").toString("base64")], {
       env: { ...process.env, RHETRION_SYNTHETIC_LEASE: path },
       stdio: ["pipe", "pipe", "ignore"], windowsHide: true,
     });

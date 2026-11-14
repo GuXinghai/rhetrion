@@ -47,7 +47,7 @@ async function fixture(t, family = "index", { populate = false, mutate = null } 
   }
   const db = new DatabaseSync(file);
   try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); mutate?.(db); } finally { db.close(); }
-  assert.equal(copyWindowsLegacyState({ sourceRoot, destinationRoot: backupRoot, binding: native, mode: "copy" }).status, "copied");
+  assert.equal(copyWindowsLegacyState({ sourceRoot, destinationRoot: backupRoot, binding: new Proxy(native, { get(target, key) { const value=target[key]; if(typeof value!=="function") return value; return (...args)=>{try{return value(...args);}catch(error){ t.diagnostic(`backup native stage=${String(key)} code=${/^[A-Z_]+$/.test(error?.code) ? error.code : "fixed_unknown"}`);throw error;}}; } }), mode: "copy" }).status, "copied");
   return { native, root, file, backupFile: join(backupRoot, names[family]), options: { sourceRoot, backupRoot, family } };
 }
 
