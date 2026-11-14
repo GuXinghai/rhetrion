@@ -1,3 +1,4 @@
+import { mkdtemp as rawMkdtemp } from "node:fs/promises";
 import { mkdtemp, mkdir, writeFile } from "./helpers/windows-source-fixture.js";
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -122,7 +123,7 @@ test('malformed and oversized content exclude throughput without retaining priva
 const primaryConfig = { createParser, digest, METHOD, MAX_STATE_BYTES };
 const extraConfig = correlationKey => ({ createParser: createToolFreeParser, digest, METHOD: TOOL_FREE_METHOD, MAX_STATE_BYTES, correlationKey });
 async function setup(t) {
-  const temporary = await realpath(await mkdtemp(join(tmpdir(), 'tool-free-')));
+  const temporary = await realpath(await rawMkdtemp(join(tmpdir(), 'tool-free-')));
   let primary;
   t.after(async () => {
     // Release SQLite and its native directory guards before deleting the fixture.

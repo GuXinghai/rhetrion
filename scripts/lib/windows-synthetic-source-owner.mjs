@@ -36,7 +36,7 @@ export function createWindowsSyntheticOwnedSource(path, contents, {
   };
   let result;
   try {
-    result = run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(`
+    result = run('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(`
       $ErrorActionPreference = 'Stop'
       $stage = 41
       try {

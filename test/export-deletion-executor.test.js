@@ -252,7 +252,7 @@ test("deletion CLI is deliberately two-step and prints only content-free counts 
       cwd: resolve("."), encoding: "utf8",
     });
     assert.notEqual(wrong.status, 0);
-    assert.match(wrong.stderr, /Local export deletion failed \(confirmation\)/);
+    assert.match(wrong.stderr, /export_deletion_execute_confirmation/);
     for (const canary of forbidden) assert.equal(`${wrong.stdout}${wrong.stderr}`.includes(canary), false);
     assert.equal((await readdir(value.workspace)).includes("workspace.sqlite3"), true);
 

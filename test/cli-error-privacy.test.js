@@ -41,6 +41,8 @@ test("CLI error boundary accepts only fixed codes and never reads raw messages o
     [{ code: "EPERM", message: PRIVATE }, "permission_denied"],
     [{ code: "ABORT_ERR", message: PRIVATE }, "operation_aborted"],
     [new SyntaxError(PRIVATE), "invalid_json"],
+    ...["cli_missing_input", "cli_missing_directory", "cli_missing_export_paths", "cli_wrong_discard_confirmation", "export_deletion_execute_confirmation", "export_set_verify_chunk_artifact_digest"].map(code => [{code, message: PRIVATE},code]),
+    [{code: `export_set_verify_${PRIVATE}`, message: PRIVATE}, "command_failed"],
     [{ code: PRIVATE, message: PRIVATE }, "command_failed"],
     [new Error(PRIVATE), "command_failed"],
     [null, "command_failed"],

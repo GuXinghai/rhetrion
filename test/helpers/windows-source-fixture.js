@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { lstatSync, writeFileSync as rawWriteFileSync, mkdirSync as rawMkdirSync, mkdtempSync as rawMkdtempSync } from 'node:fs';
+import { lstatSync, readFileSync, renameSync, rmSync, writeFileSync as rawWriteFileSync, mkdirSync as rawMkdirSync, mkdtempSync as rawMkdtempSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { createWindowsFilesystemAdapter } from '../../src/platform/index.js';
 
@@ -55,4 +55,17 @@ export function mkdtempSourceFixtureSync(prefix) {
   const path = `${prefix}${randomUUID()}`;
   createWindowsFilesystemAdapter().ensureDirectory(path);
   return path;
+}
+
+// Call only for fresh generator output, before security identities are captured.
+// Replacement preserves exact bytes and never mutates a retained source.
+export function normalizeFreshSourceFixtures(sources) {
+  if (process.platform !== 'win32') return;
+  const adapter = createWindowsFilesystemAdapter();
+  for (const source of sources) {
+    const temporary = `${source}.owned-fixture`;
+    adapter.createFile(temporary, Buffer.alloc(0));
+    try { rawWriteFileSync(temporary, readFileSync(source)); renameSync(temporary, source); }
+    finally { rmSync(temporary, { force: true }); }
+  }
 }

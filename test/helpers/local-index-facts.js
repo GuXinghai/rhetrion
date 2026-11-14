@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createWindowsFilesystemAdapter } from "../../src/platform/index.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { normalizeFreshSourceFixtures } from "./windows-source-fixture.js";
 import { generateSyntheticCodexCorpus } from "../../src/synthetic-codex-rollout-corpus.js";
 
 // Shared by the local index store tests: a synthetic workspace and a
@@ -189,14 +190,6 @@ export function generateOwnedSyntheticCodexCorpus(codexHome, options) {
   const receipt = generateSyntheticCodexCorpus(codexHome, options);
   // Normalize only the fresh synthetic corpus, before any index or identity
   // evidence is captured. File bytes and receipt paths remain unchanged.
-  if (process.platform === "win32") {
-    const adapter = createWindowsFilesystemAdapter();
-    for (const source of receipt.sources) {
-      const temporary = `${source}.owned-fixture`;
-      adapter.createFile(temporary, Buffer.alloc(0));
-      try { writeFileSync(temporary, readFileSync(source)); renameSync(temporary, source); }
-      finally { rmSync(temporary, { force: true }); }
-    }
-  }
+  normalizeFreshSourceFixtures(receipt.sources);
   return receipt;
 }

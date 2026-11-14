@@ -1,7 +1,8 @@
 import { parseIsolatedTestArguments } from "../scripts/run-isolated-tests.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp } from "./helpers/windows-source-fixture.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {

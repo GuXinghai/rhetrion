@@ -13,7 +13,7 @@ import {
 import { commitLocalCollectorState } from "../src/local-collector-state.js";
 import { openLocalIndexStore } from "../src/local-index-store.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
-import { generateSyntheticCodexCorpus } from "../src/synthetic-codex-rollout-corpus.js";
+import { generateOwnedSyntheticCodexCorpus as generateSyntheticCodexCorpus } from "./helpers/local-index-facts.js";
 import { copyWindowsLegacyState, loadWindowsLegacyStateReadBinding } from "../src/platform/index.js";
 import { grantSyntheticEveryoneRead } from "./helpers/windows-owner-only-fixture.js";
 
@@ -46,7 +46,7 @@ async function fixture(t, family = "index", { populate = false, mutate = null } 
         observedAt: "2026-08-03T00:00:00.000Z", toolClass: "other" }], clock: () => Date.parse("2026-08-03T00:00:00.000Z") });
   }
   const db = new DatabaseSync(file);
-  try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); mutate?.(db); } finally { db.close(); }
+  try { db.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE"); mutate?.(db); } finally { db.close(); }
   assert.equal(copyWindowsLegacyState({ sourceRoot, destinationRoot: backupRoot, binding: new Proxy(native, { get(target, key) { const value=target[key]; if(typeof value!=="function") return value; return (...args)=>{try{return value(...args);}catch(error){ t.diagnostic(`backup native stage=${String(key)} code=${/^[A-Z_]+$/.test(error?.code) ? error.code : "fixed_unknown"}`);throw error;}}; } }), mode: "copy" }).status, "copied");
   return { native, root, file, backupFile: join(backupRoot, names[family]), options: { sourceRoot, backupRoot, family } };
 }

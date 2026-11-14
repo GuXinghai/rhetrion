@@ -780,7 +780,7 @@ test("persisted controls and CLI output contain no paths, identifiers, digests, 
       ...args, "--confirm-deletion", token,
     ], { cwd: resolve("."), encoding: "utf8" });
     assert.notEqual(wrongIntent.status, 0);
-    assert.match(wrongIntent.stderr, /uses --confirm-discard, not --confirm-deletion/);
+    assert.match(wrongIntent.stderr, /cli_wrong_discard_confirmation/);
     assert.equal(wrongIntent.stderr.includes(value.root), false);
     await assert.rejects(discardLocalExportWorkspace({
       workspaceDirectory: value.workspace,

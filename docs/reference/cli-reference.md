@@ -17,7 +17,12 @@ coverage is checked against `src/cli.js` by
 for exact flags.
 
 Terminal failures print a fixed reviewed error code or `command_failed`, never
-the raw exception message. Observation reads use `observation_read_failed` or
+the raw exception message. Missing bundle input, recovery directory and export paths use
+`cli_missing_input`, `cli_missing_directory` and `cli_missing_export_paths`.
+A deletion token passed to discard uses `cli_wrong_discard_confirmation`.
+Reviewed deletion-confirmation and chunk-artifact-digest failures retain their
+fixed subsystem codes; other unreviewed exceptions remain `command_failed`.
+Observation reads use `observation_read_failed` or
 `observation_json_invalid`; the latter retains a record ordinal in the internal
 error, without the input path or parser excerpt. Experiment failure results
 use fixed workload failure categories, including timeout, unavailable,

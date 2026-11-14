@@ -283,7 +283,7 @@ test("verify-export-set CLI reports corruption without content, paths, IDs, or h
     ], { cwd: process.cwd(), encoding: "utf8" });
     assert.equal(result.status, 1);
     assert.equal(result.stdout, "");
-    assert.match(result.stderr, /Export-set verification failed \(chunk_artifact_digest\)/);
+    assert.match(result.stderr, /export_set_verify_chunk_artifact_digest/);
     for (const privateValue of [
       value.output,
       "PRIVATE_SESSION",

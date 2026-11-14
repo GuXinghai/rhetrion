@@ -112,17 +112,18 @@ test('native browser migration rejects reparse descendants', { skip: nativeOnly 
   assert.throws(() => profile.ensureReady(), { code: 'windows_browser_profile_security_policy' });
 }));
 
-test('native browser health detects unreadable Cookie rather than treating it as empty', { skip: nativeOnly }, async () => fixture(async ({ adapter, root }) => {
+test('native browser health rejects a Cookie ACL that removes current-owner read access', { skip: nativeOnly }, async () => fixture(async ({ adapter, root }) => {
   const profile = createWindowsBrowserProfileStore({ adapter, rootPath: root });
   profile.ensureReady();
   const network = join(root, 'Network');
   await mkdir(network);
   const cookie = join(network, 'Cookies');
   await writeFile(cookie, 'synthetic');
+  profile.ensureReady();
   const sid = userSid();
   runAcl(cookie, '/inheritance:r', '/grant:r', `${syntheticCapability}:(M)`);
   runAcl(cookie, '/remove:g', `*${sid}`);
-  try { assert.throws(() => profile.inspectHealth(), { code: 'windows_browser_profile_read_failed' }); }
+  try { assert.throws(() => profile.inspectHealth(), { code: 'windows_browser_profile_security_policy' }); }
   finally { runAcl(cookie, '/grant:r', `*${sid}:(F)`); }
 }));
 
@@ -137,6 +138,7 @@ test('native browser health separates write denial and ignores mutable cache fil
   await mkdir(cache);
   const cacheFile = join(cache, 'synthetic.bin');
   await writeFile(cacheFile, 'synthetic');
+  profile.ensureReady();
   const active = await open(cacheFile, 'r+');
   try {
     assert.doesNotThrow(() => profile.inspectHealth());

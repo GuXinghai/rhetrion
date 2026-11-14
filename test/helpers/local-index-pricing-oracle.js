@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import { addUsdStrings, priceCodexUsageEvent } from "@app-usagemonitor/accounting";
 import { recognizedCodexModelId } from "../../src/export/index.js";
 import { declaredSpeedModeAt } from "../../src/codex-speed-baseline.js";
@@ -157,7 +158,12 @@ export async function workPricingOracle(database, facts, { nowMs, codexHome, sec
       sourcePaths, knownThreadIds: new Set(memberships.threads.keys()), includeProjectAncestry: true,
     });
   const resolveProject = createWorkUsageProjectResolver({
-    ...(historicalProjectGrouping ? { repositoryOrigins: await readCodexLocalRepositoryOrigins(codexHome) } : {}),
+    ...(historicalProjectGrouping ? {
+      repositoryOrigins: await readCodexLocalRepositoryOrigins(codexHome),
+      // The frozen corpus records /synthetic/... POSIX locations. Reproduce
+      // that historical namespace instead of binding it to a Windows drive.
+      paths: posix,
+    } : {}),
     digest: (kind, value) => localDigest(salt, `work-usage-${kind}`, value).toString("hex"),
   });
   const resolveOwnership = createCodexWorkUsageProjectResolver({ memberships, relations: threadRelations,
