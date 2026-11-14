@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { createWindowsFilesystemAdapter } from "../../src/platform/index.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +22,17 @@ export function createWorkspace(options = {}) {
     seed: 7, files: 60, events: 2_400, days: 12, fillerBytesPerEvent: 160,
     endAt: "2026-09-01T00:00:00.000Z", ...options,
   });
+  // Normalize only the fresh synthetic corpus, before any index or identity
+  // evidence is captured. File bytes and receipt paths remain unchanged.
+  if (process.platform === "win32") {
+    const adapter = createWindowsFilesystemAdapter();
+    for (const source of receipt.sources) {
+      const temporary = `${source}.owned-fixture`;
+      adapter.createFile(temporary, Buffer.alloc(0));
+      try { writeFileSync(temporary, readFileSync(source)); renameSync(temporary, source); }
+      finally { rmSync(temporary, { force: true }); }
+    }
+  }
   return {
     root, codexHome, state, receipt,
     secretFile: join(state, "local-unified-index-device-salt-v1"),

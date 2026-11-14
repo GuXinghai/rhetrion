@@ -1,10 +1,9 @@
+import { mkdir, mkdtemp, writeFile } from "./helpers/windows-source-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, fork, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  chmod, copyFile, link, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, unlink, writeFile,
-} from "node:fs/promises";
+import { chmod, copyFile, link, readFile, readdir, rename, rm, stat, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";

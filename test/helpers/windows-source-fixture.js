@@ -19,3 +19,18 @@ export async function writeSourceFixture(path, data, options) {
   sourceFixtureFile(path);
   return writeFile(path, data, options);
 }
+
+// Valid initial directories use native creation; an existing directory is never
+// repaired here, so deliberate unsafe-directory fixtures keep their descriptor.
+export async function mkdirSourceFixture(path, options) {
+  const { mkdir } = await import('node:fs/promises');
+  if (process.platform !== 'win32') return mkdir(path, options);
+  try { lstatSync(path); return mkdir(path, options); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    createWindowsFilesystemAdapter().ensureDirectory(path);
+  }
+}
+
+export { createProtectedFixtureTempDirectory as mkdtemp } from './windows-owner-only-fixture.js';
+export { writeSourceFixture as writeFile, mkdirSourceFixture as mkdir };

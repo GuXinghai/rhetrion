@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: windows-root-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   root:
     name: Complete isolated root suite (Windows x64)

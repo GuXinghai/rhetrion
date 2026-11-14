@@ -1,17 +1,8 @@
+import { mkdir, writeFile } from "./helpers/windows-source-fixture.js";
 import { createProtectedFixtureTempDirectory as mkdtemp, grantSyntheticEveryoneRead } from "./helpers/windows-owner-only-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  chmod,
-  mkdir,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  symlink,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, readFile, readdir, rename, rm, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { verifyPrivacySafeBundle } from "../src/export-privacy.js";

@@ -1,22 +1,11 @@
+import { mkdir, writeFile } from "./helpers/windows-source-fixture.js";
 import { createProtectedFixtureTempDirectory as mkdtemp, writeInitialProtectedFixtureFile } from "./helpers/windows-owner-only-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import {
-  copyFile,
-  link,
-  mkdir,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  stat,
-  symlink,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { copyFile, link, readFile, readdir, rename, rm, stat, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import {

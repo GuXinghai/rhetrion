@@ -1,3 +1,4 @@
+import { writeInitialProtectedFixtureFile } from "./windows-owner-only-fixture.js";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -50,7 +51,8 @@ export const GOLDEN_LIMITS = Object.freeze({
  * fixed public constant: this index holds only synthetic, content-free data.
  */
 export function pinGoldenSalt(workspace) {
-  writeFileSync(
+  const publish = process.platform === "win32" ? writeInitialProtectedFixtureFile : writeFileSync;
+  publish(
     workspace.secretFile,
     // This historical input predates the product rename. Changing the text
     // changes every work identity even if production derivation stays correct.
