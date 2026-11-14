@@ -1,3 +1,4 @@
+import { createProtectedFixtureTempDirectory, writeInitialProtectedFixtureFile } from './helpers/windows-owner-only-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
@@ -5,7 +6,7 @@ import {createModelPerformanceController} from '../apps/local/model-performance-
 import {modelPerformanceProjection} from '../src/reporting/index.js';
 import {createModelPerformanceSnapshotStore,modelPerformanceSourceScope,isCompleteModelPerformanceSnapshot,modelPerformanceSourceDiagnosticHeader,readModelPerformanceSourceDiagnostics} from '../apps/local/model-performance-snapshots.js';
 import {modelPerformanceHistoryState,modelPerformanceSourceRecoveryReason,modelPerformanceRecoveryDiagnostics} from '../apps/local/model-performance-worker.js';
-import {mkdtemp,readFile,writeFile,rm,copyFile} from 'node:fs/promises';
+import {readFile,writeFile,rm,copyFile} from 'node:fs/promises';
 import {join} from 'node:path';import {tmpdir} from 'node:os';
 
 class Worker extends EventEmitter {
@@ -60,11 +61,11 @@ test('successful persistence clears earlier snapshot failure without rewriting t
   assert.deepEqual(controller.diagnostics(),[]);await controller.close();
 });
 test('intact snapshots for another source are distinct from real corruption, including repeated reads',async t=>{
-  const root=await mkdtemp(join(tmpdir(),'performance-diagnostic-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const root=await createProtectedFixtureTempDirectory(join(tmpdir(),'performance-diagnostic-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const a=createModelPerformanceSnapshotStore({directory:root,codexHome:join(root,'source-a')});
   assert.equal(await a.write([snapshot()]),true);
   const file=join(root,'model-performance-snapshot.json');
-  await copyFile(join(root,`model-performance-snapshot-v6-${modelPerformanceSourceScope(join(root,'source-a'))}.json`),file);
+  await copyProtectedFixture(join(root,`model-performance-snapshot-v6-${modelPerformanceSourceScope(join(root,'source-a'))}.json`),file);
   const codes=[],b=createModelPerformanceSnapshotStore({directory:root,codexHome:join(root,'source-b'),onDiagnostic:code=>codes.push(code)});
   assert.equal(await b.read(),null);assert.deepEqual(codes,['timing_snapshot_scope_mismatch']);
   const envelope=JSON.parse(await readFile(file,'utf8'));
@@ -75,10 +76,10 @@ test('intact snapshots for another source are distinct from real corruption, inc
 });
 
 test('source-specific writes preserve both another source and the legacy receipt; current corruption cannot fall back',async t=>{
-  const root=await mkdtemp(join(tmpdir(),'performance-isolation-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const root=await createProtectedFixtureTempDirectory(join(tmpdir(),'performance-isolation-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const home=join(root,'source-a'),file=join(root,`model-performance-snapshot-v6-${modelPerformanceSourceScope(home)}.json`);
   const a=createModelPerformanceSnapshotStore({directory:root,codexHome:home});await a.write([snapshot()]);
-  const bytes=await readFile(file),legacy=join(root,'model-performance-snapshot.json');await copyFile(file,legacy);await rm(file);
+  const bytes=await readFile(file),legacy=join(root,'model-performance-snapshot.json');await copyProtectedFixture(file,legacy);await rm(file);
   assert.ok(await a.read(),'matching legacy receipt remains usable');
   const b=createModelPerformanceSnapshotStore({directory:root,codexHome:join(root,'source-b')});await b.write([snapshot()]);
   assert.deepEqual(await readFile(legacy),bytes);await a.write([snapshot()]);
@@ -88,10 +89,10 @@ test('source-specific writes preserve both another source and the legacy receipt
 });
 
 test('a finished partial scan saves its stale state and recovers the old-source warning without hiding unavailable history',async t=>{
-  const root=await mkdtemp(join(tmpdir(),'performance-recovery-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const root=await createProtectedFixtureTempDirectory(join(tmpdir(),'performance-recovery-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const oldHome=join(root,'old-source'),home=join(root,'current-source');
   const old=createModelPerformanceSnapshotStore({directory:root,codexHome:oldHome});await old.write([snapshot()]);
-  const legacy=join(root,'model-performance-snapshot.json');await copyFile(join(root,`model-performance-snapshot-v6-${modelPerformanceSourceScope(oldHome)}.json`),legacy);
+  const legacy=join(root,'model-performance-snapshot.json');await copyProtectedFixture(join(root,`model-performance-snapshot-v6-${modelPerformanceSourceScope(oldHome)}.json`),legacy);
   const original=await readFile(legacy),worker=new Worker();
   const controller=createModelPerformanceController({directory:root,codexHome:home,workerFactory:()=>worker});
   await controller.read('all');assert.deepEqual(controller.diagnostics(),['timing_snapshot_scope_mismatch']);
@@ -168,3 +169,8 @@ test('source details distinguish concurrent append, missing recovery and unknown
     assert.doesNotMatch(JSON.stringify(controller.sourceDiagnostics()),/private/);
   }finally{await controller.close();}
 });
+
+async function copyProtectedFixture(source, destination) {
+  if (process.platform === 'win32') writeInitialProtectedFixtureFile(destination, await readFile(source));
+  else await copyFile(source, destination);
+}
