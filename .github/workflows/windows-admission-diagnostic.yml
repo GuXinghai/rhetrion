@@ -1,0 +1,66 @@
+name: Windows admission diagnostic
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/windows-admission-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  root:
+    name: Source admission and representative tests (Windows x64)
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out the exact validation revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 26.2.0
+          check-latest: false
+          package-manager-cache: false
+      - name: Install locked dependencies
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm install --global corepack@0.34.0 --force --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw 'COREPACK_INSTALL_FAILED' }
+          corepack enable
+          if ($LASTEXITCODE -ne 0) { throw 'COREPACK_ENABLE_FAILED' }
+          corepack prepare pnpm@11.9.0 --activate
+          if ($LASTEXITCODE -ne 0) { throw 'PNPM_ACTIVATION_FAILED' }
+          if ((node --version).Trim() -ne 'v26.2.0' -or (pnpm --version).Trim() -ne '11.9.0') { throw 'RUNTIME_VERSION_MISMATCH' }
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw 'DEPENDENCY_INSTALL_FAILED' }
+      - name: Build the native filesystem binding and manifest
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $nodeRoot = Split-Path (Get-Command npm.cmd).Source -Parent
+          $nodeGypScript = Join-Path $nodeRoot 'node_modules/npm/node_modules/node-gyp/bin/node-gyp.js'
+          if (-not (Test-Path -LiteralPath $nodeGypScript -PathType Leaf)) { throw 'NATIVE_BUILDER_UNAVAILABLE' }
+          node $nodeGypScript rebuild --directory native/windows-filesystem
+          if ($LASTEXITCODE -ne 0) { throw 'NATIVE_BUILD_FAILED' }
+          node scripts/build-windows-filesystem-manifest.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'NATIVE_MANIFEST_FAILED' }
+      - name: Diagnose shared source and protected-state admission
+        run: node scripts/diagnose-windows-test-admission.mjs
+      - name: Rerun representative metadata and cache tests
+        run: |
+          node scripts/run-isolated-tests.mjs -- test/local-codex-projects.test.js test/local-codex-thread-metadata.test.js test/model-performance-diagnostics.test.js test/local-index-accounting-reuse.test.js
+          if ($LASTEXITCODE -ne 0) { throw 'REPRESENTATIVE_TESTS_FAILED' }
+      - name: Confirm tracked source remains unchanged
+        if: ${{ always() }}
+        run: |
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) { throw 'VALIDATION_CHANGED_SOURCE' }
+          git diff --cached --exit-code
+          if ($LASTEXITCODE -ne 0) { throw 'VALIDATION_CHANGED_INDEX' }
