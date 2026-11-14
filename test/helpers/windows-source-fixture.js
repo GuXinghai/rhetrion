@@ -1,4 +1,4 @@
-import { lstatSync } from 'node:fs';
+import { lstatSync, truncateSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { createWindowsSyntheticOwnedSource } from '../../scripts/lib/windows-synthetic-source-owner.mjs';
 
@@ -9,7 +9,10 @@ export function sourceFixtureFile(path) {
     try { lstatSync(path); }
     catch (error) {
       if (error.code !== 'ENOENT') throw error;
-      createWindowsSyntheticOwnedSource(path, '');
+      // Seed the PowerShell stdin transfer with bytes, then empty the same file
+      // without replacing its authenticated owner or inherited descriptor.
+      createWindowsSyntheticOwnedSource(path, 'synthetic');
+      truncateSync(path, 0);
     }
   }
   return path;
