@@ -3,8 +3,9 @@ name: Windows complete root suite
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - .github/workflows/windows-root-suite.yml
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
