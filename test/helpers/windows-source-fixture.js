@@ -1,4 +1,5 @@
-import { lstatSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { lstatSync, writeFileSync as rawWriteFileSync, mkdirSync as rawMkdirSync, mkdtempSync as rawMkdtempSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { createWindowsFilesystemAdapter } from '../../src/platform/index.js';
 
@@ -34,3 +35,24 @@ export async function mkdirSourceFixture(path, options) {
 
 export { createProtectedFixtureTempDirectory as mkdtemp } from './windows-owner-only-fixture.js';
 export { writeSourceFixture as writeFile, mkdirSourceFixture as mkdir };
+
+export function writeSourceFixtureSync(path, data, options) {
+  sourceFixtureFile(path);
+  return rawWriteFileSync(path, data, options);
+}
+
+export function mkdirSourceFixtureSync(path, options) {
+  if (process.platform !== 'win32') return rawMkdirSync(path, options);
+  try { lstatSync(path); return rawMkdirSync(path, options); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    createWindowsFilesystemAdapter().ensureDirectory(path);
+  }
+}
+
+export function mkdtempSourceFixtureSync(prefix) {
+  if (process.platform !== 'win32') return rawMkdtempSync(prefix);
+  const path = `${prefix}${randomUUID()}`;
+  createWindowsFilesystemAdapter().ensureDirectory(path);
+  return path;
+}

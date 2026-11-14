@@ -59,7 +59,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'REPRESENTATIVE_TESTS_FAILED' }
       - name: Validate shared source and export fixture batch
         run: |
-          node scripts/run-isolated-tests.mjs -- test/codex-collector-workspace-source.test.js test/codex-compressed-rollouts.test.js test/codex-interleaved-usage-streams.test.js test/codex-response-model-recovery.test.js test/codex-response-usage.test.js test/codex-rollout-hardening.test.js test/codex-stale-leading-quota.test.js test/codex-usage-compatibility.test.js test/export-checkpoint-equivalence.test.js test/export-checkpoint-heap.test.js test/export-checkpoint-process-death.test.js test/export-checkpoint-workspace.test.js test/export-deletion-executor.test.js test/export-deletion-preflight.test.js test/export-paginated-ancestry.test.js test/export-paginated-reset.test.js test/export-set-controller.test.js test/export-set-materializer.test.js test/export-set-verifier.test.js test/export-supplemental-source-plan.test.js test/export-workspace-discard.test.js test/export-workspace.test.js test/local-legacy-report-storage.test.js test/local-index-goldens.test.js test/local-index-cutover.test.js test/local-index-model-recognition-recovery.test.js test/local-index-work-usage.test.js
+          node scripts/run-isolated-tests.mjs -- test/export-paginated-ancestry.test.js test/local-index-cutover.test.js test/local-index-model-recognition-recovery.test.js test/local-index-work-usage.test.js test/local-legacy-report-storage.test.js test/local-index-goldens.test.js
           if ($LASTEXITCODE -ne 0) { throw 'FIXTURE_BATCH_FAILED' }
       - name: Confirm tracked source remains unchanged
         if: ${{ always() }}

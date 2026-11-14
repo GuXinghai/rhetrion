@@ -1,5 +1,6 @@
+import { mkdirSourceFixtureSync as mkdirSync, mkdtempSourceFixtureSync as mkdtempSync } from "./helpers/windows-source-fixture.js";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -7,7 +8,7 @@ import { test } from "node:test";
 
 import { assessLegacyIndexRetirement, readLegacyOrdinalMap } from "../src/local-index-cutover.js";
 import { refreshLocalIndex } from "../src/local-index-refresh.js";
-import { generateSyntheticCodexCorpus } from "../src/synthetic-codex-rollout-corpus.js";
+import { generateOwnedSyntheticCodexCorpus as generateSyntheticCodexCorpus } from "./helpers/local-index-facts.js";
 
 // The previous index is a file this build no longer writes. These tests lay
 // down the tables the cutover reader inspects with plain DDL, using the source

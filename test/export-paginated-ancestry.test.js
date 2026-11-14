@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "./helpers/windows-source-fixture.js";
+import { mkdir, mkdtemp, writeFile, sourceFixtureFile } from "./helpers/windows-source-fixture.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
@@ -66,7 +66,7 @@ async function fixture(t, { secondChild = false } = {}) {
     await writeFile(paths[source.label], `${records.map((record) => JSON.stringify(record)).join("\n")}\n`, { mode: 0o600 });
   }
   const databasePath = join(home, "state_5.sqlite");
-  const database = new DatabaseSync(databasePath);
+  const database = new DatabaseSync(sourceFixtureFile(databasePath));
   try {
     database.exec("CREATE TABLE threads(id TEXT, rollout_path TEXT)");
     database.prepare("INSERT INTO threads VALUES (?, ?)").run(THREAD, paths.reset);
