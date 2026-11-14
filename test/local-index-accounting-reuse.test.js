@@ -1,3 +1,4 @@
+import { sourceFixtureFile } from './helpers/windows-source-fixture.js';
 import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -156,7 +157,7 @@ test("runtime capture during accounting preserves the proof and the next refresh
   try { sessions = index.prepare("SELECT session_uuid FROM session").all(); }
   finally { index.close(); }
   // Minimal, content-free selected-thread metadata for the runner's real origin reader.
-  const metadata = new DatabaseSync(join(workspace.codexHome, "state_5.sqlite"));
+  const metadata = new DatabaseSync(sourceFixtureFile(join(workspace.codexHome, "state_5.sqlite")));
   try {
     metadata.exec("CREATE TABLE threads(id TEXT PRIMARY KEY, source TEXT, thread_source TEXT, rollout_path TEXT)");
     const insert = metadata.prepare("INSERT INTO threads VALUES (?,NULL,'cli',NULL)");
@@ -406,7 +407,7 @@ test("cold time-projection failure preserves durable history and never falls thr
   await refreshLocalIndex({ codexHome: workspace.codexHome, indexFile, secretFile: workspace.secretFile, workerCount: 1 });
   const db = new DatabaseSync(indexFile, { readOnly: true });
   let ids; try { ids = db.prepare("SELECT session_uuid FROM session").all(); } finally { db.close(); }
-  const metadata = new DatabaseSync(join(workspace.codexHome, "state_5.sqlite"));
+  const metadata = new DatabaseSync(sourceFixtureFile(join(workspace.codexHome, "state_5.sqlite")));
   try {
     metadata.exec("CREATE TABLE threads(id TEXT PRIMARY KEY, source TEXT, thread_source TEXT, rollout_path TEXT)");
     for (const row of ids) metadata.prepare("INSERT INTO threads VALUES (?,NULL,'cli',NULL)").run(row.session_uuid);
@@ -445,7 +446,7 @@ test("cold runner updates time projections without rebuilding and leaves another
   await refreshLocalIndex({ codexHome: workspace.codexHome, indexFile, secretFile: workspace.secretFile, workerCount: 1 });
   const db = new DatabaseSync(indexFile, { readOnly: true });
   let ids; try { ids = db.prepare("SELECT session_uuid FROM session").all(); } finally { db.close(); }
-  const metadata = new DatabaseSync(join(workspace.codexHome, "state_5.sqlite"));
+  const metadata = new DatabaseSync(sourceFixtureFile(join(workspace.codexHome, "state_5.sqlite")));
   try {
     metadata.exec("CREATE TABLE threads(id TEXT PRIMARY KEY, source TEXT, thread_source TEXT, rollout_path TEXT)");
     for (const row of ids) metadata.prepare("INSERT INTO threads VALUES (?,NULL,'cli',NULL)").run(row.session_uuid);

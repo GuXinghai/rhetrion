@@ -1,6 +1,8 @@
+import { writeSourceFixture as writeFile } from './helpers/windows-source-fixture.js';
+import { createProtectedFixtureTempDirectory } from './helpers/windows-owner-only-fixture.js';
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadWindowsSourceReadBinding } from "../src/platform/windows-filesystem.js";
@@ -14,7 +16,7 @@ const REMOTE_THREAD = "55555555-5555-4555-8555-555555555555";
 const PRIVATE_CANARY = "GLOBAL_STATE_UNKNOWN_FIELD_MUST_NOT_LEAK";
 
 async function fixture(t, document) {
-  const codexHome = await mkdtemp(join(tmpdir(), "local-codex-projects-"));
+  const codexHome = await createProtectedFixtureTempDirectory(join(tmpdir(), "local-codex-projects-"));
   t.after(() => rm(codexHome, { recursive: true, force: true }));
   const file = join(codexHome, ".codex-global-state.json");
   await writeFile(file, JSON.stringify(document), { mode: 0o600 });

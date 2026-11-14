@@ -16,6 +16,8 @@ const SOURCE_EXTENSIONS = /(?<!\.test)\.(?:js|mjs|cjs|ts|tsx)$/u;
 // Exact composition/orchestration entrypoints. No allowance permits direct
 // store access; these facades own their own guarded reads and writes.
 const FACADE_IMPORTERS = new Map([
+  // The shared salt facade delegates identity derivation, not store access.
+  ["src/local-device-salt.js", new Set(["local-index-identity.js"])],
   ["apps/local/server.js", new Set(["local-index-backend.js", "local-index-runtime-model-evidence.js"])],
   // The snapshot builder's companion reader and guarded workload lifecycle.
   ["src/local-companion-data.js", new Set(["local-index-backend.js", "local-index-workload.js"])],

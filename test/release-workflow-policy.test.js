@@ -16,6 +16,21 @@ test("checked-in GitHub workflows pin actions and avoid unsafe release triggers"
   assert.ok(result.files.includes(".github/workflows/windows-portability.yml"));
 });
 
+test("complete Windows root CI covers every pull request and main push without path filters", async () => {
+  const workflow = await readFile(new URL(
+    "../.github/workflows/windows-root-suite.yml", import.meta.url,
+  ), "utf8");
+  const events = workflow.slice(workflow.indexOf("\non:\n"), workflow.indexOf("\npermissions:\n"));
+  assert.match(events, /^  pull_request:\n(?=  [a-z_]+:)/mu);
+  assert.match(events, /^  push:\n    branches:\n      - main$/mu);
+  assert.match(events, /^  workflow_dispatch:$/mu);
+  assert.doesNotMatch(events, /paths(?:-ignore)?:|branches-ignore:|types:/u);
+  assert.match(workflow, /^  contents: read$/mu);
+  assert.doesNotMatch(workflow, /pull_request_target|: write/u);
+  assert.match(workflow, /runs-on: windows-2025/u);
+  assert.match(workflow, /node scripts\/run-isolated-tests\.mjs --suite=root/u);
+});
+
 test("Codex drift monitoring is read-only, immutable, and cannot rewrite the ledger", async () => {
   const workflow = await readFile(new URL(
     "../.github/workflows/codex-contract-drift.yml",

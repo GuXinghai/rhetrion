@@ -1,6 +1,7 @@
+import { writeSourceFixtureSync as writeFileSync, normalizeFreshSourceFixtures } from "./helpers/windows-source-fixture.js";
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, linkSync } from 'node:fs';
+import { readFileSync, linkSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
@@ -24,7 +25,9 @@ test('native ACL recovery copies a real closed v2 store, original salt and a pre
       const facts = v2Facts(store), salt = readFileSync(workspace.secretFile);
       // Close the synthetic writer after the read-only fact query: a read-only
       // WAL connection can leave coordination sidecars that must be refused.
-      const db = new DatabaseSync(store); db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); db.close();
+      const db = new DatabaseSync(store); db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE'); db.close();
+      normalizeFreshSourceFixtures([store]);
+      assert.equal(adapter.inspectPath(store).ownerMatches, true);
       const participant = join(workspace.state, 'export-participant-secret');
       writeFileSync(participant, Buffer.alloc(32, 73).toString('base64url'));
       const settings = join(workspace.state, 'desktop-settings'); adapter.ensureDirectory(settings);

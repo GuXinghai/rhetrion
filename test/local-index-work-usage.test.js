@@ -1,5 +1,6 @@
+import { writeSourceFixtureSync as writeFileSync } from "./helpers/windows-source-fixture.js";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";

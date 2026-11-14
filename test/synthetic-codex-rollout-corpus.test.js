@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,6 +10,9 @@ import {
   appendSyntheticCodexEvents,
   generateSyntheticCodexCorpus,
 } from "../src/synthetic-codex-rollout-corpus.js";
+
+import { mkdirSourceFixtureSync as mkdirSync, mkdtempSourceFixtureSync as mkdtempSync } from "./helpers/windows-source-fixture.js";
+import { generateOwnedSyntheticCodexCorpus } from "./helpers/local-index-facts.js";
 
 const SMALL = Object.freeze({
   seed: 7, files: 24, events: 240, days: 30, fillerBytesPerEvent: 64,
@@ -86,7 +89,7 @@ test("the extractor accepts the corpus and suppresses fork replay", async () => 
   const root = scratch();
   try {
     const home = join(root, "home");
-    const receipt = generateSyntheticCodexCorpus(home, { ...SMALL, forkFraction: 0.25 });
+    const receipt = generateOwnedSyntheticCodexCorpus(home, { ...SMALL, forkFraction: 0.25 });
     mkdirSync(join(root, "state"), { mode: 0o700 });
     const indexFile = join(root, "state", "local-index-store-v1.sqlite");
     const secretFile = join(root, "state", "local-index-device-salt-v1");

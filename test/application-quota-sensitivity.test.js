@@ -19,6 +19,7 @@ const QUOTA_SENSITIVITY_EXPORTS = [
 ];
 const APPLICATION_PUBLIC_EXPORTS = [
   ...QUOTA_SENSITIVITY_EXPORTS,
+  "EXPORT_RESOURCE_FAILURE_CODES",
   "USAGE_EXPLAINER_SCHEMA_VERSION",
   "createExportCompatibilityContext",
   "createLocalExportArtifactStorageContext",

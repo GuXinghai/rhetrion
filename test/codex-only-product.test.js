@@ -56,14 +56,16 @@ test("retired provider commands and flags reject without changing existing state
       const result = run([command]);
       assert.ifError(result.error);
       assert.equal(result.status, 1, command);
-      assert.ok(result.stderr.includes(`Unknown command: ${command}`), result.stderr);
+      assert.equal(result.stderr.trim(), "usage-monitor: command_failed");
+      assert.equal(result.stderr.includes(command), false);
       assert.deepEqual(await stateBytes(root), before, command);
     }
     for (const flag of ["--claude-status", "--claude-usage", "--claude-state-dir", "--claude-projects-dir"]) {
       const result = run(["export-set", flag, state]);
       assert.ifError(result.error);
       assert.equal(result.status, 1, flag);
-      assert.ok(result.stderr.includes(`Unknown argument: ${flag}`), result.stderr);
+      assert.equal(result.stderr.trim(), "usage-monitor: command_failed");
+      assert.equal(result.stderr.includes(flag), false);
       assert.deepEqual(await stateBytes(root), before, flag);
     }
     const help = run(["--help"]);

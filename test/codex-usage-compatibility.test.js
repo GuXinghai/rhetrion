@@ -1,5 +1,6 @@
+import { mkdir, mkdtemp, writeFile } from "./helpers/windows-source-fixture.js";
 import assert from "node:assert/strict";
-import { appendFile, copyFile, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";

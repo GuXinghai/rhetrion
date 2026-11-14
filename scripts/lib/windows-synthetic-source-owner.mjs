@@ -36,7 +36,7 @@ export function createWindowsSyntheticOwnedSource(path, contents, {
   };
   let result;
   try {
-    result = run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `
+    result = run('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(`
       $ErrorActionPreference = 'Stop'
       $stage = 41
       try {
@@ -172,7 +172,7 @@ public static class UsageMonitorSyntheticSourceCreator {
         if ([int64]$length -ne $expectedLength) { exit 51 }
         exit 0
       } catch { exit $stage }
-    `], {
+    `, 'utf16le').toString('base64')], {
       encoding: 'utf8', env: childEnvironment, input,
       windowsHide: true, timeout: 10_000, maxBuffer: 4_096,
     });

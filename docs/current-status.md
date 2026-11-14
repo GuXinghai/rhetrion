@@ -1,10 +1,10 @@
 ---
 title: Current product and qualification status
-date: 2026-10-28
+date: 2026-11-15
 type: status
 status: current
-source_commit: 4f99be5e29ee60b325d8afc4bd8b911b7795aee7
-observation_date: 2026-10-28
+source_commit: b390cf1d5aaecd5193cb9c2dcf9bdb710dda9d93
+observation_date: 2026-11-15
 ---
 
 # Current product and qualification status
@@ -21,6 +21,42 @@ The [identity and cloud-retirement decision](./decisions/2026-10-23-local-produc
 supersedes inherited service and publication wiring. No download website,
 update feed, signing account or external support destination is configured.
 No remote resources were modified by the source retirement.
+
+## Windows root-suite baseline
+
+On 2026-11-15 JST, revision
+`b390cf1d5aaecd5193cb9c2dcf9bdb710dda9d93` passed the complete isolated
+root suite on GitHub's `windows-2025` x64 image with Node.js 26.2.0 and
+pnpm 11.9.0: **4,781 tests, 4,713 passed, zero failed, 68 skipped and zero
+cancelled**, in 1,214.988 seconds. The
+[complete run](https://github.com/GuXinghai/rhetrion/actions/runs/43632866673)
+verified that tracked source and index remained unchanged. The final
+[focused run](https://github.com/GuXinghai/rhetrion/actions/runs/43632866698)
+passed 126/126 tests and the original metadata/cache sample passed 54/54,
+both with zero failures or skips. OSV, documentation and release-trust jobs
+also passed at that revision.
+
+This supersedes the earlier failing root-suite observations below. Valid new
+synthetic source/state fixtures now use native ownership boundaries; deliberate
+unsafe-state tests retain their refusal conditions. Bounded process fixtures use
+PowerShell 7, and the historical synthetic Windows path namespace is fixed
+independently of the runner drive. The frozen golden bytes, public synthetic
+salt, native admission policy and global safety flags remain unchanged. The CLI
+retains only reviewed fixed failure codes, with privacy-safe fallback for
+arbitrary exceptions.
+
+The complete-root workflow runs for every pull request and every push to
+`main`, without path filters, and remains manually dispatchable. It uses
+read-only repository permissions, pinned inputs and isolated synthetic state.
+The separate admission diagnostic is a focused workflow, not the general
+regression gate.
+
+The 68 skips remain outside this passing invocation's coverage. Separate
+Electron/local delivery-surface lanes, credential qualification, physical
+desktop, packaged/installed lifecycle, signing and release gates retain their
+own evidence requirements. No live profile or credential was changed. The
+older candidate/service observations below retain their original dates; this
+CI result does not requalify those artifacts or deployments.
 
 ## Evidence boundaries
 
@@ -142,10 +178,11 @@ synthetic image in an isolated Electron profile. This does not establish the
 precise network failure of the owner's prior cached image requests.
 The focused model/pricing/recovery suite passed 89 checks; targeted browser,
 response attribution and performance checks also passed. Contract generation,
-schema/browser mirrors, architecture and preflight passed. The broader root
-suite reported failures (including native publication, file-identity and old
-export-list checks) and was stopped after the failure gate; it is not a passing
-full-suite qualification. A read-only GPT-6 Luna xhigh review found no confirmed
+schema/browser mirrors, architecture and preflight passed. At that earlier
+observation, the broader root suite reported failures
+(including native publication, file-identity and old export-list checks) and
+was stopped after the failure gate. The passing current root-suite baseline
+is recorded above. A read-only GPT-6 Luna xhigh review found no confirmed
 defect in the Terra diff. No real user state or backups were changed for this work.
 
 The owner-approved [Codex project-membership contract](./decisions/2026-10-27-codex-project-membership.md)
@@ -167,7 +204,8 @@ restores the original synthetic salt and separates historical Standard results
 from the accepted desktop policy, versioned cache analysis and catalog additions.
 Its isolated source tests close this historical-equivalence gate without
 regenerating the fixture or changing production calculation/data. This does not
-qualify a packaged or running candidate, or the remaining root-suite debt.
+qualify a packaged or running candidate. The current root-suite baseline is
+recorded above.
 
 Brand configuration, neutral package identity and explicit profile paths are
 implemented in source. The approved editable SVG and raster/ICO/tray variants

@@ -259,14 +259,16 @@ test("disposable Windows source is created with current-user owner and fixed err
       return { status: 0, stdout: "", stderr: "" };
     },
   });
-  assert.equal(invocation.command, "powershell.exe");
+  assert.equal(invocation.command, "pwsh.exe");
+  assert.equal(invocation.args.at(-2), "-EncodedCommand");
+  const script = Buffer.from(invocation.args.at(-1), "base64").toString("utf16le");
   assert.equal(invocation.options.env.USAGE_MONITOR_SYNTHETIC_SOURCE_FILE, path);
   assert.equal(invocation.options.env.USAGE_MONITOR_SYNTHETIC_SOURCE_LENGTH, "10");
   assert.equal(Object.hasOwn(invocation.options.env, "PSModulePath"), false);
   assert.equal(invocation.options.input.toString(), "synthetic\n");
-  assert.match(invocation.args.at(-1), /SetTokenInformation/u);
-  assert.match(invocation.args.at(-1), /CreateNew/u);
-  assert.doesNotMatch(invocation.args.at(-1), /SetNamedSecurityInfo/u);
+  assert.match(script, /SetTokenInformation/u);
+  assert.match(script, /CreateNew/u);
+  assert.doesNotMatch(script, /SetNamedSecurityInfo/u);
   let failure;
   try {
     createWindowsSyntheticOwnedSource(path, "synthetic\n", {

@@ -1,3 +1,4 @@
+import { win32 } from "node:path";
 import { addUsdStrings, priceCodexUsageEvent } from "@app-usagemonitor/accounting";
 import { recognizedCodexModelId } from "../../src/export/index.js";
 import { declaredSpeedModeAt } from "../../src/codex-speed-baseline.js";
@@ -157,7 +158,15 @@ export async function workPricingOracle(database, facts, { nowMs, codexHome, sec
       sourcePaths, knownThreadIds: new Set(memberships.threads.keys()), includeProjectAncestry: true,
     });
   const resolveProject = createWorkUsageProjectResolver({
-    ...(historicalProjectGrouping ? { repositoryOrigins: await readCodexLocalRepositoryOrigins(codexHome) } : {}),
+    ...(historicalProjectGrouping ? {
+      repositoryOrigins: await readCodexLocalRepositoryOrigins(codexHome),
+      // The frozen Windows view predates CI on D:. Its synthetic locations
+      // belong to the original C: namespace, independent of the runner drive.
+      paths: { ...win32, resolve: cwd => win32.resolve("C:\\", cwd) },
+      filesystem: {
+        async realpath() { throw Object.assign(new Error("Synthetic historical location absent"), { code: "ENOENT" }); },
+      },
+    } : {}),
     digest: (kind, value) => localDigest(salt, `work-usage-${kind}`, value).toString("hex"),
   });
   const resolveOwnership = createCodexWorkUsageProjectResolver({ memberships, relations: threadRelations,

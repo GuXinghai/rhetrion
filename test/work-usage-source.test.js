@@ -1,14 +1,8 @@
+import { sourceFixtureFile } from "./helpers/windows-source-fixture.js";
+import { mkdir, mkdtemp, writeFile } from "./helpers/windows-source-fixture.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import {
-  appendFile,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { appendFile, readFile, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { promisify } from "node:util";
@@ -903,7 +897,7 @@ test("row enrichment preserves explicit worker ancestry using the shared local m
   const child = "11111111-1111-4111-8111-111111111111";
   try {
     const file = join(home, "state_5.sqlite");
-    const db = new DatabaseSync(file);
+    const db = new DatabaseSync(sourceFixtureFile(file));
     try {
       db.exec(
         "CREATE TABLE threads (id TEXT PRIMARY KEY, name TEXT, agent_nickname TEXT, source TEXT)",
@@ -950,7 +944,7 @@ test("bounded collaboration ancestry follows nested workers, preserves absent ro
   const home=await mkdtemp(join(tmpdir(),'work-family-'));
   const ids=[1,2,3,4,5,6].map(n=>`${n}0000000-0000-4000-8000-000000000000`);
   try {
-    const file=join(home,'state_5.sqlite');const db=new DatabaseSync(file);
+    const file=join(home,'state_5.sqlite');const db=new DatabaseSync(sourceFixtureFile(file));
     try {
       db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, source TEXT, title TEXT)');
       const insert=db.prepare('INSERT INTO threads VALUES (?, ?, ?)');

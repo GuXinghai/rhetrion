@@ -526,7 +526,7 @@ export async function run(
     return;
   }
   if (args.command === "verify-bundle") {
-    if (!args.inputFile) throw new Error("verify-bundle requires --input");
+    if (!args.inputFile) throw cliArgumentError("cli_missing_input");
     const verified = await verifyLocalMetadataBundleFiles({
       bundleFile: args.inputFile,
       receiptFile: args.receiptFile ?? `${args.inputFile}.privacy-receipt.json`,
@@ -628,7 +628,7 @@ export async function run(
     return;
   }
   if (args.command === "recover-exports") {
-    if (!args.directory) throw new Error("recover-exports requires --directory");
+    if (!args.directory) throw cliArgumentError("cli_missing_directory");
     const recovery = await recoverOwnerOnlyPairTransactions({ directory: args.directory });
     console.log(`Local export recovery: ${recovery.recovered} recovered of ${recovery.transactionsFound} transaction(s)`);
     console.log("Upload remains disabled");
@@ -636,7 +636,7 @@ export async function run(
   }
   if (args.command === "delete-local-export") {
     if (!args.workspaceDirectory || !args.directory) {
-      throw new Error("delete-local-export requires --workspace and --directory");
+      throw cliArgumentError("cli_missing_export_paths");
     }
     if (!args.confirmDeletionToken) {
       const planned = await planLocalExportDeletion({
@@ -667,7 +667,7 @@ export async function run(
   }
   if (args.command === "recover-local-export-deletion") {
     if (!args.workspaceDirectory || !args.directory) {
-      throw new Error("recover-local-export-deletion requires --workspace and --directory");
+      throw cliArgumentError("cli_missing_export_paths");
     }
     const receipt = await recoverLocalExportDeletion({
       workspaceDirectory: args.workspaceDirectory,
@@ -682,8 +682,8 @@ export async function run(
   }
   if (args.command === "discard-export-workspace") {
     if (!args.workspaceDirectory) throw new Error("discard-export-workspace requires --workspace");
-    if (args.directory) throw new Error("discard-export-workspace accepts --workspace only");
-    if (args.confirmDeletionToken) throw new Error("discard-export-workspace uses --confirm-discard, not --confirm-deletion");
+    if (args.directory) throw cliArgumentError("cli_unexpected_export_directory");
+    if (args.confirmDeletionToken) throw cliArgumentError("cli_wrong_discard_confirmation");
     if (!args.confirmDiscardToken) {
       const planned = await planLocalExportWorkspaceDiscard({ workspaceDirectory: args.workspaceDirectory });
       console.log(`Local export workspace discard preflight: ${planned.readiness}`);
@@ -1271,7 +1271,14 @@ export async function run(
   throw new Error(`Unknown command: ${args.command}`);
 }
 
+function cliArgumentError(code) {
+  return Object.assign(new Error("CLI arguments invalid"), { code });
+}
+
 const CLI_FAILURE_CODES = new Set([
+  "cli_missing_input", "cli_missing_directory", "cli_missing_export_paths",
+  "cli_wrong_discard_confirmation", "cli_unexpected_export_directory",
+  "export_deletion_execute_confirmation", "export_set_verify_chunk_artifact_digest",
   "observation_read_failed", "observation_json_invalid",
   "CLI_PATH_SAFETY_INVALID_PATH", "CLI_PATH_SAFETY_INVALID_LIST",
   "CLI_PATH_SAFETY_INPUT_OUTPUT_COLLISION", "CLI_PATH_SAFETY_OUTPUT_COLLISION",

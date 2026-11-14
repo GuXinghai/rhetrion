@@ -1,18 +1,8 @@
+import { mkdir, mkdtemp, writeFile } from "./helpers/windows-source-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import {
-  appendFile,
-  link,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rename,
-  rm,
-  symlink,
-  truncate,
-  writeFile,
-} from "node:fs/promises";
+import { appendFile, link, readFile, rename, rm, symlink, truncate } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {

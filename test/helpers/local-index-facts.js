@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { normalizeFreshSourceFixtures } from "./windows-source-fixture.js";
 import { generateSyntheticCodexCorpus } from "../../src/synthetic-codex-rollout-corpus.js";
 
 // Shared by the local index store tests: a synthetic workspace and a
@@ -18,7 +19,7 @@ export function createWorkspace(options = {}) {
   const codexHome = join(root, "codex-home");
   const state = join(root, "state");
   createWindowsFilesystemAdapter().ensureDirectory(state);
-  const receipt = generateSyntheticCodexCorpus(codexHome, {
+  const receipt = generateOwnedSyntheticCodexCorpus(codexHome, {
     seed: 7, files: 60, events: 2_400, days: 12, fillerBytesPerEvent: 160,
     endAt: "2026-09-01T00:00:00.000Z", ...options,
   });
@@ -183,4 +184,12 @@ export function assertSameFacts(actual, expected, label) {
   for (const name of ["occurrences", "tools", "boundaries", "snapshots", "cursors"]) {
     assert.deepEqual(actual[name], expected[name], `${label}: ${name}`);
   }
+}
+
+export function generateOwnedSyntheticCodexCorpus(codexHome, options) {
+  const receipt = generateSyntheticCodexCorpus(codexHome, options);
+  // Normalize only the fresh synthetic corpus, before any index or identity
+  // evidence is captured. File bytes and receipt paths remain unchanged.
+  normalizeFreshSourceFixtures(receipt.sources);
+  return receipt;
 }

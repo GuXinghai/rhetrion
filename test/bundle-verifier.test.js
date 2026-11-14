@@ -554,7 +554,7 @@ test("verify-bundle CLI reports only a bounded privacy-safe summary", async () =
 });
 
 test("verification and recovery CLI commands fail safely when required paths are absent", () => {
-  for (const [command, expected] of [["verify-bundle", "requires --input"], ["recover-exports", "requires --directory"]]) {
+  for (const [command, expected] of [["verify-bundle", "cli_missing_input"], ["recover-exports", "cli_missing_directory"]]) {
     const result = spawnSync(process.execPath, [resolve("src/cli.js"), command], {
       cwd: resolve("."), encoding: "utf8",
     });
