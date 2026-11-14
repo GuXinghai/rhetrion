@@ -1,6 +1,7 @@
+import { mkdtemp, writeFile, mkdir } from "./helpers/windows-source-fixture.js";
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, writeFile, mkdir, rm, link, symlink, open, readdir } from 'node:fs/promises';
+import { readFile, rm, link, symlink, open, readdir } from "node:fs/promises";
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -118,6 +119,7 @@ test('native browser health detects unreadable Cookie rather than treating it as
   await mkdir(network);
   const cookie = join(network, 'Cookies');
   await writeFile(cookie, 'synthetic');
+  profile.ensureReady();
   const sid = userSid();
   runAcl(cookie, '/inheritance:r', '/grant:r', `${syntheticCapability}:(M)`);
   runAcl(cookie, '/remove:g', `*${sid}`);
@@ -136,6 +138,7 @@ test('native browser health separates write denial and ignores mutable cache fil
   await mkdir(cache);
   const cacheFile = join(cache, 'synthetic.bin');
   await writeFile(cacheFile, 'synthetic');
+  profile.ensureReady();
   const active = await open(cacheFile, 'r+');
   try {
     assert.doesNotThrow(() => profile.inspectHealth());

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "./helpers/windows-source-fixture.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { extractRolloutUsage } from "../src/local-index-extract.js";

@@ -1,17 +1,8 @@
+import { mkdir, writeFile } from "./helpers/windows-source-fixture.js";
 import { createProtectedFixtureTempDirectory as mkdtemp, grantSyntheticEveryoneRead } from "./helpers/windows-owner-only-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  chmod,
-  mkdir,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  symlink,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, readFile, readdir, rename, rm, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { verifyPrivacySafeBundle } from "../src/export-privacy.js";
@@ -292,7 +283,7 @@ test("verify-export-set CLI reports corruption without content, paths, IDs, or h
     ], { cwd: process.cwd(), encoding: "utf8" });
     assert.equal(result.status, 1);
     assert.equal(result.stdout, "");
-    assert.match(result.stderr, /Export-set verification failed \(chunk_artifact_digest\)/);
+    assert.match(result.stderr, /export_set_verify_chunk_artifact_digest/);
     for (const privateValue of [
       value.output,
       "PRIVATE_SESSION",

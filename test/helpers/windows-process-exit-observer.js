@@ -37,7 +37,7 @@ try {
 
 export async function createWindowsProcessExitObserver() {
   assert.equal(process.platform, "win32");
-  const child = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPT], {
+  const child = spawn("pwsh.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(SCRIPT, "utf16le").toString("base64")], {
     stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
   });
   const closed = once(child, "close");

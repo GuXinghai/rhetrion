@@ -296,8 +296,8 @@ test("the checked-in inventory classifies every retained tool entry point and np
   );
   // Includes the explicitly admitted read-only live work/projection benchmark.
   // Keep exact counts: future executables still require an ownership decision.
-  assert.equal(result.records, 87);
-  assert.equal(result.candidates.length, 88);
+  assert.equal(result.records, 88);
+  assert.equal(result.candidates.length, 89);
   assert.ok(result.aliases >= 25);
 });
 

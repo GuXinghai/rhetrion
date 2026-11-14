@@ -1,6 +1,7 @@
+import { mkdtemp, mkdir, writeFile } from "./helpers/windows-source-fixture.js";
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, realpath, rm } from 'node:fs/promises';
+import { realpath, rm } from "node:fs/promises";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { appendFile, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
+import { appendFile, open, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { isProxy } from "node:util/types";
@@ -22,6 +22,7 @@ import {
   R7_FIXTURE_SECRET,
   R7_FIXTURE_START_AT,
 } from "../src/r7-resource-benchmark-fixture.js";
+import { mkdtemp, writeFile, normalizeFreshSourceFixtures } from "./helpers/windows-source-fixture.js";
 import { stableJson } from "../src/storage.js";
 
 function guard() {
@@ -65,6 +66,10 @@ function rehashBundle(bundle) {
 async function frozenFixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "usage-monitor-frozen-bundle-private-")));
   const fixture = await createR7StructuralFixture(root);
+  normalizeFreshSourceFixtures([
+    fixture.paths.collectorPath,
+    join(fixture.paths.codexHome, "sessions", "rollout-2026-07-24T12-00-00-r7.jsonl"),
+  ]);
   const planningGuard = guard();
   const bundle = await createExportSourcePlanBundle({
     startAt: R7_FIXTURE_START_AT,

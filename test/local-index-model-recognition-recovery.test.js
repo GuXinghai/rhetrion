@@ -1,6 +1,7 @@
+import { mkdtemp, mkdir, writeFile } from "./helpers/windows-source-fixture.js";
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, mkdir, writeFile, appendFile, rm } from 'node:fs/promises';
+import { appendFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { openLocalIndexStore, readPendingModelRecognitionSources } from '../src/local-index-store.js';

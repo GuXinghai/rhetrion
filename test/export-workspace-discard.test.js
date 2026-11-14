@@ -1,10 +1,9 @@
+import { mkdir, mkdtemp, writeFile } from "./helpers/windows-source-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, fork, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  chmod, copyFile, link, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, unlink, writeFile,
-} from "node:fs/promises";
+import { chmod, copyFile, link, readFile, readdir, rename, rm, stat, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -781,7 +780,7 @@ test("persisted controls and CLI output contain no paths, identifiers, digests, 
       ...args, "--confirm-deletion", token,
     ], { cwd: resolve("."), encoding: "utf8" });
     assert.notEqual(wrongIntent.status, 0);
-    assert.match(wrongIntent.stderr, /uses --confirm-discard, not --confirm-deletion/);
+    assert.match(wrongIntent.stderr, /cli_wrong_discard_confirmation/);
     assert.equal(wrongIntent.stderr.includes(value.root), false);
     await assert.rejects(discardLocalExportWorkspace({
       workspaceDirectory: value.workspace,
@@ -814,7 +813,7 @@ test("persisted controls and CLI output contain no paths, identifiers, digests, 
       command, "discard-export-workspace", "--workspace", value.workspace, "--directory", value.output,
     ], { cwd: resolve("."), encoding: "utf8" });
     assert.notEqual(rejected.status, 0);
-    assert.match(rejected.stderr, /accepts --workspace only/);
+    assert.equal(rejected.stderr.trim(), "usage-monitor: cli_unexpected_export_directory");
     assert.equal(rejected.stderr.includes(value.root), false);
   } finally { await rm(value.root, { recursive: true, force: true }); }
 });

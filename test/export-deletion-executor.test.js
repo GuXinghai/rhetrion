@@ -1,22 +1,11 @@
+import { mkdir, writeFile } from "./helpers/windows-source-fixture.js";
 import { createProtectedFixtureTempDirectory as mkdtemp, writeInitialProtectedFixtureFile } from "./helpers/windows-owner-only-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import {
-  copyFile,
-  link,
-  mkdir,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  stat,
-  symlink,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { copyFile, link, readFile, readdir, rename, rm, stat, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import {
@@ -263,7 +252,7 @@ test("deletion CLI is deliberately two-step and prints only content-free counts 
       cwd: resolve("."), encoding: "utf8",
     });
     assert.notEqual(wrong.status, 0);
-    assert.match(wrong.stderr, /Local export deletion failed \(confirmation\)/);
+    assert.match(wrong.stderr, /export_deletion_execute_confirmation/);
     for (const canary of forbidden) assert.equal(`${wrong.stdout}${wrong.stderr}`.includes(canary), false);
     assert.equal((await readdir(value.workspace)).includes("workspace.sqlite3"), true);
 
@@ -286,7 +275,7 @@ test("deletion CLI rejects missing required paths with fixed content-free errors
       cwd: resolve("."), encoding: "utf8",
     });
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, new RegExp(`${command} requires --workspace and --directory`));
+    assert.equal(result.stderr.trim(), "usage-monitor: cli_missing_export_paths");
     assert.equal(result.stdout, "");
     assert.equal(result.stderr.includes(PRIVATE_CANARY), false);
   }
