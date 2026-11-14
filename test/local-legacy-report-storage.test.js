@@ -1,4 +1,3 @@
-import { mkdtemp as rawMkdtemp } from "node:fs/promises";
 import { sourceFixtureFile } from "./helpers/windows-source-fixture.js";
 import { mkdtemp, mkdir, writeFile } from "./helpers/windows-source-fixture.js";
 import assert from "node:assert/strict";
@@ -262,8 +261,7 @@ async function isolated(t) {
 }
 
 test("preview creates no state, reads remain bounded and generated summaries omit content and root", async t => {
-  const root = await rawMkdtemp(join(tmpdir(), "unsafe-report-parent-")), file = "artifact.json";
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await isolated(t), file = "artifact.json";
   await writeFile(join(root, file), "synthetic-private-content-canary");
   const before = await readdir(root);
   const result = await inspectLocalLegacyReportMigration({ root, files: [file] });
@@ -401,8 +399,8 @@ test("unsafe existing destination DACL is refused and never repaired", async t =
 });
 
 test("explicit paths require protected existing parents and honor their anchor", async t => {
-  const root = await rawMkdtemp(join(tmpdir(), "unsafe-report-parent-")), file = "artifact.json";
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await isolated(t), file = "artifact.json";
+  grantSyntheticEveryoneRead(root);
   await assert.rejects(writeLegacyReportPath(join(root, file), "x"), { code: "unsafe_report_path" });
   const path = await writeLocalLegacyReport(root, file, "original");
   assert.equal(await writeLegacyReportPath(path, "replacement", { anchor: root }), path);
